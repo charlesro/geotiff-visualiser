@@ -7,7 +7,7 @@ import { ZoneExtraction } from '../lib/zones';
 import { polygonLabel } from '../lib/polygon-source';
 import { RasterLayer } from '../types';
 import SceneTimeline from './SceneTimeline';
-import { Square } from 'lucide-react';
+import { Eye, EyeOff, Square } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 /**
@@ -168,8 +168,17 @@ function BboxSelector({ polygons, onSelect }: { polygons: any | null; onSelect: 
 
 const ZONE_COLORS: Record<string, string> = {
   interior: '#34d399',
-  edge: '#fbbf24',
+  edge_other_species: '#f87171',
+  edge_same_species: '#fbbf24',
+  edge_isolated: '#94a3b8',
 };
+
+const ZONE_LEGEND: { key: string; label: (d: number) => string }[] = [
+  { key: 'interior', label: d => `Interior (≥ ${d} m inside)` },
+  { key: 'edge_other_species', label: () => 'Edge — other species next to it' },
+  { key: 'edge_same_species', label: () => 'Edge — same species next to it' },
+  { key: 'edge_isolated', label: () => 'Edge — no neighbouring field' },
+];
 
 // Deterministic color cycle for crop species (crp_lbl).
 const SPECIES_COLORS = [
@@ -191,12 +200,14 @@ const speciesColor = (crpLbl: string | undefined): string => {
 
 export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones, preview, clusterPreviews, scenes, previewSceneId, onPreviewScene, onDeleteScene, fitRequest }: MapPanelProps) {
   const [basemap, setBasemap] = useState<BasemapKey>('dark');
+  const [showZoneDots, setShowZoneDots] = useState(true);
 
   // GeoJSON layers only restyle when remounted, so key them on their inputs.
   const polygonsKey = useMemo(
     () => `polys-${polygons?.features?.length ?? 0}-${Array.from(selectedIds).join('.')}`,
     [polygons, selectedIds]
   );
+  const zonesKey = useMemo(() => (zones ? Date.now() : 0), [zones]);
 
   const polygonStyle = (feature: any) => {
     const selected = selectedIds.has(feature?.properties?.__pid);
@@ -264,9 +275,13 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
 
         {zones && (
           <>
-            <GeoJSON key="zone-edge" data={zones.edge} pointToLayer={pixelToMarker} />
-            <GeoJSON key="zone-interior" data={zones.interior} pointToLayer={pixelToMarker} />
-            <GeoJSON key="zone-boundaries" data={zones.boundaries} style={boundaryStyle} />
+            {showZoneDots && (
+              <>
+                <GeoJSON key={`zone-edge-${zonesKey}`} data={zones.edge} pointToLayer={pixelToMarker} />
+                <GeoJSON key={`zone-interior-${zonesKey}`} data={zones.interior} pointToLayer={pixelToMarker} />
+              </>
+            )}
+            <GeoJSON key={`zone-boundaries-${zonesKey}`} data={zones.boundaries} style={boundaryStyle} />
           </>
         )}
       </MapContainer>
@@ -297,17 +312,34 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
       {/* Zone legend */}
       {zones && (
         <div className="absolute bottom-6 right-3 z-[1000] rounded-md border border-white/10 bg-[#11151acc] px-3 py-2 text-xs text-slate-300 backdrop-blur">
-          <div className="mb-1 font-medium text-slate-200">
-            Pixel zones · {zones.metric} · {zones.distance} m
+          <div className="mb-1 flex items-center justify-between gap-3 font-medium text-slate-200">
+            <span>
+              Pixel zones · {zones.metric} · {zones.distance} m
+            </span>
+            <button
+              onClick={() => setShowZoneDots(s => !s)}
+              className="text-slate-400 transition-colors hover:text-white"
+              title={showZoneDots ? 'Hide the pixel dots' : 'Show the pixel dots'}
+            >
+              {showZoneDots ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+            </button>
           </div>
-          <div className="flex items-center gap-2 py-0.5">
-            <span className="h-2.5 w-2.5 rounded-full" style={{ background: ZONE_COLORS.interior }} />
-            Interior (&ge; {zones.distance} m inside) · {zones.interior.features.length} px
-          </div>
-          <div className="flex items-center gap-2 py-0.5">
-            <span className="h-2.5 w-2.5 rounded-full" style={{ background: ZONE_COLORS.edge }} />
-            Edge (&lt; {zones.distance} m from boundary) · {zones.edge.features.length} px
-          </div>
+          {ZONE_LEGEND.map(({ key, label }) => {
+            const count =
+              key === 'interior'
+                ? zones.interior.features.length
+                : key === 'edge_other_species'
+                  ? zones.edgeCounts.other
+                  : key === 'edge_same_species'
+                    ? zones.edgeCounts.same
+                    : zones.edgeCounts.isolated;
+            return (
+              <div key={key} className="flex items-center gap-2 py-0.5">
+                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: ZONE_COLORS[key] }} />
+                {label(zones.distance)} · {count} px
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

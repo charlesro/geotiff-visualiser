@@ -284,7 +284,9 @@ export default function App() {
           metric,
           includeOutside,
           setZonesProgress,
-          () => op.cancelled
+          () => op.cancelled,
+          // Neighbour context for the edge classes: every loaded polygon.
+          polygons?.features || []
         );
         setZones(result);
       } catch (e) {
@@ -295,7 +297,7 @@ export default function App() {
         setZonesProgress(null);
       }
     },
-    [selectedFeatures, scenes]
+    [selectedFeatures, scenes, polygons]
   );
 
   // ----- Step 4 handlers -----------------------------------------------------

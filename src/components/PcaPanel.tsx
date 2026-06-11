@@ -26,7 +26,12 @@ import { cn } from '../lib/utils';
  */
 
 const PALETTE = ['#34d399', '#fbbf24', '#38bdf8', '#f472b6', '#a78bfa', '#fb923c', '#22d3ee', '#f87171', '#a3e635', '#e879f9'];
-const ZONE_COLOR: Record<string, string> = { interior: '#34d399', edge: '#fbbf24' };
+const ZONE_COLOR: Record<string, string> = {
+  interior: '#34d399',
+  edge_other_species: '#f87171',
+  edge_same_species: '#fbbf24',
+  edge_isolated: '#94a3b8',
+};
 
 const EXCLUDED_ATTRS = new Set(['id', '__pid', 'zone', 'polygon_id', 'type']);
 

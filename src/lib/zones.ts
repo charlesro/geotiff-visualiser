@@ -1,6 +1,9 @@
+import buffer from '@turf/buffer';
+import booleanPointInPolygon from '@turf/boolean-point-in-polygon';
 import { RasterLayer } from '../types';
 import { extractPixelTimeseriesOptions } from './pixel-extraction';
 import { polygonLabel } from './polygon-source';
+import { getGeoJsonBounds, Bbox } from './geo';
 import { CancelCheck, throwIfCancelled } from './cancel';
 
 /**
@@ -12,13 +15,20 @@ import { CancelCheck, throwIfCancelled } from './cancel';
  *   - edge:     inside the polygon but closer than `distance` to the boundary
  *     (optionally also the ring up to `distance` outside the boundary)
  *
+ * Edge pixels are further classified by what lies across the boundary,
+ * using every loaded polygon as context:
+ *   - edge_other_species: within `distance` of a field of another species
+ *   - edge_same_species:  within `distance` of a field of the same species
+ *   - edge_isolated:      no neighbouring field (road, hedge, open land…)
+ * A pixel near both kinds of neighbour counts as edge_other_species.
+ *
  * Implemented on top of extractPixelTimeseriesOptions: a negative buffer
  * makes the inward-shrunk polygon the "core" (its pixels are the interior
  * set, the remainder of the polygon the edge set); a positive buffer adds
  * the outside ring.
  */
 
-export type PixelZone = 'interior' | 'edge';
+export type PixelZone = 'interior' | 'edge_other_species' | 'edge_same_species' | 'edge_isolated';
 
 export interface ZoneExtraction {
   /** Point features, one per pixel, with `zone` and `<metric>_<date>` properties. */
@@ -27,11 +37,69 @@ export interface ZoneExtraction {
   /** Dashed helper geometries: the inward-shrunk boundaries. */
   boundaries: any;
   perPolygon: { pid: number; label: string; interior: number; edge: number }[];
+  /** Edge pixels by neighbour class. */
+  edgeCounts: { other: number; same: number; isolated: number };
   metric: string;
   distance: number;
   includeOutside: boolean;
   /** Sorted acquisition dates covered by the extracted series. */
   dates: string[];
+}
+
+const speciesOf = (f: any): string | null => f?.properties?.crp_lbl ?? f?.properties?.species ?? null;
+
+type EdgeClass = 'edge_other_species' | 'edge_same_species' | 'edge_isolated';
+
+/**
+ * Neighbour-aware classifier for edge pixels. Context polygons are indexed
+ * by their bbox padded by `distance`; the +distance buffered geometry is
+ * computed lazily only for polygons that pixels actually come near.
+ */
+function buildEdgeClassifier(contextFeatures: any[], distance: number) {
+  const M_PER_DEG = 111_320;
+  interface Entry {
+    bbox: Bbox;
+    feature: any;
+    pid: number | undefined;
+    species: string | null;
+    buffered: any; // undefined = not yet computed, null = failed
+  }
+  const entries: Entry[] = [];
+  for (const f of contextFeatures) {
+    const b = getGeoJsonBounds(f);
+    if (!b) continue;
+    const midLat = (b[1] + b[3]) / 2;
+    const dLat = distance / M_PER_DEG;
+    const dLng = distance / (M_PER_DEG * Math.max(0.2, Math.cos((midLat * Math.PI) / 180)));
+    entries.push({
+      bbox: [b[0] - dLng, b[1] - dLat, b[2] + dLng, b[3] + dLat],
+      feature: f,
+      pid: f.properties?.__pid,
+      species: speciesOf(f),
+      buffered: undefined,
+    });
+  }
+
+  return (lng: number, lat: number, ownPid: number | undefined, ownSpecies: string | null): EdgeClass => {
+    let foundSame = false;
+    for (const e of entries) {
+      if (e.pid !== undefined && e.pid === ownPid) continue;
+      if (lng < e.bbox[0] || lng > e.bbox[2] || lat < e.bbox[1] || lat > e.bbox[3]) continue;
+      if (e.buffered === undefined) {
+        try {
+          e.buffered = buffer(e.feature, distance, { units: 'meters' }) || null;
+        } catch {
+          e.buffered = null;
+        }
+      }
+      if (!e.buffered || !booleanPointInPolygon([lng, lat], e.buffered)) continue;
+      if (e.species !== null && ownSpecies !== null) {
+        if (e.species !== ownSpecies) return 'edge_other_species';
+        foundSame = true;
+      }
+    }
+    return foundSame ? 'edge_same_species' : 'edge_isolated';
+  };
 }
 
 export interface ZoneProgress {
@@ -49,16 +117,24 @@ export async function extractZones(
   metric: string,
   includeOutside: boolean,
   onProgress: (p: ZoneProgress) => void,
-  isCancelled?: CancelCheck
+  isCancelled?: CancelCheck,
+  /** Every loaded polygon — the neighbour context for the edge classes. */
+  contextFeatures: any[] = []
 ): Promise<ZoneExtraction> {
   if (features.length === 0) throw new Error('No polygons selected.');
   if (layers.length === 0) throw new Error('No imagery fetched.');
   if (distance <= 0) throw new Error('Buffer distance must be positive.');
 
+  const classifyEdge = buildEdgeClassifier(
+    contextFeatures.length > 0 ? contextFeatures : features,
+    distance
+  );
+
   const interiorPoints: any[] = [];
   const edgePoints: any[] = [];
   const boundaryFeatures: any[] = [];
   const perPolygon: ZoneExtraction['perPolygon'] = [];
+  const edgeCounts = { other: 0, same: 0, isolated: 0 };
   const dates = new Set<string>();
 
   for (let i = 0; i < features.length; i++) {
@@ -89,8 +165,17 @@ export async function extractZones(
       edge.push(...(outer.excludedPixelPoints?.features || []).filter(notBoundary));
     }
 
+    const pid = feature.properties?.__pid;
+    const ownSpecies = speciesOf(feature);
     for (const p of interior) p.properties.zone = 'interior';
-    for (const p of edge) p.properties.zone = 'edge';
+    for (const p of edge) {
+      const [lng, lat] = p.geometry.coordinates;
+      const cls = classifyEdge(lng, lat, pid, ownSpecies);
+      p.properties.zone = cls;
+      if (cls === 'edge_other_species') edgeCounts.other++;
+      else if (cls === 'edge_same_species') edgeCounts.same++;
+      else edgeCounts.isolated++;
+    }
 
     interiorPoints.push(...interior);
     edgePoints.push(...edge);
@@ -115,6 +200,7 @@ export async function extractZones(
     edge: { type: 'FeatureCollection', features: edgePoints },
     boundaries: { type: 'FeatureCollection', features: boundaryFeatures },
     perPolygon,
+    edgeCounts,
     metric,
     distance,
     includeOutside,

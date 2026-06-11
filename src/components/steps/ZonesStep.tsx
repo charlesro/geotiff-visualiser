@@ -107,7 +107,9 @@ export default function ZonesStep(props: ZonesStepProps) {
         <div className="space-y-2">
           <div className="grid grid-cols-3 gap-2">
             <Stat label="Interior px" value={props.zones.interior.features.length} accent="#34d399" />
-            <Stat label="Edge px" value={props.zones.edge.features.length} accent="#fbbf24" />
+            <Stat label="Edge · other sp." value={props.zones.edgeCounts.other} accent="#f87171" />
+            <Stat label="Edge · same sp." value={props.zones.edgeCounts.same} accent="#fbbf24" />
+            <Stat label="Edge · isolated" value={props.zones.edgeCounts.isolated} accent="#94a3b8" />
             <Stat label="Dates" value={props.zones.dates.length} />
           </div>
           <div className="max-h-36 overflow-y-auto rounded-md border border-white/10">
