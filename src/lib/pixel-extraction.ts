@@ -233,7 +233,7 @@ export async function extractPixelTimeseriesOptions(
         if (lng < minLng - tol || lng > maxLng + tol || lat < minLat - tol || lat > maxLat + tol) continue;
 
         let isInside = false;
-        
+
         // Handle Point features differently than Polygon/MultiPolygon for search boundary
         if (targetFeature.geometry?.type === 'Point' || targetFeature.type === 'Point') {
           const coords = targetFeature.geometry?.coordinates || targetFeature.coordinates;
@@ -242,19 +242,10 @@ export async function extractPixelTimeseriesOptions(
             if (dist < 0.0001) isInside = true;
           }
         } else {
-          const offsets = [
-            [0, 0],
-            [-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5],
-            [0, -0.5], [0, 0.5], [-0.5, 0], [0.5, 0]
-          ];
-          
-          for (const off of offsets) {
-            const [plng, plat] = unproject(crsX + off[0]*resX, crsY + off[1]*resY);
-            if (booleanPointInPolygon([plng, plat], targetFeature)) {
-              isInside = true;
-              break;
-            }
-          }
+          // Classify by the pixel centre only. Corner sampling (any of the
+          // 9 sub-points inside) let pixels up to half a pixel outside the
+          // polygon slip in, which scatters dots beyond the boundary.
+          isInside = booleanPointInPolygon([lng, lat], targetFeature);
         }
 
         if (isInside) {
@@ -276,18 +267,7 @@ export async function extractPixelTimeseriesOptions(
               if (dist < 0.0001) isInsideCore = true;
             }
           } else {
-            const offsets = [
-              [0, 0],
-              [-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5],
-              [0, -0.5], [0, 0.5], [-0.5, 0], [0.5, 0]
-            ];
-            for (const off of offsets) {
-              const [plng, plat] = unproject(crsX + off[0]*resX, crsY + off[1]*resY);
-              if (booleanPointInPolygon([plng, plat], coreFeature)) {
-                isInsideCore = true;
-                break;
-              }
-            }
+            isInsideCore = booleanPointInPolygon([lng, lat], coreFeature);
           }
 
           if (isInsideCore) {

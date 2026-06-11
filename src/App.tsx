@@ -225,6 +225,12 @@ export default function App() {
     [clearFromZones]
   );
 
+  /** Ground pixel size of the fetched series (m). 10 m natively; coarser when the selection is large. */
+  const pixelSize = useMemo(() => {
+    const res = scenes[0]?.data?.metadata?.resolution?.[0];
+    return typeof res === 'number' ? res : null;
+  }, [scenes]);
+
   const preview = useMemo<ScenePreview | null>(() => {
     if (!previewSceneId) return null;
     const scene = scenes.find(s => s.id === previewSceneId);
@@ -374,6 +380,7 @@ export default function App() {
           error={zonesError}
           sceneCount={scenes.length}
           selectedCount={selectedIds.size}
+          pixelSize={pixelSize}
           onRun={runZones}
           onCancel={cancelOp}
         />

@@ -22,6 +22,8 @@ interface ZonesStepProps {
   error: string | null;
   sceneCount: number;
   selectedCount: number;
+  /** Ground pixel size of the fetched scenes in metres (null before fetch). */
+  pixelSize: number | null;
   onRun: (distance: number, metric: string, includeOutside: boolean) => void;
   onCancel: () => void;
 }
@@ -38,6 +40,11 @@ export default function ZonesStep(props: ZonesStepProps) {
       ) : props.sceneCount === 0 ? (
         <PrereqNote message="Fetch a Sentinel-2 time series in step 2 first — the zones are extracted from those scenes." />
       ) : null}
+      {props.pixelSize !== null && props.pixelSize > distance && (
+        <PrereqNote
+          message={`The fetched scenes have ${props.pixelSize} m pixels — coarser than the ${distance} m buffer, so the interior/edge split will be meaningless. Large selections are downsampled to fit in memory: select a smaller area (≲ 20 km across keeps the native 10 m) and re-fetch the series.`}
+        />
+      )}
       <div className="grid grid-cols-2 gap-2">
         <Field label="Buffer distance (m)">
           <input

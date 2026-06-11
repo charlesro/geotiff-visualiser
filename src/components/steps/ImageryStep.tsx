@@ -129,7 +129,18 @@ export default function ImageryStep(props: ImageryStepProps) {
 
       {props.scenes.length > 0 && (
         <div className="space-y-2">
-          <div className="text-xs text-slate-400">{props.scenes.length} scenes in the series — click to preview</div>
+          <div className="text-xs text-slate-400">
+            {props.scenes.length} scenes in the series — click to preview
+            {(() => {
+              const res = props.scenes[0]?.data?.metadata?.resolution?.[0];
+              if (typeof res !== 'number') return null;
+              return res > 10 ? (
+                <span className="text-amber-400/90"> · {res} m/px (downsampled — selection too large for 10 m)</span>
+              ) : (
+                <span className="text-slate-500"> · {res} m/px</span>
+              );
+            })()}
+          </div>
           {props.partialDates > 0 && (
             <p className="text-[11px] leading-relaxed text-slate-600">
               {props.partialDates} date(s) were skipped because their satellite swath only covers part of the
