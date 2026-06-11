@@ -63,6 +63,9 @@ export async function extractZones(
     const feature = features[i];
     const label = polygonLabel(feature);
     onProgress({ done: i, total: features.length, label });
+    // Per-polygon extraction is mostly synchronous now; yield regularly so
+    // the progress bar repaints.
+    if (i % 10 === 0) await new Promise(r => setTimeout(r, 0));
 
     // Negative buffer: pixels inside the shrunk core vs the inner edge band.
     const inner = await extractPixelTimeseriesOptions(feature, layers, -distance, metric);

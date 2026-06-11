@@ -2,7 +2,7 @@ import { RasterLayer } from '../types';
 import buffer from '@turf/buffer';
 import booleanPointInPolygon from '@turf/boolean-point-in-polygon';
 import bbox from '@turf/bbox';
-import { unprojectToWgs84 } from './geo';
+import { projectToCrs, unprojectToWgs84 } from './geo';
 import { computeIndexValue } from './spectral';
 import { extractSpecies } from './species';
 
@@ -188,14 +188,37 @@ export async function extractPixelTimeseriesOptions(
     const computedPixels: {x: number, y: number, id: string, lng: number, lat: number}[] = [];
     const computedExcludedPixels: {x: number, y: number, id: string, lng: number, lat: number}[] = [];
 
-    for (let ny = 0; ny < nativeHeight; ny++) {
+    // Restrict the scan to the pixels under the feature's bbox — scanning the
+    // whole raster grid for every polygon makes extraction unusably slow on
+    // large mosaics. Project the (padded) feature bbox into the raster CRS
+    // and clamp the pixel loops to that window.
+    const gridCrs = crs || 'EPSG:4326';
+    const PAD = 0.0002;
+    const corners = [
+      projectToCrs(gridCrs, minLng - PAD, minLat - PAD),
+      projectToCrs(gridCrs, minLng - PAD, maxLat + PAD),
+      projectToCrs(gridCrs, maxLng + PAD, minLat - PAD),
+      projectToCrs(gridCrs, maxLng + PAD, maxLat + PAD),
+    ];
+    const fMinX = Math.min(...corners.map(c => c[0]));
+    const fMaxX = Math.max(...corners.map(c => c[0]));
+    const fMinY = Math.min(...corners.map(c => c[1]));
+    const fMaxY = Math.max(...corners.map(c => c[1]));
+    const offX = windowOffsetX || 0;
+    const offY = windowOffsetY || 0;
+    const nyStart = Math.max(0, Math.floor((originalBbox[3] - fMaxY) / resY - 0.5) - offY - 1);
+    const nyEnd = Math.min(nativeHeight, Math.ceil((originalBbox[3] - fMinY) / resY + 0.5) - offY + 1);
+    const nxStart = Math.max(0, Math.floor((fMinX - originalBbox[0]) / resX - 0.5) - offX - 1);
+    const nxEnd = Math.min(nativeWidth, Math.ceil((fMaxX - originalBbox[0]) / resX + 0.5) - offX + 1);
+
+    for (let ny = nyStart; ny < nyEnd; ny++) {
       const absY = (windowOffsetY || 0) + ny;
       const nativeY = absY + 0.5;
       const crsY = originalBbox[3] - nativeY * resY;
     
-      for (let nx = 0; nx < nativeWidth; nx++) {
+      for (let nx = nxStart; nx < nxEnd; nx++) {
         rowCounter++;
-        if (rowCounter % 500 === 0) {
+        if (rowCounter % 5000 === 0) {
           await new Promise(r => setTimeout(r, 0));
         }
 
