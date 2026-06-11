@@ -1,0 +1,5 @@
+{
+  "name": "Remix: Remix: Remix: GeoTIFF Visualizer",
+  "description": "A professional tool to visualize and analyze GeoTIFF files with Leaflet, featuring contrast stretching and coordinate reprojection.",
+  "requestFramePermissions": []
+}

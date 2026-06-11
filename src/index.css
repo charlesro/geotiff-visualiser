@@ -1,0 +1,77 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background-color: #050505;
+}
+
+.leaflet-container {
+  background: #0a0a0a !important;
+}
+
+.leaflet-bar {
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5) !important;
+}
+
+.leaflet-bar a {
+  background-color: rgba(20, 20, 20, 0.8) !important;
+  color: #fff !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
+  backdrop-filter: blur(8px);
+}
+
+.leaflet-bar a:hover {
+  background-color: rgba(40, 40, 40, 0.9) !important;
+}
+
+.leaflet-container img,
+.leaflet-image-layer,
+.pixelated-overlay,
+.pixelated-overlay img,
+.pixel-perfect {
+  image-rendering: -moz-crisp-edges !important;
+  image-rendering: -o-crisp-edges !important;
+  image-rendering: -webkit-optimize-contrast !important;
+  image-rendering: -webkit-crisp-edges !important;
+  image-rendering: crisp-edges !important;
+  image-rendering: pixelated !important;
+  -ms-interpolation-mode: nearest-neighbor !important;
+  backface-visibility: hidden !important;
+  transform-style: preserve-3d;
+}
+
+/* Prevent Leaflet from blurring images during zoom transitions */
+.leaflet-zoom-animated {
+  transition: none !important;
+}
+
+.leaflet-image-layer {
+  transition: none !important;
+}
+
+.selected-layer-raster {
+  outline: 2px dashed #3b82f6;
+  outline-offset: -2px;
+}
+
+.selected-vector-layer path {
+  /* removed animation */
+}
+
+@keyframes pulse-stroke {
+  0%, 100% {
+    stroke-opacity: 1;
+  }
+  50% {
+    stroke-opacity: .4;
+  }
+}
