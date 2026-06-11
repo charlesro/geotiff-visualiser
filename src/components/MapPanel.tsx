@@ -78,6 +78,24 @@ const ZONE_COLORS: Record<string, string> = {
   edge: '#fbbf24',
 };
 
+// Deterministic color cycle for crop species (crp_lbl).
+const SPECIES_COLORS = [
+  '#ef4444', '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899',
+  '#06b6d4', '#f97316', '#14b8a6', '#d946ef', '#6366f1', '#84cc16',
+  '#fb923c', '#22d3ee', '#f87171', '#60a5fa', '#34d399', '#fbbf24',
+];
+
+const speciesColor = (crpLbl: string | undefined): string => {
+  if (!crpLbl) return '#e2e8f0';
+  // Hash the species name to a consistent index.
+  let hash = 0;
+  for (let i = 0; i < crpLbl.length; i++) {
+    hash = ((hash << 5) - hash) + crpLbl.charCodeAt(i);
+    hash = hash & hash; // Convert to 32bit integer
+  }
+  return SPECIES_COLORS[Math.abs(hash) % SPECIES_COLORS.length];
+};
+
 export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones, preview, fitRequest }: MapPanelProps) {
   const [basemap, setBasemap] = useState<BasemapKey>('satellite');
 
@@ -89,12 +107,13 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
 
   const polygonStyle = (feature: any) => {
     const selected = selectedIds.has(feature?.properties?.__pid);
+    const baseColor = speciesColor(feature?.properties?.crp_lbl);
     return {
-      color: selected ? '#38bdf8' : '#e2e8f0',
+      color: selected ? '#38bdf8' : baseColor,
       weight: selected ? 2.5 : 1.2,
       opacity: selected ? 1 : 0.7,
-      fillColor: selected ? '#38bdf8' : '#e2e8f0',
-      fillOpacity: selected ? 0.18 : 0.05,
+      fillColor: selected ? '#38bdf8' : baseColor,
+      fillOpacity: selected ? 0.18 : 0.12,
     };
   };
 
