@@ -136,6 +136,33 @@ export async function fetchSceneMosaic(
   };
 }
 
+/**
+ * Render an analysis grid (fetched with skipCanvas) to a data URL for the
+ * map. Supersampled with nearest-neighbour so the 10 m pixels stay sharp.
+ * Each window is stretched on its own histogram, which is fine for
+ * inspecting fields; nodata (0) renders transparent.
+ */
+export function renderAnalysisGridPreview(grid: GeoTIFFData, options: RenderingOptions): string {
+  const { width, height } = grid.metadata;
+  const bands = grid.bandData || {};
+  const canvas = renderRasterToCanvas(
+    (bandNum: number) => bands[getAssetKey(bandNum)] || new Float32Array(width * height),
+    options,
+    width,
+    height
+  );
+  const TARGET = 256;
+  if (width >= TARGET && height >= TARGET) return canvas.toDataURL();
+  const scale = Math.ceil(Math.max(TARGET / width, TARGET / height));
+  const big = document.createElement('canvas');
+  big.width = width * scale;
+  big.height = height * scale;
+  const ctx = big.getContext('2d')!;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(canvas, 0, 0, big.width, big.height);
+  return big.toDataURL();
+}
+
 /** Read the part of one tile band that overlaps the grid and paste it in. */
 async function pasteTileBand(
   target: Float32Array,

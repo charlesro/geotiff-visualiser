@@ -9,6 +9,8 @@ import {
 } from './lib/polygon-source';
 import { fetchSentinelSeries, SeriesFetchParams, SeriesProgress } from './lib/fetch-series';
 import { clusterFeatureBboxes } from './lib/cluster';
+import { renderAnalysisGridPreview } from './lib/mosaic';
+import { DEFAULT_OPTIONS } from './lib/layer-factory';
 import { extractZones, ZoneExtraction, ZoneProgress } from './lib/zones';
 import { runPixelPca, pcaScoresToCsv, PcaRunResult } from './lib/pca';
 import { isCancelledError } from './lib/cancel';
@@ -48,6 +50,8 @@ export default function App() {
   const [seriesProgress, setSeriesProgress] = useState<SeriesProgress | null>(null);
   const [seriesError, setSeriesError] = useState<string | null>(null);
   const [previewSceneId, setPreviewSceneId] = useState<string | null>(null);
+  /** Rendered 10 m overlays of the analysis windows, cached per scene id. */
+  const clusterPreviewCache = useRef(new Map<string, ScenePreview[]>());
 
   // Step 3 — buffer zones
   const [zones, setZones] = useState<ZoneExtraction | null>(null);
@@ -111,6 +115,7 @@ export default function App() {
     setPartialDates(0);
     setSeriesError(null);
     setPreviewSceneId(null);
+    clusterPreviewCache.current.clear();
     clearFromZones();
   }, [clearFromZones]);
 
@@ -223,6 +228,7 @@ export default function App() {
     (id: string) => {
       setScenes(prev => prev.filter(s => s.id !== id));
       setPreviewSceneId(prev => (prev === id ? null : prev));
+      clusterPreviewCache.current.delete(id);
       // Zones and PCA were computed from the full series — invalidate them.
       clearFromZones();
     },
@@ -241,6 +247,24 @@ export default function App() {
     const scene = scenes.find(s => s.id === previewSceneId);
     if (!scene?.dataUrl) return null;
     return { url: scene.dataUrl, bounds: scene.data.bounds, opacity: 0.85 };
+  }, [previewSceneId, scenes]);
+
+  // 10 m overlays for the previewed scene: the analysis windows already hold
+  // the native-resolution pixels, so they are rendered lazily (cached per
+  // scene) and drawn on top of the coarse preview mosaic.
+  const clusterPreviews = useMemo<ScenePreview[]>(() => {
+    if (!previewSceneId) return [];
+    const scene = scenes.find(s => s.id === previewSceneId);
+    if (!scene?.analysisGrids?.length) return [];
+    const cached = clusterPreviewCache.current.get(scene.id);
+    if (cached) return cached;
+    const rendered = scene.analysisGrids.map(grid => ({
+      url: renderAnalysisGridPreview(grid, DEFAULT_OPTIONS),
+      bounds: grid.bounds,
+      opacity: 0.95,
+    }));
+    clusterPreviewCache.current.set(scene.id, rendered);
+    return rendered;
   }, [previewSceneId, scenes]);
 
   // ----- Step 3 handlers -----------------------------------------------------
@@ -438,6 +462,7 @@ export default function App() {
             onTogglePolygon={togglePolygon}
             zones={zones}
             preview={preview}
+            clusterPreviews={clusterPreviews}
             scenes={scenes}
             previewSceneId={previewSceneId}
             onPreviewScene={setPreviewSceneId}

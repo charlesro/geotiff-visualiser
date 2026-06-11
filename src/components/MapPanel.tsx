@@ -27,6 +27,8 @@ interface MapPanelProps {
   onTogglePolygon: (pid: number) => void;
   zones: ZoneExtraction | null;
   preview: ScenePreview | null;
+  /** Native-10 m windows of the previewed scene, drawn over the coarse mosaic. */
+  clusterPreviews: ScenePreview[];
   scenes: RasterLayer[];
   previewSceneId: string | null;
   onPreviewScene: (id: string | null) => void;
@@ -187,7 +189,7 @@ const speciesColor = (crpLbl: string | undefined): string => {
   return SPECIES_COLORS[Math.abs(hash) % SPECIES_COLORS.length];
 };
 
-export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones, preview, scenes, previewSceneId, onPreviewScene, onDeleteScene, fitRequest }: MapPanelProps) {
+export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones, preview, clusterPreviews, scenes, previewSceneId, onPreviewScene, onDeleteScene, fitRequest }: MapPanelProps) {
   const [basemap, setBasemap] = useState<BasemapKey>('dark');
 
   // GeoJSON layers only restyle when remounted, so key them on their inputs.
@@ -252,6 +254,9 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
         {preview && (
           <ImageOverlay url={preview.url} bounds={preview.bounds} opacity={preview.opacity} className="pixel-perfect" />
         )}
+        {clusterPreviews.map((c, i) => (
+          <ImageOverlay key={`cluster-${i}`} url={c.url} bounds={c.bounds} opacity={c.opacity} className="pixel-perfect" />
+        ))}
 
         {polygons && (
           <GeoJSON key={polygonsKey} data={polygons} style={polygonStyle} onEachFeature={onEachPolygon} />
