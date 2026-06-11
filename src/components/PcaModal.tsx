@@ -16,19 +16,10 @@ import {
 } from 'recharts';
 import { cn } from '../lib/utils';
 import { extractSpecies } from '../lib/species';
+import { isTsColumn, vectorLayerHasTimeSeries } from '../lib/timeseries';
 
-// Helper to check if a vector layer has timeseries data
-export const vectorLayerHasTimeSeries = (layer: any): boolean => {
-  if (layer.type !== 'vector' || !layer.data || !layer.data.features || layer.data.features.length === 0) return false;
-  
-  const sampleFeatures = layer.data.features;
-  const tsRegex = /_(\d{4}-\d{2}-\d{2})$/;
-  
-  return sampleFeatures.some((f: any) => {
-    if (!f.properties) return false;
-    return Object.keys(f.properties).some(key => tsRegex.test(key));
-  });
-};
+// Re-exported for backwards compatibility — the implementation lives in lib/timeseries.ts.
+export { vectorLayerHasTimeSeries } from '../lib/timeseries';
 
 interface PcaModalProps {
   isOpen: boolean;
@@ -59,8 +50,7 @@ export default function PcaModal({ isOpen, onClose, layers, setLayers }: PcaModa
     pcaResult.features.forEach(f => {
       if (f.properties) {
         Object.keys(f.properties).forEach(k => {
-          const tsRegex = /_(\d{4}-\d{2}-\d{2})$/;
-          if (!tsRegex.test(k) && k !== 'PC1' && k !== 'PC2' && k !== 'PC3' && k !== 'id' && k !== 'NewID') {
+          if (!isTsColumn(k) && k !== 'PC1' && k !== 'PC2' && k !== 'PC3' && k !== 'id' && k !== 'NewID') {
             keysSet.add(k);
           }
         });
@@ -155,13 +145,12 @@ export default function PcaModal({ isOpen, onClose, layers, setLayers }: PcaModa
           return;
         }
 
-        // 2. Identify timeseries keys from fitting features
-        const tsRegex = /_(\d{4}-\d{2}-\d{2})$/;
+        // 2. Identify timeseries keys from fitting features (shared convention)
         const allTsKeysSet = new Set<string>();
-        
+
         for (const f of allFittingFeatures) {
           for (const k of Object.keys(f.properties)) {
-            if (tsRegex.test(k)) {
+            if (isTsColumn(k)) {
               allTsKeysSet.add(k);
             }
           }

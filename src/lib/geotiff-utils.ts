@@ -1,5 +1,16 @@
 import * as fromGeoTIFF from 'geotiff';
-import proj4 from 'proj4';
+import {
+  crsFromGeoKeys,
+  projectToCrs,
+  projectBboxToCrs,
+  unprojectToWgs84,
+  unprojectBboxToWgs84,
+} from './geo';
+import { renderRasterToCanvas } from './raster-render';
+import { getAssetKey } from './sentinel';
+
+// Re-export so existing imports keep working; the definition lives in sentinel.ts.
+export { getAssetKey };
 
 const tiffCache = new Map<string, Promise<any>>();
 
@@ -95,17 +106,7 @@ export async function extractPixelValue(
     const image = await tiff.getImage();
 
     // Project WGS84 to Image CRS
-    let x_crs = lng;
-    let y_crs = lat;
-    if (crsVal !== 'EPSG:4326') {
-      let projDef = crsVal;
-      if (crsVal.startsWith('EPSG:326') || crsVal.startsWith('EPSG:327')) {
-        const zone = parseInt(crsVal.slice(8));
-        const isSouth = crsVal.startsWith('EPSG:327');
-        projDef = `+proj=utm +zone=${zone} ${isSouth ? '+south ' : ''}+datum=WGS84 +units=m +no_defs`;
-      }
-      [x_crs, y_crs] = proj4('EPSG:4326', projDef, [lng, lat]);
-    }
+    const [x_crs, y_crs] = projectToCrs(crsVal, lng, lat);
 
     const [minX, minY, maxX, maxY] = bboxVal;
 
@@ -154,19 +155,8 @@ export async function fetchRemoteBand(
   const image = await tiff.getImage();
   
   // Project WGS84 Bbox to Image CRS
-  const project = (lng: number, lat: number) => {
-    if (crsVal === 'EPSG:4326') return [lng, lat];
-    let projDef = crsVal;
-    if (crsVal.startsWith('EPSG:326') || crsVal.startsWith('EPSG:327')) {
-      const zone = parseInt(crsVal.slice(8));
-      const isSouth = crsVal.startsWith('EPSG:327');
-      projDef = `+proj=utm +zone=${zone} ${isSouth ? '+south ' : ''}+datum=WGS84 +units=m +no_defs`;
-    }
-    return proj4('EPSG:4326', projDef, [lng, lat]);
-  };
-
-  const [minX, minY] = project(wgs84Bbox[0], wgs84Bbox[1]);
-  const [maxX, maxY] = project(wgs84Bbox[2], wgs84Bbox[3]);
+  const [minX, minY] = projectToCrs(crsVal, wgs84Bbox[0], wgs84Bbox[1]);
+  const [maxX, maxY] = projectToCrs(crsVal, wgs84Bbox[2], wgs84Bbox[3]);
 
   // Use actual image dimensions for window calculation
   const imgWidth = image.getWidth();
@@ -458,45 +448,6 @@ export function rasterToPngBlob(data: Float32Array, width: number, height: numbe
   });
 }
 
-const COLORMAPS = {
-  grayscale: (v: number) => [v, v, v],
-  viridis: (v: number) => {
-    const f = v / 255;
-    return [
-      Math.round(255 * (0.267 + 0.667 * f - 0.651 * f * f + 0.166 * f * f * f)),
-      Math.round(255 * (0.004 + 0.312 * f + 0.694 * f * f - 0.426 * f * f * f)),
-      Math.round(255 * (0.329 + 0.884 * f - 0.948 * f * f + 0.396 * f * f * f))
-    ];
-  },
-  magma: (v: number) => {
-    const f = v / 255;
-    return [
-      Math.round(255 * (0.001 + 0.505 * f + 0.494 * f * f)),
-      Math.round(255 * (0.001 + 0.187 * f + 0.281 * f * f)),
-      Math.round(255 * (0.001 + 0.606 * f - 0.301 * f * f))
-    ];
-  },
-  inferno: (v: number) => {
-    const f = v / 255;
-    return [
-      Math.round(255 * (0.001 + 0.857 * f + 0.142 * f * f)),
-      Math.round(255 * (0.001 + 0.125 * f + 0.454 * f * f)),
-      Math.round(255 * (0.001 + 0.001 * f + 0.258 * f * f))
-    ];
-  },
-  rdylgn: (v: number) => {
-    // Red-Yellow-Green colormap for indices
-    const f = v / 255;
-    if (f < 0.5) {
-      const t = f * 2;
-      return [255, Math.round(255 * t), 0];
-    } else {
-      const t = (f - 0.5) * 2;
-      return [Math.round(255 * (1 - t)), 255, 0];
-    }
-  }
-};
-
 /**
  * Processes a GeoTIFF file and returns data suitable for Leaflet ImageOverlay.
  */
@@ -533,12 +484,7 @@ export async function processGeoTIFF(
   const geoKeys = image.getGeoKeys();
   
   // 1. Determine CRS
-  let crs = 'EPSG:4326';
-  if (geoKeys && geoKeys.ProjectedCSTypeGeoKey) {
-    crs = `EPSG:${geoKeys.ProjectedCSTypeGeoKey}`;
-  } else if (geoKeys && geoKeys.GeographicTypeGeoKey) {
-    crs = `EPSG:${geoKeys.GeographicTypeGeoKey}`;
-  }
+  const crs = crsFromGeoKeys(geoKeys);
 
   // 2. Calculate Pixel Window if bbox is provided
   let readOptions: any = {
@@ -546,26 +492,7 @@ export async function processGeoTIFF(
   };
 
   if (wgs84Bbox) {
-    const project = (lng: number, lat: number) => {
-      if (crs === 'EPSG:4326') return [lng, lat];
-      let projDef = crs;
-      if (crs.startsWith('EPSG:326') || crs.startsWith('EPSG:327')) {
-        const zone = parseInt(crs.slice(8));
-        const isSouth = crs.startsWith('EPSG:327');
-        projDef = `+proj=utm +zone=${zone} ${isSouth ? '+south ' : ''}+datum=WGS84 +units=m +no_defs`;
-      }
-      return proj4('EPSG:4326', projDef, [lng, lat]);
-    };
-
-    const c1 = project(wgs84Bbox[0], wgs84Bbox[1]);
-    const c2 = project(wgs84Bbox[2], wgs84Bbox[1]);
-    const c3 = project(wgs84Bbox[2], wgs84Bbox[3]);
-    const c4 = project(wgs84Bbox[0], wgs84Bbox[3]);
-
-    const minX = Math.min(c1[0], c2[0], c3[0], c4[0]);
-    const maxX = Math.max(c1[0], c2[0], c3[0], c4[0]);
-    const minY = Math.min(c1[1], c2[1], c3[1], c4[1]);
-    const maxY = Math.max(c1[1], c2[1], c3[1], c4[1]);
+    const [minX, minY, maxX, maxY] = projectBboxToCrs(wgs84Bbox, crs);
 
     const resX = (bbox[2] - bbox[0]) / width;
     const resY = (bbox[3] - bbox[1]) / height;
@@ -687,192 +614,8 @@ export async function processGeoTIFF(
     bands[`Band ${i + 1}`] = getBand(i + 1);
   }
 
-  // 2. Apply Contrast Stretch
-  const stretch = (data: any, isIndex = false) => {
-    const sampleSize = Math.min(data.length, 100000);
-    if (sampleSize === 0) return new Uint8Array(data.length);
-
-    let min = isIndex ? -1 : 0;
-    let max = isIndex ? 1 : 255;
-
-    if (options.stretch === 'percentile') {
-      const sample = new Float32Array(sampleSize);
-      let validCount = 0;
-      for (let i = 0; i < data.length; i++) {
-        const val = data[i];
-        if (!isNaN(val) && val !== 0 && Math.random() < (sampleSize / data.length) && validCount < sampleSize) {
-          sample[validCount++] = val;
-        }
-      }
-      if (validCount > 0) {
-        const sorted = sample.subarray(0, validCount).sort();
-        min = sorted[Math.floor(sorted.length * (options.percentiles[0] / 100))];
-        max = sorted[Math.floor(sorted.length * (options.percentiles[1] / 100))];
-      }
-    } else if (options.stretch === 'minmax') {
-      min = Infinity;
-      max = -Infinity;
-      let hasValid = false;
-      for (let i = 0; i < data.length; i++) {
-        if (!isNaN(data[i])) {
-          if (data[i] < min) min = data[i];
-          if (data[i] > max) max = data[i];
-          hasValid = true;
-        }
-      }
-      if (!hasValid) {
-        min = 0;
-        max = 255;
-      }
-    }
-    
-    const stretched = new Uint8Array(data.length);
-    const range = max - min || 1;
-    for (let i = 0; i < data.length; i++) {
-      if (isNaN(data[i])) {
-        stretched[i] = 0;
-        continue;
-      }
-      const val = ((data[i] - min) / range) * 255;
-      stretched[i] = Math.max(0, Math.min(255, val));
-    }
-    return stretched;
-  };
-
-  // 3. Build RGB Array & Export to Canvas
-  const canvas = document.createElement('canvas');
-  canvas.width = finalWidth;
-  canvas.height = finalHeight;
-  const ctx = canvas.getContext('2d')!;
-  ctx.imageSmoothingEnabled = false;
-  const imageData = ctx.createImageData(finalWidth, finalHeight);
-
-  if (options.mode === 'rgb') {
-    const rawR = getBand(options.bands[0]);
-    const rawG = getBand(options.bands[1]);
-    const rawB = getBand(options.bands[2]);
-    
-    let rawRMin = Infinity, rawRMax = -Infinity;
-    if (rawR) {
-      for (let i = 0; i < rawR.length; i++) {
-        if (!isNaN(rawR[i])) {
-          if (rawR[i] < rawRMin) rawRMin = rawR[i];
-          if (rawR[i] > rawRMax) rawRMax = rawR[i];
-        }
-      }
-    }
-    
-    console.log('[DEBUG] processGeoTIFF RGB mode', {
-      band0_req: options.bands[0],
-      band1_req: options.bands[1],
-      band2_req: options.bands[2],
-      totalBands,
-      hasR: !!rawR,
-      R_len: rawR ? rawR.length : 0,
-      R_sample: rawR ? Array.from(rawR.slice(0,10)) : [],
-      R_min: rawRMin,
-      R_max: rawRMax,
-    });
-    
-    const r = stretch(rawR);
-    const g = stretch(rawG);
-    const b = stretch(rawB);
-
-    
-    for (let i = 0; i < r.length; i++) {
-      if (rawR[i] === 0 && rawG[i] === 0 && rawB[i] === 0) {
-        imageData.data[i * 4] = 0;
-        imageData.data[i * 4 + 1] = 0;
-        imageData.data[i * 4 + 2] = 0;
-        imageData.data[i * 4 + 3] = 0;
-      } else {
-        imageData.data[i * 4] = r[i];
-        imageData.data[i * 4 + 1] = g[i];
-        imageData.data[i * 4 + 2] = b[i];
-        imageData.data[i * 4 + 3] = 255;
-      }
-    }
-  } else if (options.mode === 'single') {
-    const rawBand = getBand(options.singleBand);
-    console.log('[DEBUG] processGeoTIFF SINGLE mode', {
-      band_req: options.singleBand,
-      totalBands,
-      R_len: rawBand ? rawBand.length : 0,
-      R_sample: rawBand ? Array.from(rawBand.slice(0,10)) : []
-    });
-    const bandData = stretch(rawBand);
-    const colormapFn = COLORMAPS[options.colormap] || COLORMAPS.grayscale;
-    
-    for (let i = 0; i < bandData.length; i++) {
-      if (rawBand[i] === 0) {
-        imageData.data[i * 4] = 0;
-        imageData.data[i * 4 + 1] = 0;
-        imageData.data[i * 4 + 2] = 0;
-        imageData.data[i * 4 + 3] = 0;
-      } else {
-        const [r, g, b] = colormapFn(bandData[i]);
-        imageData.data[i * 4] = r;
-        imageData.data[i * 4 + 1] = g;
-        imageData.data[i * 4 + 2] = b;
-        imageData.data[i * 4 + 3] = 255;
-      }
-    }
-  } else if (options.mode === 'index') {
-    const r = getBand(options.indexBands.red);
-    const g = getBand(options.indexBands.green);
-    const b = getBand(options.indexBands.blue);
-    const nir = getBand(options.indexBands.nir);
-    
-    const indexData = new Float32Array(r.length);
-    let minIdx = Infinity;
-    let maxIdx = -Infinity;
-
-    for (let i = 0; i < r.length; i++) {
-      let val = 0;
-      const rv = r[i];
-      const gv = g[i];
-      const bv = b[i];
-      const nv = nir[i];
-      
-      if (isNaN(rv) || isNaN(nv)) {
-        val = 0;
-      } else if (options.indexType === 'ndvi') {
-        val = (nv - rv) / (nv + rv || 1);
-      } else if (options.indexType === 'evi') {
-        if (isNaN(bv)) {
-          val = (nv - rv) / (nv + rv || 1);
-        } else {
-          val = 2.5 * ((nv - rv) / (nv + 6 * rv - 7.5 * bv + 1 || 1));
-        }
-      } else if (options.indexType === 'gndvi') {
-        if (isNaN(gv)) {
-          val = (nv - rv) / (nv + rv || 1);
-        } else {
-          val = (nv - gv) / (nv + gv || 1);
-        }
-      } else if (options.indexType === 'savi') {
-        const L = 0.5;
-        val = ((nv - rv) / (nv + rv + L || 1)) * (1 + L);
-      }
-      indexData[i] = val;
-    }
-
-    // Indices usually range from -1 to 1, but we'll allow custom stretching
-    const bandData = stretch(indexData, true);
-    const colormapFn = COLORMAPS[options.colormap] || COLORMAPS.rdylgn;
-    
-    for (let i = 0; i < bandData.length; i++) {
-      const [r, g, b] = colormapFn(bandData[i]);
-      imageData.data[i * 4] = r;
-      imageData.data[i * 4 + 1] = g;
-      imageData.data[i * 4 + 2] = b;
-      imageData.data[i * 4 + 3] = 255;
-    }
-  }
-  
-  ctx.putImageData(imageData, 0, 0);
-  
-  const finalCanvas = canvas;
+  // 2-3. Stretch + render through the shared pipeline (see raster-render.ts)
+  const finalCanvas = renderRasterToCanvas(getBand, options, finalWidth, finalHeight);
 
   // 4. Get CRS + Bounds & Reproject to WGS84
   const fileDirectory = image.getFileDirectory();
@@ -890,31 +633,10 @@ export async function processGeoTIFF(
   }
 
   // Use effectiveBbox for bounds calculation (handles crop)
-  const unproject = (x: number, y: number): [number, number] => {
-    if (crs === 'EPSG:4326') return [x, y];
-    try {
-      let projDef = crs;
-      if (crs.startsWith('EPSG:326') || crs.startsWith('EPSG:327')) {
-        const zone = parseInt(crs.slice(8));
-        const isSouth = crs.startsWith('EPSG:327');
-        projDef = `+proj=utm +zone=${zone} ${isSouth ? '+south ' : ''}+datum=WGS84 +units=m +no_defs`;
-      }
-      const [lng, lat] = proj4(projDef, 'EPSG:4326', [x, y]);
-      return [lng, lat];
-    } catch (e) {
-      return [x, y];
-    }
-  };
-
-  const p1 = unproject(effectiveBbox[0], effectiveBbox[1]); // SW
-  const p2 = unproject(effectiveBbox[2], effectiveBbox[1]); // SE
-  const p3 = unproject(effectiveBbox[2], effectiveBbox[3]); // NE
-  const p4 = unproject(effectiveBbox[0], effectiveBbox[3]); // NW
-  
-  const actMinLon = Math.min(p1[0], p2[0], p3[0], p4[0]);
-  const actMaxLon = Math.max(p1[0], p2[0], p3[0], p4[0]);
-  const actMinLat = Math.min(p1[1], p2[1], p3[1], p4[1]);
-  const actMaxLat = Math.max(p1[1], p2[1], p3[1], p4[1]);
+  const [actMinLon, actMinLat, actMaxLon, actMaxLat] = unprojectBboxToWgs84(
+    effectiveBbox as [number, number, number, number],
+    crs
+  );
 
   // Try to get band descriptions from GDAL metadata
   const descriptions: string[] = [];
@@ -959,14 +681,6 @@ export async function processGeoTIFF(
  * Processes remote Cloud Optimized GeoTIFFs (COGs) from URLs.
  * This is optimized for fetching only the required pixels within a bounding box.
  */
-export const getAssetKey = (bandNum: number) => {
-  const map: Record<number, string> = {
-    1: 'B01', 2: 'B02', 3: 'B03', 4: 'B04', 5: 'B05', 6: 'B06', 
-    7: 'B07', 8: 'B08', 9: 'B8A', 10: 'B09', 11: 'B11', 12: 'B12'
-  };
-  return map[bandNum] || 'B04';
-};
-
 export async function processRemoteGeoTIFF(
   bandUrls: Record<string, string>,
   wgs84Bbox: [number, number, number, number], // [minLng, minLat, maxLng, maxLat]
@@ -1009,39 +723,11 @@ export async function processRemoteGeoTIFF(
     heightVal = refImage.getHeight();
     bboxVal = refImage.getBoundingBox();
     
-    const geoKeys = refImage.getGeoKeys();
-    crsVal = 'EPSG:4326';
-    if (geoKeys && geoKeys.ProjectedCSTypeGeoKey) {
-      crsVal = `EPSG:${geoKeys.ProjectedCSTypeGeoKey}`;
-    } else if (geoKeys && geoKeys.GeographicTypeGeoKey) {
-      crsVal = `EPSG:${geoKeys.GeographicTypeGeoKey}`;
-    }
+    crsVal = crsFromGeoKeys(refImage.getGeoKeys());
   }
 
-  // 2. Project WGS84 Bbox to Image CRS
-  const project = (lng: number, lat: number) => {
-    if (crsVal === 'EPSG:4326') return [lng, lat];
-    
-    // Handle UTM projections (common for Sentinel-2)
-    let projDef = crsVal;
-    if (crsVal.startsWith('EPSG:326') || crsVal.startsWith('EPSG:327')) {
-      const zone = parseInt(crsVal.slice(8));
-      const isSouth = crsVal.startsWith('EPSG:327');
-      projDef = `+proj=utm +zone=${zone} ${isSouth ? '+south ' : ''}+datum=WGS84 +units=m +no_defs`;
-    }
-    
-    return proj4('EPSG:4326', projDef, [lng, lat]);
-  };
-
-  const c1 = project(wgs84Bbox[0], wgs84Bbox[1]); // SW
-  const c2 = project(wgs84Bbox[2], wgs84Bbox[1]); // SE
-  const c3 = project(wgs84Bbox[2], wgs84Bbox[3]); // NE
-  const c4 = project(wgs84Bbox[0], wgs84Bbox[3]); // NW
-
-  const minX = Math.min(c1[0], c2[0], c3[0], c4[0]);
-  const maxX = Math.max(c1[0], c2[0], c3[0], c4[0]);
-  const minY = Math.min(c1[1], c2[1], c3[1], c4[1]);
-  const maxY = Math.max(c1[1], c2[1], c3[1], c4[1]);
+  // 2. Project WGS84 Bbox to Image CRS (UTM is common for Sentinel-2)
+  const [minX, minY, maxX, maxY] = projectBboxToCrs(wgs84Bbox, crsVal);
 
   // 3. Calculate Pixel Window
   // Note: GeoTIFF origin is top-left
@@ -1135,29 +821,11 @@ export async function processRemoteGeoTIFF(
   const actualMaxY = bboxVal[3] - top * resY;
   const actualMinY = bboxVal[3] - bottom * resY;
   
-  const unproject = (x: number, y: number) => {
-    if (crsVal === 'EPSG:4326') return [x, y];
-    let projDef = crsVal;
-    if (crsVal.startsWith('EPSG:326') || crsVal.startsWith('EPSG:327')) {
-      const zone = parseInt(crsVal.slice(8));
-      const isSouth = crsVal.startsWith('EPSG:327');
-      projDef = `+proj=utm +zone=${zone} ${isSouth ? '+south ' : ''}+datum=WGS84 +units=m +no_defs`;
-    }
-    return proj4(projDef, 'EPSG:4326', [x, y]);
-  };
-  
   // Unproject all 4 corners of the UTM pixel window to find the WGS84 bounding box
-  const p1 = unproject(actualMinX, actualMinY);
-  const p2 = unproject(actualMaxX, actualMinY);
-  const p3 = unproject(actualMaxX, actualMaxY);
-  const p4 = unproject(actualMinX, actualMaxY);
-
-  const actMinLon = Math.min(p1[0], p2[0], p3[0], p4[0]);
-  const actMaxLon = Math.max(p1[0], p2[0], p3[0], p4[0]);
-  const actMinLat = Math.min(p1[1], p2[1], p3[1], p4[1]);
-  const actMaxLat = Math.max(p1[1], p2[1], p3[1], p4[1]);
-
-  const actualWgs84Bbox = [actMinLon, actMinLat, actMaxLon, actMaxLat] as [number, number, number, number];
+  const actualWgs84Bbox = unprojectBboxToWgs84(
+    [actualMinX, actualMinY, actualMaxX, actualMaxY],
+    crsVal
+  );
 
   // Limit absolute maximum fetch size to 16k, but for visual clarity, we might upscale small crops.
   const nativeWidth = windowWidth;
@@ -1290,165 +958,14 @@ export async function processRemoteGeoTIFF(
     return new Float32Array(finalWidth * finalHeight);
   };
 
-  // Contrast Stretch (re-using logic)
-  const stretch = (data: any, isIndex = false) => {
-    const sampleSize = Math.min(data.length, 100000);
-    if (sampleSize === 0) return new Uint8Array(data.length);
-
-    let min = isIndex ? -1 : 0;
-    let max = isIndex ? 1 : 255;
-
-    if (options.stretch === 'percentile') {
-      const sample = new Float32Array(sampleSize);
-      let validCount = 0;
-      for (let i = 0; i < data.length; i++) {
-        const val = data[i];
-        if (!isNaN(val) && val !== 0 && Math.random() < (sampleSize / data.length) && validCount < sampleSize) {
-          sample[validCount++] = val;
-        }
-      }
-      if (validCount > 0) {
-        const sorted = sample.subarray(0, validCount).sort();
-        min = sorted[Math.floor(sorted.length * (options.percentiles[0] / 100))];
-        max = sorted[Math.floor(sorted.length * (options.percentiles[1] / 100))];
-      }
-    } else if (options.stretch === 'minmax') {
-      min = Infinity;
-      max = -Infinity;
-      let hasValid = false;
-      for (let i = 0; i < data.length; i++) {
-        if (!isNaN(data[i])) {
-          if (data[i] < min) min = data[i];
-          if (data[i] > max) max = data[i];
-          hasValid = true;
-        }
-      }
-      if (!hasValid) {
-        min = 0;
-        max = 255;
-      }
-    }
-    
-    const stretched = new Uint8Array(data.length);
-    const range = max - min || 1;
-    for (let i = 0; i < data.length; i++) {
-      if (isNaN(data[i])) {
-        stretched[i] = 0;
-        continue;
-      }
-      const val = ((data[i] - min) / range) * 255;
-      stretched[i] = Math.max(0, Math.min(255, val));
-    }
-    return stretched;
-  };
-
-  const canvas = document.createElement('canvas');
-  canvas.width = finalWidth;
-  canvas.height = finalHeight;
-  const ctx = canvas.getContext('2d')!;
-  ctx.imageSmoothingEnabled = false;
-  const imageData = ctx.createImageData(finalWidth, finalHeight);
-
-  // Helper to get band number to asset key
-  const getAssetKey = (bandNum: number) => {
-    const map: Record<number, string> = {
-      1: 'B01', 2: 'B02', 3: 'B03', 4: 'B04', 5: 'B05', 6: 'B06', 
-      7: 'B07', 8: 'B08', 9: 'B8A', 10: 'B09', 11: 'B11', 12: 'B12'
-    };
-    return map[bandNum] || 'B04';
-  };
-
-  if (options.mode === 'rgb') {
-    const rawR = getBand(getAssetKey(options.bands[0]));
-    const rawG = getBand(getAssetKey(options.bands[1]));
-    const rawB = getBand(getAssetKey(options.bands[2]));
-    const r = stretch(rawR);
-    const g = stretch(rawG);
-    const b = stretch(rawB);
-    for (let i = 0; i < r.length; i++) {
-      if (rawR[i] === 0 && rawG[i] === 0 && rawB[i] === 0) {
-        imageData.data[i * 4] = 0;
-        imageData.data[i * 4 + 1] = 0;
-        imageData.data[i * 4 + 2] = 0;
-        imageData.data[i * 4 + 3] = 0; // Transparent
-      } else {
-        imageData.data[i * 4] = r[i];
-        imageData.data[i * 4 + 1] = g[i];
-        imageData.data[i * 4 + 2] = b[i];
-        imageData.data[i * 4 + 3] = 255;
-      }
-    }
-  } else if (options.mode === 'single') {
-    const bandName = getAssetKey(options.singleBand);
-    const rawBand = getBand(bandName);
-    console.log(`Single band ${bandName} raw data length: ${rawBand.length}, first 10 values: ${rawBand.slice(0, 10).join(', ')}`);
-    const bandData = stretch(rawBand);
-    console.log(`Single band ${bandName} stretched data length: ${bandData.length}, first 10 values: ${bandData.slice(0, 10).join(', ')}`);
-    const colormapFn = COLORMAPS[options.colormap] || COLORMAPS.grayscale;
-    for (let i = 0; i < bandData.length; i++) {
-      if (rawBand[i] === 0) {
-        imageData.data[i * 4] = 0;
-        imageData.data[i * 4 + 1] = 0;
-        imageData.data[i * 4 + 2] = 0;
-        imageData.data[i * 4 + 3] = 0; // Transparent
-      } else {
-        const [cr, cg, cb] = colormapFn(bandData[i]);
-        imageData.data[i * 4] = cr;
-        imageData.data[i * 4 + 1] = cg;
-        imageData.data[i * 4 + 2] = cb;
-        imageData.data[i * 4 + 3] = 255;
-      }
-    }
-    console.log(`Single band ${bandName} imageData populated. First pixel: ${imageData.data.slice(0, 4).join(', ')}`);
-  } else if (options.mode === 'index') {
-    const r = getBand(getAssetKey(options.indexBands.red));
-    const g = getBand(getAssetKey(options.indexBands.green));
-    const b = getBand(getAssetKey(options.indexBands.blue));
-    const nir = getBand(getAssetKey(options.indexBands.nir));
-    const indexData = new Float32Array(r.length);
-    for (let i = 0; i < r.length; i++) {
-      let val = 0;
-      const rv = r[i];
-      const gv = g[i];
-      const bv = b[i];
-      const nv = nir[i];
-      
-      if (isNaN(rv) || isNaN(nv)) {
-        val = 0;
-      } else if (options.indexType === 'ndvi') {
-        val = (nv - rv) / (nv + rv || 1);
-      } else if (options.indexType === 'evi') {
-        if (isNaN(bv)) {
-          val = (nv - rv) / (nv + rv || 1); // Fallback to NDVI if blue is missing
-        } else {
-          val = 2.5 * ((nv - rv) / (nv + 6 * rv - 7.5 * bv + 1 || 1));
-        }
-      } else if (options.indexType === 'gndvi') {
-        if (isNaN(gv)) {
-          val = (nv - rv) / (nv + rv || 1); // Fallback
-        } else {
-          val = (nv - gv) / (nv + gv || 1);
-        }
-      } else if (options.indexType === 'savi') {
-        const L = 0.5;
-        val = ((nv - rv) / (nv + rv + L || 1)) * (1 + L);
-      }
-      indexData[i] = val;
-    }
-    const bandData = stretch(indexData, true);
-    const colormapFn = COLORMAPS[options.colormap] || COLORMAPS.rdylgn;
-    for (let i = 0; i < bandData.length; i++) {
-      const [cr, cg, cb] = colormapFn(bandData[i]);
-      imageData.data[i * 4] = cr;
-      imageData.data[i * 4 + 1] = cg;
-      imageData.data[i * 4 + 2] = cb;
-      imageData.data[i * 4 + 3] = 255;
-    }
-  }
-
-  ctx.putImageData(imageData, 0, 0);
-
-  const finalCanvas = canvas;
+  // Stretch + render through the shared pipeline (see raster-render.ts).
+  // The remote pipeline resolves standard band numbers to Sentinel-2 asset names.
+  const finalCanvas = renderRasterToCanvas(
+    (bandNum: number) => getBand(getAssetKey(bandNum)),
+    options,
+    finalWidth,
+    finalHeight
+  );
 
   return {
     image: finalCanvas,
@@ -1502,26 +1019,8 @@ export async function extractZonalPixels(
   const resX = (originalBbox[2] - originalBbox[0]) / originalWidth;
   const resY = (originalBbox[3] - originalBbox[1]) / originalHeight;
   
-  // Projection helper
-  const unproject = (x: number, y: number): [number, number] => {
-    const crsVal = crs || 'EPSG:4326';
-    if (crsVal === 'EPSG:4326') return [x, y];
-    
-    let projDef = crsVal;
-    if (crsVal.startsWith('EPSG:326') || crsVal.startsWith('EPSG:327')) {
-      const zone = parseInt(crsVal.slice(8));
-      const isSouth = crsVal.startsWith('EPSG:327');
-      projDef = `+proj=utm +zone=${zone} ${isSouth ? '+south ' : ''}+datum=WGS84 +units=m +no_defs`;
-    }
-    
-    try {
-      const [lng, lat] = proj4(projDef, 'EPSG:4326', [x, y]);
-      return [lng, lat];
-    } catch (e) {
-      console.warn("Unprojection failed, using raw coordinates", e);
-      return [x, y];
-    }
-  };
+  // Projection helper (shared, see geo.ts)
+  const unproject = (x: number, y: number): [number, number] => unprojectToWgs84(crs, x, y);
 
   // Prepare Spatial Index for Vector Features
   const tree = new RBush();

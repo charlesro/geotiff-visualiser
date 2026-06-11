@@ -4,7 +4,16 @@ import { X, BarChart3, Info, ChevronDown, Layers, Trash2, Download, Search } fro
 import { LineChart, Line, XAxis, YAxis, Tooltip as RechartsTooltip, ResponsiveContainer, Legend, ReferenceLine } from 'recharts';
 import { format } from 'date-fns';
 import { cn } from '../lib/utils';
-import { getGeoJsonBounds } from '../App';
+import { getGeoJsonBounds } from '../lib/geo';
+import { isTsColumn, parseTsColumn, getTsDate, getTsMetric } from '../lib/timeseries';
+import {
+  isPixelsLayer,
+  pixelsLayerId,
+  excludedPixelsLayerId,
+  getFeatureDisplayName,
+  formatPixelsLayerName,
+  downloadGeoJson,
+} from '../lib/layer-factory';
 import { extractPixelTimeseriesOptions } from '../lib/pixel-extraction';
 
 interface VectorFeaturePanelProps {
@@ -23,23 +32,11 @@ interface VectorFeaturePanelProps {
   seriesLayers?: any[];
 }
 
-const isTsColumn = (c: string) => /_{1,2}(\d{4}-\d{2}-\d{2})$/.test(c);
-const getTsMetricAndDate = (c: string) => {
-  const match = c.match(/^(.*?)_{1,2}(\d{4}-\d{2}-\d{2})$/);
-  if (match) return { metric: match[1], date: match[2] };
-  return null;
-};
-const getDate = (c: string) => getTsMetricAndDate(c)?.date || null;
-const getMetric = (c: string) => getTsMetricAndDate(c)?.metric || null;
-
-const getMetrics = (tsCols: string[]) => {
-  const metrics = new Set<string>();
-  for (const c of tsCols) {
-    const parsed = getTsMetricAndDate(c);
-    if (parsed) metrics.add(parsed.metric);
-  }
-  return Array.from(metrics);
-};
+// Time-series property helpers are shared with the PCA modal, the SQL modal
+// and App.tsx — see lib/timeseries.ts.
+const getTsMetricAndDate = parseTsColumn;
+const getDate = getTsDate;
+const getMetric = getTsMetric;
 
 const getShortName = (name: string, pixelLayer: any) => {
   if (!pixelLayer || !pixelLayer.data || !pixelLayer.data.features) return name;
@@ -55,11 +52,10 @@ export const VectorFeaturePanel: React.FC<VectorFeaturePanelProps> = ({
   
   // Attempt to find the "freshest" version of the feature from the vector layers
   const featureId = feature?.id || feature?.properties?.id;
-  const isPixelsLayer = (l: any) => l?.id?.startsWith('pixels-') || l?.name?.startsWith('Pixels');
 
-  // Find the relevant pixel layer
+  // Find the relevant pixel layer (shared convention, see layer-factory.ts)
   const pixelLayer = useMemo(() => {
-    const lId = isPixelsLayer(layer) ? layer.id : (featureId ? `pixels-${featureId}` : null);
+    const lId = isPixelsLayer(layer) ? layer.id : (featureId ? pixelsLayerId(featureId) : null);
     if (!lId) return null;
     // Always look up in vectorLayers prop to get the most recent state from App.tsx
     return vectorLayers.find(p => p.id === lId);
@@ -101,16 +97,14 @@ export const VectorFeaturePanel: React.FC<VectorFeaturePanelProps> = ({
     try {
       const { pixelPoints, excludedPixelPoints } = await extractPixelTimeseriesOptions(targetFeature, seriesLayers, bufferMeters, pixelIndex);
       if (onAddVectorLayer) {
+        const nameAttr = getFeatureDisplayName(targetFeature);
         if (pixelPoints && pixelPoints.features && pixelPoints.features.length > 0) {
           // Fix: If we're already on a pixel layer, preserve its ID to avoid creating duplicate layers
-          const targetId = isPixelsLayer(layer) ? layer.id : `pixels-${featureId || 'extract'}`;
-          const nameAttr = targetFeature?.properties?.name || targetFeature?.properties?.Name || targetFeature?.properties?.id || targetFeature?.id || 'Field';
-          onAddVectorLayer(`Pixels (${pixelIndex}) [${nameAttr}] ${bufferMeters !== 0 ? (bufferMeters > 0 ? '+' : '') + bufferMeters + 'm' : ''}`.trim(), pixelPoints, targetId);
+          const targetId = isPixelsLayer(layer) ? layer.id : pixelsLayerId(featureId);
+          onAddVectorLayer(formatPixelsLayerName(pixelIndex, nameAttr, bufferMeters), pixelPoints, targetId);
         }
         if (bufferMeters !== 0 && excludedPixelPoints && excludedPixelPoints.features && excludedPixelPoints.features.length > 0) {
-          const excludedTargetId = `pixels-excluded-${featureId || 'extract'}`;
-          const nameAttr = targetFeature?.properties?.name || targetFeature?.properties?.Name || targetFeature?.properties?.id || targetFeature?.id || 'Field';
-          onAddVectorLayer(`Excluded Pixels (${pixelIndex}) [${nameAttr}] ${bufferMeters !== 0 ? (bufferMeters > 0 ? '+' : '') + bufferMeters + 'm' : ''}`.trim(), excludedPixelPoints, excludedTargetId);
+          onAddVectorLayer(formatPixelsLayerName(pixelIndex, nameAttr, bufferMeters, true), excludedPixelPoints, excludedPixelsLayerId(featureId));
         }
       }
     } catch (e) {
@@ -158,7 +152,7 @@ export const VectorFeaturePanel: React.FC<VectorFeaturePanelProps> = ({
         const pid = f.properties.id || `p_${i}`;
         for (const key of Object.keys(f.properties)) {
           if (isTsColumn(key)) {
-            const colDate = key.split('_')[1];
+            const colDate = getDate(key);
             if (colDate === date) {
               const metric = getMetric(key) || 'value';
               if (metric !== pixelIndex) continue;
@@ -460,15 +454,7 @@ export const VectorFeaturePanel: React.FC<VectorFeaturePanelProps> = ({
                           <div className="flex items-center gap-1.5">
                             <button 
                               id="btn-export-observations"
-                              onClick={() => {
-                                const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(pixelLayer.data));
-                                const a = document.createElement('a');
-                                a.setAttribute("href", dataStr);
-                                a.setAttribute("download", (pixelLayer.name || "pixels") + ".geojson");
-                                document.body.appendChild(a);
-                                a.click();
-                                a.remove();
-                              }}
+                              onClick={() => downloadGeoJson(pixelLayer.data, pixelLayer.name || "pixels")}
                               className="p-1.5 bg-white/[0.03] hover:bg-white/10 rounded-lg text-white/40 hover:text-orange-500 transition-colors border border-white/5"
                               title="Export Observations"
                             >

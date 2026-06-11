@@ -7,10 +7,42 @@ import { MapViewer } from './components/MapViewer';
 import { VectorFeaturePanel } from './components/VectorFeaturePanel';
 import { LocalPythonServerModal } from './components/LocalPythonServerModal';
 import { DocumentationModal } from './components/DocumentationModal';
-import PcaModal, { vectorLayerHasTimeSeries } from './components/PcaModal';
+import PcaModal from './components/PcaModal';
 import { cn } from './lib/utils';
 import shp from 'shpjs';
-import { searchSentinel2, signUrl, signSTACItem, STACItem } from './services/stac-service';
+import {
+  searchSentinel2Chunked,
+  groupItemsByDate,
+  selectEvenlySpaced,
+  signUrl,
+  signSTACItem,
+  STACItem,
+} from './services/stac-service';
+import {
+  normalizeLocalUrl,
+  fetchLocalServer,
+  fetchWithLocalHeaders,
+  checkLocalServerStatus,
+} from './services/local-server';
+import {
+  getGeoJsonBounds,
+  getBboxIntersectionArea,
+  getBboxDimensions,
+  bufferBboxMeters,
+} from './lib/geo';
+import { getAssetKey, S2_ALL_ASSETS, getBandOptions, getBandName } from './lib/sentinel';
+import { INDEX_FORMULAS } from './lib/spectral';
+import { removeDateProperties, extractDateFromFilename } from './lib/timeseries';
+import {
+  DEFAULT_OPTIONS,
+  createRasterLayer,
+  createVectorLayer,
+  isPixelsLayer,
+  pixelsLayerId,
+  getFeatureDisplayName,
+  formatPixelsLayerName,
+  downloadGeoJson,
+} from './lib/layer-factory';
 import { format, subDays } from 'date-fns';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
@@ -18,87 +50,8 @@ import { get, set, clear } from 'idb-keyval';
 
 import { Layer, RasterLayer, VectorLayer } from './types';
 
-export const getGeoJsonBounds = (geojson: any): [number, number, number, number] | null => {
-  let minLon = 180, minLat = 90, maxLon = -180, maxLat = -90;
-  let hasCoords = false;
-
-  const extractCoords = (coords: any[]) => {
-    if (typeof coords[0] === 'number') {
-      const [lon, lat] = coords;
-      if (lon < minLon) minLon = lon;
-      if (lat < minLat) minLat = lat;
-      if (lon > maxLon) maxLon = lon;
-      if (lat > maxLat) maxLat = lat;
-      hasCoords = true;
-    } else if (Array.isArray(coords)) {
-      coords.forEach(extractCoords);
-    }
-  };
-
-  if (geojson.type === 'FeatureCollection' && geojson.features) {
-    geojson.features.forEach((f: any) => {
-      if (f.geometry?.coordinates) extractCoords(f.geometry.coordinates);
-    });
-  } else if (geojson.geometry?.coordinates) {
-    extractCoords(geojson.geometry.coordinates);
-  } else if (geojson.coordinates) {
-    extractCoords(geojson.coordinates);
-  }
-
-  return hasCoords ? [minLon, minLat, maxLon, maxLat] : null;
-};
-
-const DEFAULT_OPTIONS: RenderingOptions = {
-  mode: 'rgb',
-  bands: [4, 3, 2], // Sentinel-2 RGB: B04, B03, B02
-  singleBand: 8, // Default to NIR
-  indexType: 'ndvi',
-  indexBands: { red: 4, green: 3, blue: 2, nir: 8 }, // Sentinel-2: B04, B03, B02, B08
-  stretch: 'percentile',
-  percentiles: [2, 98],
-  opacity: 0.8,
-  colormap: 'grayscale',
-  showGrid: false,
-  gridSpacing: 1
-};
-
-export const getBandOptions = (layer: RasterLayer) => {
-  if (layer.stacItem) {
-    return [2, 3, 4, 5, 6, 7, 8, 9, 11, 12];
-  }
-  return Array.from({ length: layer.data.metadata.bands }, (_, idx) => idx + 1);
-};
-
-export const getBandName = (layer: RasterLayer, bandIndex: number) => {
-  if (layer.stacItem) {
-    const s2Names: Record<number, string> = {
-      1: 'B01 (Coastal)', 2: 'B02 (Blue)', 3: 'B03 (Green)', 4: 'B04 (Red)',
-      5: 'B05 (Red Edge 1)', 6: 'B06 (Red Edge 2)', 7: 'B07 (Red Edge 3)',
-      8: 'B08 (NIR)', 9: 'B8A (Narrow NIR)', 10: 'B09 (Water Vapour)',
-      11: 'B11 (SWIR 1)', 12: 'B12 (SWIR 2)'
-    };
-    return s2Names[bandIndex] || `Band ${bandIndex}`;
-  } else if (layer.data.metadata.descriptions && layer.data.metadata.descriptions[bandIndex - 1]) {
-    return layer.data.metadata.descriptions[bandIndex - 1];
-  }
-  return `Band ${bandIndex}`;
-};
-
-const getBboxDimensions = (bbox: [number, number, number, number]) => {
-  const [west, south, east, north] = bbox;
-  const lat = (south + north) / 2;
-  const lonDiff = Math.abs(east - west);
-  const latDiff = Math.abs(north - south);
-  
-  const widthMeters = lonDiff * 111320 * Math.cos(lat * Math.PI / 180);
-  const heightMeters = latDiff * 111320;
-  
-  // Assuming 10m/pixel for Sentinel-2
-  const widthPixels = Math.round(widthMeters / 10);
-  const heightPixels = Math.round(heightMeters / 10);
-  
-  return { widthPixels, heightPixels, widthMeters, heightMeters };
-};
+// Re-exported for backwards compatibility — the implementation lives in lib/geo.ts.
+export { getGeoJsonBounds } from './lib/geo';
 
 export default function App() {
   const [layers, setLayers] = useState<Layer[]>([]);
@@ -270,27 +223,12 @@ export default function App() {
   const getBufferedShpBbox = useCallback((bufferMeters: number): [number, number, number, number] | null => {
     const vectorLayer = layers.find(l => l.type === 'vector');
     if (!vectorLayer || !vectorLayer.data) return null;
-    
+
     // We already have bbox pre-calculated in the vector layer!
-    let minLon, minLat, maxLon, maxLat;
-    
-    if (vectorLayer.bbox) {
-      [minLon, minLat, maxLon, maxLat] = vectorLayer.bbox;
-    } else {
-      const bounds = getGeoJsonBounds(vectorLayer.data);
-      if (!bounds) return null;
-      [minLon, minLat, maxLon, maxLat] = bounds;
-    }
-    
-    const latBuffer = bufferMeters / 111320;
-    const lonBuffer = Math.abs(bufferMeters / (111320 * Math.cos(((minLat + maxLat) / 2) * Math.PI / 180))) || latBuffer;
-    
-    return [
-      minLon - lonBuffer,
-      minLat - latBuffer,
-      maxLon + lonBuffer,
-      maxLat + latBuffer
-    ] as [number, number, number, number];
+    const bounds = vectorLayer.bbox || getGeoJsonBounds(vectorLayer.data);
+    if (!bounds) return null;
+
+    return bufferBboxMeters(bounds, bufferMeters);
   }, [layers]);
 
   const globalCropBbox = useMemo(() => {
@@ -362,73 +300,10 @@ export default function App() {
     setIsSearching(true);
     setError(null);
     try {
-      const startStr = startDate.includes('T') ? startDate : `${startDate}T00:00:00Z`;
-      const endStr = endDate.includes('T') ? endDate : `${endDate}T23:59:59Z`;
-      
-      let rawResults: STACItem[] = [];
-      const startMs = new Date(startStr).getTime();
-      const endMs = new Date(endStr).getTime();
-      
-      if (isNaN(startMs) || isNaN(endMs)) {
-        throw new Error("Invalid date format provided.");
-      }
-      
-      // Use 6 chunks to avoid hitting rate limits while still covering the time range
-      const numChunks = 6;
-      const intervalMs = (endMs - startMs) / numChunks;
-
-      for (let i = 0; i < numChunks; i++) {
-        const intervalStart = new Date(startMs + i * intervalMs).toISOString();
-        const intervalEnd = new Date(startMs + (i + 1) * intervalMs).toISOString();
-        
-        try {
-          const chunkResults = await searchSentinel2(searchBbox, intervalStart, intervalEnd, maxCloudCover, mpcToken, 500);
-          rawResults.push(...chunkResults);
-        } catch (err) {
-          console.error(`Error fetching interval ${i}:`, err);
-        }
-      }
-      
-      // Deduplicate rawResults by STAC Item ID
-      const uniqueItemsMap = new Map<string, STACItem>();
-      rawResults.forEach(item => {
-        uniqueItemsMap.set(item.id, item);
-      });
-      const dedupedRawResults = Array.from(uniqueItemsMap.values());
-
-      // Group by date to avoid multiple tiles from the same overpass
-      // But collect all tiles for each date so we can merge them if they represent adjacent tiles
-      const uniqueDates = new Map<string, STACItem & { groupItems?: STACItem[] }>();
-      dedupedRawResults.forEach(item => {
-        const date = item.properties.datetime.split('T')[0];
-        if (!uniqueDates.has(date)) {
-          const newItem = { ...item, groupItems: [item] };
-          uniqueDates.set(date, newItem);
-        } else {
-          const existing = uniqueDates.get(date)!;
-          existing.groupItems = existing.groupItems || [];
-          existing.groupItems.push(item);
-          if (item.properties['eo:cloud_cover'] < existing.properties['eo:cloud_cover']) {
-            const group = existing.groupItems;
-            Object.assign(existing, item);
-            existing.groupItems = group;
-          }
-        }
-      });
-      
-      const uniqueResults = Array.from(uniqueDates.values())
-        .sort((a, b) => new Date(b.properties.datetime).getTime() - new Date(a.properties.datetime).getTime());
-
-      // Select evenly spaced items
-      const selectedItems: STACItem[] = [];
-      if (uniqueResults.length <= targetCount) {
-        selectedItems.push(...uniqueResults);
-      } else {
-        const step = (uniqueResults.length - 1) / (targetCount - 1);
-        for (let i = 0; i < targetCount; i++) {
-          selectedItems.push(uniqueResults[Math.round(i * step)]);
-        }
-      }
+      // Shared pipeline: chunked search -> dedupe -> group-by-date -> evenly spaced
+      const rawResults = await searchSentinel2Chunked(searchBbox, startDate, endDate, maxCloudCover, mpcToken);
+      const uniqueResults = groupItemsByDate(rawResults);
+      const selectedItems = selectEvenlySpaced(uniqueResults, targetCount);
 
       setSearchResults(selectedItems);
       if (selectedItems.length === 0) {
@@ -441,32 +316,6 @@ export default function App() {
       setIsSearching(false);
     }
   };
-
-const getNormalizeUrl = (urlStr: string): string => {
-  if (!urlStr) return urlStr;
-  if (window.location.protocol === 'https:' && urlStr.startsWith('http://')) {
-    const isLocalhost = urlStr.includes('localhost') || urlStr.includes('127.0.0.1');
-    if (!isLocalhost) {
-      return urlStr.replace(/^http:\/\//i, 'https://');
-    }
-  }
-  return urlStr;
-};
-
-const getBboxIntersectionArea = (
-  bbox1: [number, number, number, number],
-  bbox2: [number, number, number, number]
-): number => {
-  const minX = Math.max(bbox1[0], bbox2[0]);
-  const minY = Math.max(bbox1[1], bbox2[1]);
-  const maxX = Math.min(bbox1[2], bbox2[2]);
-  const maxY = Math.min(bbox1[3], bbox2[3]);
-  
-  if (maxX > minX && maxY > minY) {
-    return (maxX - minX) * (maxY - minY);
-  }
-  return 0;
-};
 
   const createLayerFromSTACItem = async (item: STACItem & { groupItems?: STACItem[] }, isVisible: boolean = true, seriesId?: string): Promise<RasterLayer> => {
     if (!searchBbox) throw new Error("Search bbox is required");
@@ -545,22 +394,12 @@ const getBboxIntersectionArea = (
       throw new Error('Selected image is missing required spectral bands.');
     }
 
-    // Map band number to asset key for Sentinel-2
-    const getAssetKey = (bandNum: number) => {
-      const map: Record<number, string> = {
-        1: 'B01', 2: 'B02', 3: 'B03', 4: 'B04', 5: 'B05', 6: 'B06', 
-        7: 'B07', 8: 'B08', 9: 'B8A', 10: 'B09', 11: 'B11', 12: 'B12'
-      };
-      return map[bandNum] || 'B04';
-    };
-
     // Default bands (empty so we only fetch what is strictly required)
     const bandUrls: Record<string, string | string[]> = {};
-    
+
     // Collect all band URLs from STAC to store them in remoteUrls
-    const allExpectedBands = ['B01', 'B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B08', 'B8A', 'B09', 'B11', 'B12'];
     const allBandUrls: Record<string, string | string[]> = {};
-    allExpectedBands.forEach(band => {
+    S2_ALL_ASSETS.forEach(band => {
       const hrefs = (signedItems as any[]).map(si => si.assets[band]?.href).filter(Boolean);
       if (hrefs.length > 0) {
         allBandUrls[band] = hrefs.length === 1 ? hrefs[0] : hrefs;
@@ -590,25 +429,12 @@ const getBboxIntersectionArea = (
     
     if (useLocalServer) {
       addVerboseLog(`[createLayer] Checking status of Local Python Engine at ${localUrl}...`);
-      const normalizedLocalUrl = getNormalizeUrl(localUrl);
       try {
-        const ping = await fetch(`${normalizedLocalUrl}/api/status`, {
-          headers: {
-            'Bypass-Tunnel-Reminder': 'true',
-            'ngrok-skip-browser-warning': 'true'
-          }
-        });
-        if (ping.ok) {
-          const pingData = await ping.json();
-          localEngineAvailable = true;
-          addVerboseLog(`[createLayer] Local Python Engine detected successfully! Response: ${JSON.stringify(pingData)}`);
-        } else {
-          const errText = `Local Python Engine status check returned HTTP ${ping.status} (${ping.statusText || "Not OK"}).`;
-          addVerboseLog(`[createLayer] [Error] ${errText}`);
-          throw new Error(`Cannot connect to local Python server: ${errText}`);
-        }
+        const pingData = await checkLocalServerStatus(localUrl);
+        localEngineAvailable = true;
+        addVerboseLog(`[createLayer] Local Python Engine detected successfully! Response: ${JSON.stringify(pingData)}`);
       } catch(e) {
-        const errMessage = `Failed to connect to the local Python server at ${normalizedLocalUrl}.\nPlease verify that your local Python server is running, or disable Local Python Server in the settings modal.\nDetail: ${e instanceof Error ? e.message : String(e)}`;
+        const errMessage = `Failed to connect to the local Python server at ${normalizeLocalUrl(localUrl)}.\nPlease verify that your local Python server is running, or disable Local Python Server in the settings modal.\nDetail: ${e instanceof Error ? e.message : String(e)}`;
         addVerboseLog(`[createLayer] [Error] ${errMessage}`);
         throw new Error(errMessage);
       }
@@ -618,22 +444,17 @@ const getBboxIntersectionArea = (
 
     if (useLocalServer && localEngineAvailable) {
       addVerboseLog(`[createLayer] Delegating band crop to Local Python Engine...`);
-      const normalizedLocalUrl = getNormalizeUrl(localUrl);
       try {
         let procRes: Response;
-        const postUrl = `${normalizedLocalUrl}/api/process_bands`;
-        
+        const postUrl = `${normalizeLocalUrl(localUrl)}/api/process_bands`;
+
         try {
           addVerboseLog(`[createLayer] Step 1/3: Sending POST to process_bands API (${postUrl}) with Item ID: ${item.id}`);
           // Add a random token for caching since we updated python server script
           const reqId = `${item.id}_${Math.random().toString(36).substring(7)}`;
-          procRes = await fetch(postUrl, {
+          procRes = await fetchLocalServer(localUrl, '/api/process_bands', {
             method: "POST",
-            headers: { 
-              "Content-Type": "application/json",
-              'Bypass-Tunnel-Reminder': 'true',
-              'ngrok-skip-browser-warning': 'true'
-            },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               id: reqId,
               urls: bandUrls,
@@ -665,17 +486,12 @@ const getBboxIntersectionArea = (
           throw new Error("Python Engine Internal Error: " + procData.error);
         }
         
-        const downloadUrl = getNormalizeUrl(procData.url);
+        const downloadUrl = normalizeLocalUrl(procData.url);
         addVerboseLog(`[createLayer] Step 2/3: Downloading processed GeoTIFF from Python cache URL: ${downloadUrl}`);
-        
+
         let fileRes: Response;
         try {
-          fileRes = await fetch(downloadUrl, {
-            headers: {
-              'Bypass-Tunnel-Reminder': 'true',
-              'ngrok-skip-browser-warning': 'true'
-            }
-          });
+          fileRes = await fetchWithLocalHeaders(downloadUrl);
         } catch (err) {
           logErrorDetails(`GET file download request to ${downloadUrl} failed. Possible CORS issue, mixed content blocker, or hostname resolution error`, err);
           throw new Error(`Failed to download result from ${downloadUrl}: ${err instanceof Error ? err.message : String(err)}`);
@@ -761,27 +577,21 @@ const getBboxIntersectionArea = (
       }
     }
     
-    const id = crypto.randomUUID();
-    const actualClipBbox = (cropAroundShp && globalCropBboxRef.current && bboxToUse === globalCropBboxRef.current) 
-      ? globalCropBboxRef.current 
+    const actualClipBbox = (cropAroundShp && globalCropBboxRef.current && bboxToUse === globalCropBboxRef.current)
+      ? globalCropBboxRef.current
       : undefined;
 
-    return {
-      id,
+    return createRasterLayer({
       name: `S2A_${item.properties.datetime.split('T')[0]}`,
-      type: 'raster',
-      visible: isVisible,
-      opacity: 0.8,
       data: processedData,
-      dataUrl: processedData.image.toDataURL(),
-      options: { ...DEFAULT_OPTIONS },
+      visible: isVisible,
       remoteUrls: allBandUrls as any,
       remoteBbox: searchBbox,
       stacItem: item,
       seriesId,
       datetime: item.properties.datetime,
       clipBbox: actualClipBbox
-    };
+    });
   };
 
   const fetchSentinelImage = async (item: STACItem) => {
@@ -814,18 +624,10 @@ const getBboxIntersectionArea = (
     addVerboseLog(`[PythonMosaic] Querying Python Mosaic Engine for bbox: [${bbox.join(', ')}]`);
 
     try {
-      const normalizedLocalUrl = getNormalizeUrl(localUrl);
+      const normalizedLocalUrl = normalizeLocalUrl(localUrl);
       addVerboseLog(`[PythonMosaic] Checking local python engine status at ${normalizedLocalUrl}...`);
-      
-      const ping = await fetch(`${normalizedLocalUrl}/api/status`, {
-        headers: {
-          'Bypass-Tunnel-Reminder': 'true',
-          'ngrok-skip-browser-warning': 'true'
-        }
-      });
-      if (!ping.ok) {
-        throw new Error(`Cannot connect to local Python server status endpoint: status ${ping.status}`);
-      }
+
+      await checkLocalServerStatus(localUrl);
 
       // Find the active vector layer if any to send its polygons
       const vectorLayer = layers.find(l => l.type === 'vector' && l.visible && l.data) as VectorLayer;
@@ -852,13 +654,9 @@ const getBboxIntersectionArea = (
 
       addVerboseLog(`[PythonMosaic] Sending search & process query: ${JSON.stringify(queryBody, null, 2)}`);
       
-      const res = await fetch(`${normalizedLocalUrl}/api/process_sentinel2_dates`, {
+      const res = await fetchLocalServer(localUrl, '/api/process_sentinel2_dates', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Bypass-Tunnel-Reminder': 'true',
-          'ngrok-skip-browser-warning': 'true'
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(queryBody)
       });
 
@@ -916,13 +714,8 @@ const getBboxIntersectionArea = (
           status: `Downloading & rendering mosaic for ${dateStr}`
         });
 
-        const downloadUrl = getNormalizeUrl(tifUrl);
-        const fileRes = await fetch(downloadUrl, {
-          headers: {
-            'Bypass-Tunnel-Reminder': 'true',
-            'ngrok-skip-browser-warning': 'true'
-          }
-        });
+        const downloadUrl = normalizeLocalUrl(tifUrl);
+        const fileRes = await fetchWithLocalHeaders(downloadUrl);
 
         if (!fileRes.ok) {
           throw new Error(`Failed to download GeoTIFF for ${dateStr} from ${downloadUrl}`);
@@ -945,18 +738,12 @@ const getBboxIntersectionArea = (
         const processedData = await processGeoTIFF(arrayBuffer, optionsWithMap, null);
         addVerboseLog(`[PythonMosaic] Decoded GeoTIFF for ${dateStr}. Dimensions: ${processedData.image.width}x${processedData.image.height}`);
 
-        const id = crypto.randomUUID();
         const absoluteTifUrl = tifUrl.startsWith('http') ? tifUrl : `${normalizedLocalUrl}${tifUrl.startsWith('/') ? '' : '/'}${tifUrl}`;
 
-        const newLayer: RasterLayer = {
-          id,
+        const newLayer = createRasterLayer({
           name: `S2A_Mosaic_${dateStr}`,
-          type: 'raster',
-          visible: i === 0, // Set the most recent date visible
-          opacity: 0.8,
           data: processedData,
-          dataUrl: processedData.image.toDataURL(),
-          options: { ...DEFAULT_OPTIONS },
+          visible: i === 0, // Set the most recent date visible
           remoteUrls: {
             B04: absoluteTifUrl,
             B03: absoluteTifUrl,
@@ -966,7 +753,7 @@ const getBboxIntersectionArea = (
           remoteBbox: effectiveBbox,
           seriesId,
           datetime: `${dateStr}T00:00:00Z`
-        };
+        });
 
         newLayers.push(newLayer);
       }
@@ -982,7 +769,7 @@ const getBboxIntersectionArea = (
       logErrorDetails("Python mosaic query flow completely failed", err);
       const isFetchErr = err instanceof TypeError || (err?.message && (err.message.includes('fetch') || err.message.includes('NetworkError') || err.message.includes('Failed to fetch')));
       const errorMsg = isFetchErr
-        ? `Could not connect to the Local Python Server at ${getNormalizeUrl(localUrl)}.\n\nPlease ensure your local Python server is running on port 8080 (see "Local Python Server Mode" instructions in settings) or disable Local Python Server Mode to use standard browser-side processing.`
+        ? `Could not connect to the Local Python Server at ${normalizeLocalUrl(localUrl)}.\n\nPlease ensure your local Python server is running on port 8080 (see "Local Python Server Mode" instructions in settings) or disable Local Python Server Mode to use standard browser-side processing.`
         : (err instanceof Error ? err.message : 'Failed to query local Python Mosaic Engine.');
       setError(errorMsg);
     } finally {
@@ -1012,82 +799,28 @@ const getBboxIntersectionArea = (
     setVerboseLogs([]);
     addVerboseLog(`Starting Time Series Fetch. Date Range: ${startDate} to ${endDate}. Cloud Cover limit: ${maxCloudCover}%. Target count: ${targetCount}`);
     try {
-      // 1. Calculate time intervals to ensure we get images across the whole range
-      const startStr = startDate.includes('T') ? startDate : `${startDate}T00:00:00Z`;
-      const endStr = endDate.includes('T') ? endDate : `${endDate}T23:59:59Z`;
-      const startMs = new Date(startStr).getTime();
-      const endMs = new Date(endStr).getTime();
-      
-      if (isNaN(startMs) || isNaN(endMs)) {
-        throw new Error("Invalid date format provided.");
-      }
-      
-      // Split into 6 chunks to avoid hitting limits while covering the time range
-      const numChunks = 6;
-      const intervalMs = (endMs - startMs) / numChunks;
+      // 1. Shared pipeline: chunked search -> dedupe -> group-by-date -> evenly spaced
+      const dedupedAllResults = await searchSentinel2Chunked(searchBbox, startDate, endDate, maxCloudCover, mpcToken, {
+        onChunkStart: (i, n, intervalStart, intervalEnd) =>
+          addVerboseLog(`Searching STAC for interval ${i + 1}/${n}: [${intervalStart.split('T')[0]} to ${intervalEnd.split('T')[0]}]...`),
+        onChunkResult: (i, n, count) =>
+          addVerboseLog(`Interval ${i + 1}/${n} returned ${count} matches.`),
+        onChunkError: (i, err) =>
+          logErrorDetails(`Error fetching interval ${i}`, err),
+      });
 
-      const allResults: STACItem[] = [];
-      for (let i = 0; i < numChunks; i++) {
-        const intervalStart = new Date(startMs + i * intervalMs).toISOString();
-        const intervalEnd = new Date(startMs + (i + 1) * intervalMs).toISOString();
-        
-        try {
-          addVerboseLog(`Searching STAC for interval ${i + 1}/${numChunks}: [${intervalStart.split('T')[0]} to ${intervalEnd.split('T')[0]}]...`);
-          const chunkResults = await searchSentinel2(searchBbox, intervalStart, intervalEnd, maxCloudCover, mpcToken, 500);
-          addVerboseLog(`Interval ${i + 1}/${numChunks} returned ${chunkResults.length} matches.`);
-          allResults.push(...chunkResults);
-        } catch (err) {
-          logErrorDetails(`Error fetching interval ${i}`, err);
-        }
-      }
-
-      if (allResults.length === 0) {
+      if (dedupedAllResults.length === 0) {
         throw new Error('No images found for the selected area and criteria.');
       }
-
-      // Deduplicate allResults by STAC Item ID
-      const uniqueItemsMap = new Map<string, STACItem>();
-      allResults.forEach(item => {
-        uniqueItemsMap.set(item.id, item);
-      });
-      const dedupedAllResults = Array.from(uniqueItemsMap.values());
       addVerboseLog(`Found ${dedupedAllResults.length} deduplicated items across all search intervals.`);
 
-      // Group by date to avoid multiple tiles from the same overpass
-      // But collect all tiles for each date so we can merge them if they represent adjacent tiles
-      const uniqueDates = new Map<string, STACItem & { groupItems?: STACItem[] }>();
-      dedupedAllResults.forEach(item => {
-        const date = item.properties.datetime.split('T')[0];
-        if (!uniqueDates.has(date)) {
-          const newItem = { ...item, groupItems: [item] };
-          uniqueDates.set(date, newItem);
-        } else {
-          const existing = uniqueDates.get(date)!;
-          existing.groupItems = existing.groupItems || [];
-          existing.groupItems.push(item);
-          if (item.properties['eo:cloud_cover'] < existing.properties['eo:cloud_cover']) {
-            const group = existing.groupItems;
-            Object.assign(existing, item);
-            existing.groupItems = group;
-          }
-        }
-      });
-      
-      const uniqueResults = Array.from(uniqueDates.values()).sort((a, b) => 
-        new Date(b.properties.datetime).getTime() - new Date(a.properties.datetime).getTime()
-      );
+      const uniqueResults = groupItemsByDate(dedupedAllResults);
       addVerboseLog(`Grouped into ${uniqueResults.length} unique daily passes.`);
 
       // 2. Select items
-      const selectedItems: STACItem[] = [];
-      if (fetchAllMatches || uniqueResults.length <= targetCount) {
-        selectedItems.push(...uniqueResults);
-      } else {
-        const step = (uniqueResults.length - 1) / (targetCount - 1);
-        for (let i = 0; i < targetCount; i++) {
-          selectedItems.push(uniqueResults[Math.round(i * step)]);
-        }
-      }
+      const selectedItems: STACItem[] = fetchAllMatches
+        ? [...uniqueResults]
+        : selectEvenlySpaced(uniqueResults, targetCount);
       addVerboseLog(`Selected ${selectedItems.length} candidate passes to keep timeline evenly-distributed.`);
 
       // Filter out items that are already downloaded
@@ -1151,35 +884,6 @@ const getBboxIntersectionArea = (
     }
   };
 
-  const extractDateFromFilename = (filename: string): string | undefined => {
-    // Match YYYYMMDD-HHMMSS or YYYYMMDDTHHMMSS
-    const match1 = filename.match(/(\d{4})(\d{2})(\d{2})[-T](\d{2})(\d{2})(\d{2})/);
-    if (match1) {
-      const [_, year, month, day, hour, minute, second] = match1;
-      const parsed = `${year}-${month}-${day}T${hour}:${minute}:${second}Z`;
-      if (!isNaN(new Date(parsed).getTime())) return parsed;
-    }
-    
-    // Match YYYYMMDD
-    const match2 = filename.match(/(\d{4})(\d{2})(\d{2})/);
-    if (match2) {
-      const [_, year, month, day] = match2;
-      if (parseInt(month) >= 1 && parseInt(month) <= 12 && parseInt(day) >= 1 && parseInt(day) <= 31) {
-         const parsed = `${year}-${month}-${day}T00:00:00Z`;
-         if (!isNaN(new Date(parsed).getTime())) return parsed;
-      }
-    }
-
-    // Match YYYY-MM-DD
-    const match3 = filename.match(/(\d{4})-(\d{2})-(\d{2})/);
-    if (match3) {
-      const parsed = `${match3[0]}T00:00:00Z`;
-      if (!isNaN(new Date(parsed).getTime())) return parsed;
-    }
-
-    return undefined;
-  };
-
   const processFile = useCallback(async (file: File, isVisible: boolean = true, seriesId?: string) => {
     const isTiff = file.name.toLowerCase().endsWith('.tif') || file.name.toLowerCase().endsWith('.tiff');
     const isZip = file.name.toLowerCase().endsWith('.zip');
@@ -1193,13 +897,11 @@ const getBboxIntersectionArea = (
     setError(null);
 
     try {
-      const id = crypto.randomUUID();
-      
       if (isTiff) {
         const bboxToUse = globalCropBboxRef.current || null;
         const processedData = await processGeoTIFF(file, DEFAULT_OPTIONS, bboxToUse);
         const datetime = extractDateFromFilename(file.name);
-        
+
         let actualClipBbox = undefined;
         if (bboxToUse && processedData.metadata.imageBbox) {
           const overlap = getBboxIntersectionArea(bboxToUse, processedData.metadata.imageBbox);
@@ -1208,36 +910,23 @@ const getBboxIntersectionArea = (
           }
         }
 
-        const newLayer: RasterLayer = {
-          id,
+        const newLayer = createRasterLayer({
           name: file.name,
-          type: 'raster',
-          visible: isVisible,
-          opacity: 0.8,
           data: processedData,
-          dataUrl: processedData.image.toDataURL(),
-          options: { ...DEFAULT_OPTIONS },
+          visible: isVisible,
           originalSource: file,
           datetime: datetime,
           clipBbox: actualClipBbox,
           seriesId: datetime ? seriesId : undefined
-        };
+        });
         setLayers(prev => [newLayer, ...prev]);
-        setSelectedLayerId(id);
+        setSelectedLayerId(newLayer.id);
       } else if (isZip) {
         const buffer = await file.arrayBuffer();
         const geojson = await shp(buffer);
-        const newLayer: VectorLayer = {
-          id,
-          name: file.name,
-          type: 'vector',
-          visible: isVisible,
-          opacity: 0.8,
-          data: geojson,
-          bbox: getGeoJsonBounds(geojson) || undefined
-        };
+        const newLayer = createVectorLayer(file.name, geojson, crypto.randomUUID(), { visible: isVisible, opacity: 0.8 });
         setLayers(prev => [newLayer, ...prev]);
-        setSelectedLayerId(id);
+        setSelectedLayerId(newLayer.id);
       }
     } catch (err) {
       console.error(err);
@@ -1284,15 +973,6 @@ const getBboxIntersectionArea = (
       }
     }
   }, [processFile]);
-
-  // Map band number to asset key for Sentinel-2
-  const getAssetKey = (bandNum: number) => {
-    const map: Record<number, string> = {
-      1: 'B01', 2: 'B02', 3: 'B03', 4: 'B04', 5: 'B05', 6: 'B06', 
-      7: 'B07', 8: 'B08', 9: 'B8A', 10: 'B09', 11: 'B11', 12: 'B12'
-    };
-    return map[bandNum] || 'B04';
-  };
 
   // Re-process raster layer when its options or clip change
   const reprocessLayer = useCallback(async (layerId: string, options: RenderingOptions, showLoading: boolean = true, clipBbox?: [number, number, number, number] | null) => {
@@ -1369,15 +1049,6 @@ const getBboxIntersectionArea = (
               // Use the more reliable STAC item signing
               const signedItem = await signSTACItem(layer.stacItem, mpcToken);
               const assets = signedItem.assets;
-              
-              // Map band number to asset key for Sentinel-2
-              const getAssetKey = (bandNum: number) => {
-                const map: Record<number, string> = {
-                  1: 'B01', 2: 'B02', 3: 'B03', 4: 'B04', 5: 'B05', 6: 'B06', 
-                  7: 'B07', 8: 'B08', 9: 'B8A', 10: 'B09', 11: 'B11', 12: 'B12'
-                };
-                return map[bandNum] || 'B04';
-              };
 
               // Always fetch all necessary bands for all modes so switching works
               signedUrls = {
@@ -1498,25 +1169,7 @@ const getBboxIntersectionArea = (
       if (dateToRemove) {
         next = next.map(l => {
           if (l.type !== 'vector' || !l.data || !l.data.features) return l;
-          
-          const newFeatures = l.data.features.map((f: any) => {
-            if (!f.properties) return f;
-            const newProps = { ...f.properties };
-            let changed = false;
-            
-            // Safe removal: check for pattern and exact date match
-            Object.keys(newProps).forEach(k => {
-              const match = k.match(/^(.*?)_{1,2}(\d{4}-\d{2}-\d{2})$/);
-              if (match && match[2] === dateToRemove) {
-                delete newProps[k];
-                changed = true;
-              }
-            });
-            
-            return changed ? { ...f, properties: newProps } : f;
-          });
-          
-          return { ...l, data: { ...l.data, features: newFeatures } };
+          return { ...l, data: { ...l.data, features: removeDateProperties(l.data.features, dateToRemove) } };
         });
       }
 
@@ -1944,18 +1597,9 @@ const getBboxIntersectionArea = (
   };
 
   const handleAddVectorLayer = useCallback((name: string, geojson: any, id?: string) => {
-    const layerId = id || `vector-${Date.now()}`;
-    const newLayer: VectorLayer = {
-      id: layerId,
-      name,
-      type: 'vector',
-      visible: true,
-      opacity: 1,
-      data: geojson,
-      bbox: getGeoJsonBounds(geojson) || undefined
-    };
+    const newLayer = createVectorLayer(name, geojson, id);
     setLayers(prev => {
-      const idx = prev.findIndex(l => l.id === layerId);
+      const idx = prev.findIndex(l => l.id === newLayer.id);
       if (idx >= 0) {
         const next = [...prev];
         next[idx] = newLayer;
@@ -1964,7 +1608,7 @@ const getBboxIntersectionArea = (
       return [newLayer, ...prev];
     });
 
-    if (name.startsWith('Pixels')) {
+    if (isPixelsLayer(newLayer)) {
       setTimeout(() => setSelectedVectorLayer(newLayer), 50);
     }
   }, []);
@@ -2007,13 +1651,13 @@ const getBboxIntersectionArea = (
       
       if (pixelPoints && pixelPoints.features && pixelPoints.features.length > 0) {
         // If we are currently viewing a pixel layer, try to reuse its ID
-        const currentPixelLayer = layers.find(l => 
-          (l.id === `pixels-${featureId}` || (selectedVectorLayer?.id === l.id && l.id.startsWith('pixels-')))
+        const currentPixelLayer = layers.find(l =>
+          (l.id === pixelsLayerId(featureId) || (selectedVectorLayer?.id === l.id && isPixelsLayer(l)))
         );
-        const targetId = currentPixelLayer?.id || `pixels-${featureId || 'extract'}`;
-        
-        const nameAttr = targetFeature?.properties?.name || targetFeature?.properties?.Name || targetFeature?.properties?.id || featureId || 'Field';
-        handleAddVectorLayer(`Pixels (NDVI) [${nameAttr}]`, pixelPoints, targetId);
+        const targetId = currentPixelLayer?.id || pixelsLayerId(featureId);
+
+        const nameAttr = getFeatureDisplayName(targetFeature) || featureId || 'Field';
+        handleAddVectorLayer(formatPixelsLayerName('NDVI', nameAttr), pixelPoints, targetId);
         
         // Auto-select the latest raster image if available
         const latestRaster = [...allRasters].sort((a,b) => 
@@ -2176,12 +1820,11 @@ const getBboxIntersectionArea = (
           setError(null);
           try {
              // For single local file we can stream it dynamically!
-             const id = crypto.randomUUID();
              const bboxToUse = globalCropBboxRef.current || null;
              // processGeoTIFF now accepts a URL!
              const processedData = await processGeoTIFF(url, DEFAULT_OPTIONS, bboxToUse);
              const datetime = extractDateFromFilename(name);
-             
+
              let actualClipBbox = undefined;
              if (bboxToUse && processedData.metadata.imageBbox) {
                const overlap = getBboxIntersectionArea(bboxToUse, processedData.metadata.imageBbox);
@@ -2190,21 +1833,15 @@ const getBboxIntersectionArea = (
                }
              }
 
-             const newLayer: RasterLayer = {
-                id,
+             const newLayer = createRasterLayer({
                 name: name,
-                type: 'raster',
-                visible: true,
-                opacity: 0.8,
                 data: processedData,
-                dataUrl: processedData.image.toDataURL(),
-                options: { ...DEFAULT_OPTIONS },
                 originalSource: url,
                 datetime: datetime,
                 clipBbox: actualClipBbox
-             };
+             });
              setLayers(prev => [newLayer, ...prev]);
-             setSelectedLayerId(id);
+             setSelectedLayerId(newLayer.id);
           } catch(err: any) {
              console.error(err);
              setError("Failed to load local GeoTIFF: " + err.message);
@@ -2360,20 +1997,7 @@ const getBboxIntersectionArea = (
                           // Fallback: If no image found, at least clean up the vector properties manually
                           setLayers(prev => prev.map(l => {
                             if (l.type !== 'vector' || !l.data || !l.data.features) return l;
-                            const newFeatures = l.data.features.map((f: any) => {
-                               if (!f.properties) return f;
-                               const newProps = { ...f.properties };
-                               let changed = false;
-                               Object.keys(newProps).forEach(k => {
-                                 const match = k.match(/^(.*?)_{1,2}(\d{4}-\d{2}-\d{2})$/);
-                                 if (match && match[2] === dateToRemove) {
-                                   delete newProps[k];
-                                   changed = true;
-                                 }
-                               });
-                               return changed ? { ...f, properties: newProps } : f;
-                            });
-                            return { ...l, data: { ...l.data, features: newFeatures } };
+                            return { ...l, data: { ...l.data, features: removeDateProperties(l.data.features, dateToRemove) } };
                           }));
                         }
                       }}
@@ -2386,19 +2010,16 @@ const getBboxIntersectionArea = (
                         try {
                            const { computeNDVIPCA } = await import('./lib/pca-utils');
                            const pcaImageUrl = await computeNDVIPCA(seriesLayers as RasterLayer[]);
-                           
+
                            // Create a new layer with the PCA output
-                           const pcaLayer: RasterLayer = {
-                             id: crypto.randomUUID(),
+                           const pcaLayer = createRasterLayer({
                              name: 'PCA Species Map',
-                             type: 'raster',
-                             visible: true,
                              opacity: 1.0,
-                             data: seriesLayers[0].data, // Reuse base metadata for positioning
+                             data: (seriesLayers[0] as RasterLayer).data, // Reuse base metadata for positioning
                              dataUrl: pcaImageUrl,
-                             options: (seriesLayers[0] as RasterLayer).options, 
-                           };
-                           
+                             options: (seriesLayers[0] as RasterLayer).options,
+                           });
+
                            // Hide other layers to show the PCA result
                            setLayers(prev => [pcaLayer, ...prev.map(l => ({...l, visible: false}))]);
                            setSelectedLayerId(pcaLayer.id);
@@ -3065,10 +2686,10 @@ const getBboxIntersectionArea = (
                       )}
                       {layer.type === 'vector' && (
                          <div className="flex items-center gap-1">
-                           <button 
-                             onClick={(e) => { 
-                               e.stopPropagation(); 
-                               if (layer.id.startsWith('pixels-') || layer.name?.startsWith('Pixels')) {
+                           <button
+                             onClick={(e) => {
+                               e.stopPropagation();
+                               if (isPixelsLayer(layer)) {
                                  handleSelectVector(null, layer as VectorLayer);
                                } else {
                                  const dl = layer as VectorLayer;
@@ -3078,22 +2699,16 @@ const getBboxIntersectionArea = (
                                }
                              }}
                              className="p-1.5 hover:bg-orange-500/10 rounded-lg text-orange-500/60 hover:text-orange-500"
-                             title={layer.id.startsWith('pixels-') || layer.name?.startsWith('Pixels') ? "Visualize Pixel Series" : "Feature Details"}
+                             title={isPixelsLayer(layer) ? "Visualize Pixel Series" : "Feature Details"}
                            >
-                             {(layer.id.startsWith('pixels-') || layer.name?.startsWith('Pixels')) ? <BarChart3 size={14} /> : <Info size={14} />}
+                             {isPixelsLayer(layer) ? <BarChart3 size={14} /> : <Info size={14} />}
                            </button>
-                           <button 
-                             onClick={(e) => { 
-                               e.stopPropagation(); 
+                           <button
+                             onClick={(e) => {
+                               e.stopPropagation();
                                const dl = layer as VectorLayer;
                                if (!dl.data) return;
-                               const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(dl.data));
-                               const a = document.createElement('a');
-                               a.setAttribute("href", dataStr);
-                               a.setAttribute("download", (dl.name || "vector_layer") + ".geojson");
-                               document.body.appendChild(a);
-                               a.click();
-                               a.remove();
+                               downloadGeoJson(dl.data, dl.name || "vector_layer");
                              }}
                              className="p-1.5 hover:bg-white/10 rounded-lg text-white/60 hover:text-white"
                              title="Download GeoJSON"
@@ -3328,10 +2943,7 @@ const getBboxIntersectionArea = (
                   <div className="p-3 bg-orange-500/5 border border-orange-500/20 rounded-xl">
                     <p className="text-[10px] text-orange-500/60 uppercase tracking-widest font-bold mb-1">Index Formula</p>
                     <p className="text-xs font-mono text-orange-500">
-                      {selectedLayer.options.indexType === 'ndvi' && '(NIR - Red) / (NIR + Red)'}
-                      {selectedLayer.options.indexType === 'evi' && '2.5 * ((NIR - Red) / (NIR + 6 * Red - 7.5 * Blue + 1))'}
-                      {selectedLayer.options.indexType === 'gndvi' && '(NIR - Green) / (NIR + Green)'}
-                      {selectedLayer.options.indexType === 'savi' && '((NIR - Red) / (NIR + Red + 0.5)) * (1 + 0.5)'}
+                      {INDEX_FORMULAS[selectedLayer.options.indexType]}
                     </p>
                   </div>
                 )}

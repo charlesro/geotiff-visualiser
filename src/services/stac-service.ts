@@ -81,6 +81,109 @@ export async function searchSentinel2(
   return data.features;
 }
 
+/**
+ * Shared search pipeline.
+ *
+ * "Search Images" and "Fetch time series" previously each copy-pasted the
+ * same chunked-search -> dedupe -> group-by-date -> evenly-spaced-selection
+ * pipeline inside App.tsx. It now lives here, once.
+ */
+
+export interface ChunkedSearchOptions {
+  numChunks?: number;
+  limit?: number;
+  onChunkStart?: (index: number, total: number, intervalStart: string, intervalEnd: string) => void;
+  onChunkResult?: (index: number, total: number, count: number) => void;
+  onChunkError?: (index: number, err: any) => void;
+}
+
+/**
+ * Search a date range in N sub-intervals (rate-limit friendly) and
+ * deduplicate results by STAC item id.
+ */
+export async function searchSentinel2Chunked(
+  bbox: [number, number, number, number],
+  startDate: string,
+  endDate: string,
+  maxCloudCover: number,
+  token?: string,
+  options: ChunkedSearchOptions = {}
+): Promise<STACItem[]> {
+  const startStr = startDate.includes('T') ? startDate : `${startDate}T00:00:00Z`;
+  const endStr = endDate.includes('T') ? endDate : `${endDate}T23:59:59Z`;
+  const startMs = new Date(startStr).getTime();
+  const endMs = new Date(endStr).getTime();
+
+  if (isNaN(startMs) || isNaN(endMs)) {
+    throw new Error('Invalid date format provided.');
+  }
+
+  const numChunks = options.numChunks ?? 6;
+  const intervalMs = (endMs - startMs) / numChunks;
+
+  const allResults: STACItem[] = [];
+  for (let i = 0; i < numChunks; i++) {
+    const intervalStart = new Date(startMs + i * intervalMs).toISOString();
+    const intervalEnd = new Date(startMs + (i + 1) * intervalMs).toISOString();
+
+    try {
+      options.onChunkStart?.(i, numChunks, intervalStart, intervalEnd);
+      const chunkResults = await searchSentinel2(bbox, intervalStart, intervalEnd, maxCloudCover, token, options.limit ?? 500);
+      options.onChunkResult?.(i, numChunks, chunkResults.length);
+      allResults.push(...chunkResults);
+    } catch (err) {
+      console.error(`Error fetching interval ${i}:`, err);
+      options.onChunkError?.(i, err);
+    }
+  }
+
+  // Deduplicate by STAC Item ID
+  const uniqueItemsMap = new Map<string, STACItem>();
+  allResults.forEach(item => {
+    uniqueItemsMap.set(item.id, item);
+  });
+  return Array.from(uniqueItemsMap.values());
+}
+
+/**
+ * Group items by acquisition date so a single overpass split across adjacent
+ * tiles becomes one logical item (all tiles kept in `groupItems`, the least
+ * cloudy one acting as the representative). Sorted newest first.
+ */
+export function groupItemsByDate(items: STACItem[]): (STACItem & { groupItems?: STACItem[] })[] {
+  const uniqueDates = new Map<string, STACItem & { groupItems?: STACItem[] }>();
+  items.forEach(item => {
+    const date = item.properties.datetime.split('T')[0];
+    if (!uniqueDates.has(date)) {
+      const newItem = { ...item, groupItems: [item] };
+      uniqueDates.set(date, newItem);
+    } else {
+      const existing = uniqueDates.get(date)!;
+      existing.groupItems = existing.groupItems || [];
+      existing.groupItems.push(item);
+      if (item.properties['eo:cloud_cover'] < existing.properties['eo:cloud_cover']) {
+        const group = existing.groupItems;
+        Object.assign(existing, item);
+        existing.groupItems = group;
+      }
+    }
+  });
+
+  return Array.from(uniqueDates.values())
+    .sort((a, b) => new Date(b.properties.datetime).getTime() - new Date(a.properties.datetime).getTime());
+}
+
+/** Pick n entries evenly spaced across an ordered array. */
+export function selectEvenlySpaced<T>(arr: T[], n: number): T[] {
+  if (arr.length <= n) return [...arr];
+  const selected: T[] = [];
+  const step = (arr.length - 1) / (n - 1);
+  for (let i = 0; i < n; i++) {
+    selected.push(arr[Math.round(i * step)]);
+  }
+  return selected;
+}
+
 const tokenCache: Record<string, { token: string, expiresAt: number }> = {};
 
 export async function signUrl(url: string, token?: string): Promise<string> {

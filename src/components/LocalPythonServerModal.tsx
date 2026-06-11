@@ -3,6 +3,8 @@ import { X, Play, Copy, Check, Terminal, Database, Loader2, Map as MapIcon, BarC
 import { motion, AnimatePresence } from 'motion/react';
 import { parse } from 'wellknown';
 import { cn } from '../lib/utils';
+import { isTsColumn, parseTsColumn, getTsMetrics } from '../lib/timeseries';
+import { normalizeLocalUrl, listLocalFiles, runLocalQuery, localFileUrl } from '../services/local-server';
 import { LineChart, Line, XAxis, YAxis, Tooltip as RechartsTooltip, ResponsiveContainer, Legend } from 'recharts';
 
 const PYTHON_SCRIPT = `import os
@@ -838,18 +840,7 @@ export const LocalPythonServerModal = ({
   useLocalServer: boolean,
   setUseLocalServer: (val: boolean) => void
 }) => {
-  const getNormalizeUrl = (urlStr: string): string => {
-    if (!urlStr) return urlStr;
-    if (window.location.protocol === 'https:' && urlStr.startsWith('http://')) {
-      const isLocalhost = urlStr.includes('localhost') || urlStr.includes('127.0.0.1');
-      if (!isLocalhost) {
-        return urlStr.replace(/^http:\/\//i, 'https://');
-      }
-    }
-    return urlStr;
-  };
-
-  const normalizedLocalUrl = getNormalizeUrl(localUrl);
+  const normalizedLocalUrl = normalizeLocalUrl(localUrl);
 
   const defaultQuery = `INSTALL spatial;
 LOAD spatial;
@@ -1014,14 +1005,7 @@ TO '/Users/charles/Documents/These/neighbor_timeseries.parquet'
     setFetchingFiles(true);
     setError(null);
     try {
-      const response = await fetch(`${normalizedLocalUrl}/files`, {
-        headers: {
-          'Bypass-Tunnel-Reminder': 'true',
-          'ngrok-skip-browser-warning': 'true'
-        }
-      });
-      if (!response.ok) throw new Error('Failed to fetch files');
-      const data = await response.json();
+      const data = await listLocalFiles(localUrl);
       setFiles(data);
     } catch (err: any) {
       setError(err.message || 'Failed to connect. Make sure Python server is running.');
@@ -1029,25 +1013,19 @@ TO '/Users/charles/Documents/These/neighbor_timeseries.parquet'
       setFetchingFiles(false);
     }
   };
-  
+
   const handleImportFile = (filename: string) => {
     if (onAddRemoteRasterLayer) {
-      onAddRemoteRasterLayer(`${normalizedLocalUrl}/files/${filename}?bypass_ngrok=true`, filename);
+      onAddRemoteRasterLayer(`${localFileUrl(localUrl, filename)}?bypass_ngrok=true`, filename);
       onClose();
     }
   };
 
-  const isTsColumn = (c: string) => /_{1,2}(\d{4}-\d{2}-\d{2})$/.test(c);
-  const getTsMetricAndDate = (c: string) => {
-    const match = c.match(/^(.*?)_{1,2}(\d{4}-\d{2}-\d{2})$/);
-    if (match) return { metric: match[1], date: match[2] };
-    return null;
-  };
-  
+  // Time-series property helpers are shared — see lib/timeseries.ts.
   const getChartData = (row: any, tsCols: string[]) => {
     const dataByDate: Record<string, any> = {};
     for (const c of tsCols) {
-      const parsed = getTsMetricAndDate(c);
+      const parsed = parseTsColumn(c);
       if (parsed) {
         if (!dataByDate[parsed.date]) dataByDate[parsed.date] = { date: parsed.date };
         if (row[c] !== null && row[c] !== undefined) {
@@ -1058,18 +1036,9 @@ TO '/Users/charles/Documents/These/neighbor_timeseries.parquet'
     return Object.values(dataByDate).sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   };
 
-  const getMetrics = (tsCols: string[]) => {
-    const metrics = new Set<string>();
-    for (const c of tsCols) {
-      const parsed = getTsMetricAndDate(c);
-      if (parsed) metrics.add(parsed.metric);
-    }
-    return Array.from(metrics);
-  };
-
   const tsCols = result?.columns?.filter(isTsColumn) || [];
   const standardCols = result?.columns?.filter((c: string) => !isTsColumn(c)) || [];
-  const metricsList = getMetrics(tsCols);
+  const metricsList = getTsMetrics(tsCols);
   const COLORS = ['#ef4444', '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4'];
 
   const handleCopy = () => {
@@ -1116,21 +1085,7 @@ TO '/Users/charles/Documents/These/neighbor_timeseries.parquet'
     setError(null);
     setResult(null);
     try {
-      const response = await fetch(`${normalizedLocalUrl}/query`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Bypass-Tunnel-Reminder': 'true',
-          'ngrok-skip-browser-warning': 'true'
-        },
-        body: JSON.stringify({ query })
-      });
-      
-      const data = await response.json();
-      if (!response.ok || data.status === 'error') {
-        throw new Error(data.message || 'Error executing query');
-      }
-      
+      const data = await runLocalQuery(localUrl, query);
       setResult(data);
     } catch (err: any) {
       setError(err.message || 'Failed to connect to local server. Make sure it is running.');

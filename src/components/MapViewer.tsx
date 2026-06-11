@@ -8,6 +8,7 @@ import { Layer, RasterLayer } from '../types';
 import { Map as MapIcon } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { getSpeciesColor, extractSpecies } from '../lib/species';
+import { isPixelsLayer } from '../lib/layer-factory';
 
 export function MapClickHandler({ isPixelAnalysisMode, onPixelClick }: { isPixelAnalysisMode?: boolean, onPixelClick?: (lat: number, lng: number) => void }) {
   useMapEvents({
@@ -496,7 +497,7 @@ function RasterLayerRenderer({ layers, filterByBbox, searchBbox, isPixelAnalysis
                 const baseColor = speciesColor || '#f97316';
 
                 return L.circleMarker(latlng, {
-                  radius: isPointSelected ? 8 : (layer.name?.startsWith('Pixels') ? (isSelected ? 5 : 3) : (isSelected ? 7 : 5)),
+                  radius: isPointSelected ? 8 : (isPixelsLayer(layer) ? (isSelected ? 5 : 3) : (isSelected ? 7 : 5)),
                   fillColor: isPointSelected ? '#f97316' : (isSelected ? '#3b82f6' : baseColor),
                   color: isPointSelected ? '#ffffff' : '#fff',
                   weight: isPointSelected ? 3 : (isSelected ? 2 : 1),

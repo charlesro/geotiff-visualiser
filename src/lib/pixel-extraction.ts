@@ -2,7 +2,8 @@ import { RasterLayer } from '../types';
 import buffer from '@turf/buffer';
 import booleanPointInPolygon from '@turf/boolean-point-in-polygon';
 import bbox from '@turf/bbox';
-import proj4 from 'proj4';
+import { unprojectToWgs84 } from './geo';
+import { computeIndexValue } from './spectral';
 import { extractSpecies } from './species';
 
 export interface PixelTimeseriesData {
@@ -18,23 +19,21 @@ export interface PixelExtractionResult {
 }
 
 function getPixelValue(bandData: any, offset: number, indexType: string): number | null {
+  // Index formulas are shared with the rendering pipelines (see spectral.ts).
+  // eviConstant is 10000 here because extraction operates on raw Sentinel-2
+  // digital numbers (0-10000) rather than 0-1 reflectance.
   if (indexType === 'NDVI') {
     const nir = bandData['8'] || bandData['B08'];
     const red = bandData['4'] || bandData['B04'];
     if (nir && red) {
-      const n = nir[offset] as number;
-      const r = red[offset] as number;
-      return (n + r) === 0 ? 0 : (n - r) / (n + r);
+      return computeIndexValue('ndvi', red[offset] as number, undefined, undefined, nir[offset] as number, { nanToZero: false });
     }
   } else if (indexType === 'EVI') {
     const nir = bandData['8'] || bandData['B08'];
     const red = bandData['4'] || bandData['B04'];
     const blue = bandData['2'] || bandData['B02'];
     if (nir && red && blue) {
-       const n = nir[offset] as number;
-       const r = red[offset] as number;
-       const b = blue[offset] as number;
-       return 2.5 * ((n - r) / (n + 6 * r - 7.5 * b + 10000));
+      return computeIndexValue('evi', red[offset] as number, undefined, blue[offset] as number, nir[offset] as number, { eviConstant: 10000, nanToZero: false });
     }
   } else {
      const bData = bandData[indexType] || bandData[indexType.replace('B', '')] || bandData[indexType.replace('B0', '')];
@@ -182,22 +181,8 @@ export async function extractPixelTimeseriesOptions(
     const nativeWidth = metadata.windowWidth || originalWidth;
     const nativeHeight = metadata.windowHeight || originalHeight;
 
-    const unproject = (x: number, y: number): [number, number] => {
-      const crsVal = crs || 'EPSG:4326';
-      if (crsVal === 'EPSG:4326') return [x, y];
-      
-      let projDef = crsVal;
-      if (crsVal.startsWith('EPSG:326') || crsVal.startsWith('EPSG:327')) {
-        const zone = parseInt(crsVal.slice(8));
-        const isSouth = crsVal.startsWith('EPSG:327');
-        projDef = `+proj=utm +zone=${zone} ${isSouth ? '+south ' : ''}+datum=WGS84 +units=m +no_defs`;
-      }
-      try {
-        return proj4(projDef, 'EPSG:4326', [x, y]);
-      } catch (e) {
-        return [x, y];
-      }
-    };
+    // Shared projection helper (see geo.ts)
+    const unproject = (x: number, y: number): [number, number] => unprojectToWgs84(crs, x, y);
 
     let rowCounter = 0;
     const computedPixels: {x: number, y: number, id: string, lng: number, lat: number}[] = [];
