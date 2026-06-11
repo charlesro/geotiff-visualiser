@@ -174,19 +174,20 @@ async function downloadScene(
   const bestEpsg = Array.from(overlapByEpsg.entries()).sort((a, b) => b[1] - a[1])[0][0];
   const sameZone = tiles.filter(t => (t.properties['proj:epsg'] ?? 0) === bestEpsg);
 
-  const mosaicTiles: MosaicTile[] = [];
-  for (const tile of sameZone) {
-    const signed = await signSTACItem(tile, token);
-    const bandUrls: Record<string, string> = {};
-    for (const asset of SERIES_ASSETS) {
-      const href = signed.assets[asset]?.href;
-      if (href) bandUrls[asset] = href;
-    }
-    if (!bandUrls['B04'] || !bandUrls['B08']) {
-      throw new Error(`Scene ${tile.id} is missing the B04/B08 assets.`);
-    }
-    mosaicTiles.push({ bandUrls });
-  }
+  const mosaicTiles: MosaicTile[] = await Promise.all(
+    sameZone.map(async tile => {
+      const signed = await signSTACItem(tile, token);
+      const bandUrls: Record<string, string> = {};
+      for (const asset of SERIES_ASSETS) {
+        const href = signed.assets[asset]?.href;
+        if (href) bandUrls[asset] = href;
+      }
+      if (!bandUrls['B04'] || !bandUrls['B08']) {
+        throw new Error(`Scene ${tile.id} is missing the B04/B08 assets.`);
+      }
+      return { bandUrls };
+    })
+  );
 
   const crs = bestEpsg ? `EPSG:${bestEpsg}` : 'EPSG:4326';
   const date = item.properties.datetime.split('T')[0];

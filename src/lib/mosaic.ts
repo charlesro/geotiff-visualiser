@@ -55,12 +55,22 @@ export async function fetchSceneMosaic(
   const bands: Record<string, Float32Array> = {};
   for (const name of bandNames) bands[name] = new Float32Array(gridW * gridH);
 
+  // All tile×band reads are independent (each tile pastes into a disjoint —
+  // or identically-valued — region), so run them in parallel up to the
+  // browser's per-host connection limit.
+  const reads: { target: Float32Array; url: string }[] = [];
   for (const tile of tiles) {
     for (const [name, url] of Object.entries(tile.bandUrls)) {
-      const target = bands[name];
-      if (!target || !url) continue;
-      await pasteTileBand(target, gridW, gridH, [gridMinX, gridMinY, gridMaxX, gridMaxY], res, url);
+      if (bands[name] && url) reads.push({ target: bands[name], url });
     }
+  }
+  const PARALLEL = 6;
+  for (let i = 0; i < reads.length; i += PARALLEL) {
+    await Promise.all(
+      reads
+        .slice(i, i + PARALLEL)
+        .map(r => pasteTileBand(r.target, gridW, gridH, [gridMinX, gridMinY, gridMaxX, gridMaxY], res, r.url))
+    );
   }
 
   // Render the preview canvas; supersample small grids with nearest-neighbour
@@ -145,15 +155,16 @@ async function pasteTileBand(
       const outH = dy1 - dy0;
       if (outW <= 0 || outH <= 0) return;
 
-      // Source window in tile pixels; readRasters resamples to outW×outH
-      // (COG overviews make coarse reads cheap).
+      // Source window in full-resolution tile pixels. Reading through the
+      // GeoTIFF object (not the image) lets geotiff.js pick the COG overview
+      // matching outW×outH instead of decoding the full 10 m data.
       const sLeft = Math.max(0, Math.floor((isectMinX - tBbox[0]) / tResX));
       const sTop = Math.max(0, Math.floor((tBbox[3] - isectMaxY) / tResY));
       const sRight = Math.min(tW, Math.ceil((isectMaxX - tBbox[0]) / tResX));
       const sBottom = Math.min(tH, Math.ceil((tBbox[3] - isectMinY) / tResY));
       if (sRight - sLeft <= 0 || sBottom - sTop <= 0) return;
 
-      const raster = await image.readRasters({
+      const raster = await tiff.readRasters({
         window: [sLeft, sTop, sRight, sBottom],
         width: outW,
         height: outH,
