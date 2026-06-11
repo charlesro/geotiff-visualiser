@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { MapContainer, TileLayer, GeoJSON, ImageOverlay, ScaleControl, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, GeoJSON, ImageOverlay, ScaleControl, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { Bbox } from '../lib/geo';
 import { ZoneExtraction } from '../lib/zones';
 import { polygonLabel } from '../lib/polygon-source';
+import { Square } from 'lucide-react';
+import { cn } from '../lib/utils';
 
 /**
  * The single map of the app: polygons (click to select), the buffer-zone
@@ -71,6 +73,65 @@ function FitController({ fitRequest }: { fitRequest: MapPanelProps['fitRequest']
     );
   }, [fitRequest, map]);
   return null;
+}
+
+function BboxSelector({ polygons, onSelect }: { polygons: any | null; onSelect: (pid: number) => void }) {
+  const map = useMap();
+  const [drawMode, setDrawMode] = useState(false);
+  const [startLatLng, setStartLatLng] = useState<L.LatLng | null>(null);
+  const [rect, setRect] = useState<L.Rectangle | null>(null);
+
+  useMapEvents({
+    mousedown: (e) => {
+      if (!drawMode) return;
+      setStartLatLng(e.latlng);
+    },
+    mousemove: (e) => {
+      if (!drawMode || !startLatLng) return;
+      if (rect) map.removeLayer(rect);
+      const newRect = L.rectangle([[startLatLng.lat, startLatLng.lng], [e.latlng.lat, e.latlng.lng]], { color: '#38bdf8', fill: true, fillOpacity: 0.1, weight: 2 });
+      newRect.addTo(map);
+      setRect(newRect);
+    },
+    mouseup: (e) => {
+      if (!drawMode || !startLatLng) return;
+      const bounds = L.latLngBounds(startLatLng, e.latlng);
+      if (rect) map.removeLayer(rect);
+      setRect(null);
+      setStartLatLng(null);
+
+      // Find all polygons whose bounds intersect the drawn box
+      if (polygons?.features) {
+        for (const f of polygons.features) {
+          if (!f.properties?.__pid && f.properties?.__pid !== 0) continue;
+          try {
+            const fbounds = L.geoJSON(f).getBounds();
+            if (fbounds.intersects(bounds)) {
+              onSelect(f.properties.__pid);
+            }
+          } catch {
+            /* skip invalid geometries */
+          }
+        }
+      }
+      setDrawMode(false);
+    },
+  });
+
+  return (
+    <button
+      onClick={() => setDrawMode(!drawMode)}
+      className={cn(
+        'absolute left-3 top-12 z-[1000] flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors',
+        drawMode
+          ? 'border-sky-400 bg-sky-500/20 text-sky-200'
+          : 'border-white/10 bg-[#11151acc] text-slate-300 hover:text-slate-200'
+      )}
+    >
+      <Square className="h-3.5 w-3.5" />
+      {drawMode ? 'Drawing…' : 'Select by box'}
+    </button>
+  );
 }
 
 const ZONE_COLORS: Record<string, string> = {
@@ -156,6 +217,7 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
         <TileLayer key={basemap} url={BASEMAPS[basemap].url} attribution={BASEMAPS[basemap].attribution} maxZoom={19} />
         <ScaleControl position="bottomleft" />
         <FitController fitRequest={fitRequest} />
+        <BboxSelector polygons={polygons} onSelect={onTogglePolygon} />
 
         {preview && (
           <ImageOverlay url={preview.url} bounds={preview.bounds} opacity={preview.opacity} className="pixel-perfect" />
