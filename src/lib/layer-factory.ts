@@ -42,6 +42,7 @@ export interface CreateRasterLayerArgs {
   stacItem?: any;
   originalSource?: any;
   originalBuffer?: ArrayBuffer;
+  analysisGrids?: GeoTIFFData[];
 }
 
 /** Single factory for raster layers, whatever the data source. */
@@ -63,6 +64,7 @@ export function createRasterLayer(args: CreateRasterLayerArgs): RasterLayer {
     stacItem: args.stacItem,
     originalSource: args.originalSource,
     originalBuffer: args.originalBuffer,
+    analysisGrids: args.analysisGrids,
   };
 }
 

@@ -138,10 +138,26 @@ export async function extractPixelTimeseriesOptions(
   
   let pointsExtracted = false;
 
-  for (const layer of sortedLayers) {
-    if (!layer.data || !layer.data.bandData || !layer.data.metadata) continue;
+  // When a layer carries per-cluster 10 m analysis grids, read the one that
+  // contains this feature instead of the (possibly downsampled) preview grid.
+  const centerLng = (minLng + maxLng) / 2;
+  const centerLat = (minLat + maxLat) / 2;
+  const gridForFeature = (layer: RasterLayer) => {
+    if (layer.analysisGrids?.length) {
+      const g = layer.analysisGrids.find(g => {
+        const b = g.metadata.imageBbox;
+        return b && centerLng >= b[0] && centerLng <= b[2] && centerLat >= b[1] && centerLat <= b[3];
+      });
+      if (g) return g;
+    }
+    return layer.data;
+  };
 
-    const { bandData, metadata } = layer.data;
+  for (const layer of sortedLayers) {
+    const grid = gridForFeature(layer);
+    if (!grid || !grid.bandData || !grid.metadata) continue;
+
+    const { bandData, metadata } = grid;
     const { width, height, crs, originalBbox, originalWidth, originalHeight, windowOffsetX, windowOffsetY } = metadata;
 
     if (!originalBbox || !originalWidth || !originalHeight) continue;

@@ -132,12 +132,21 @@ export default function ImageryStep(props: ImageryStepProps) {
           <div className="text-xs text-slate-400">
             {props.scenes.length} scenes in the series — click to preview
             {(() => {
-              const res = props.scenes[0]?.data?.metadata?.resolution?.[0];
-              if (typeof res !== 'number') return null;
-              return res > 10 ? (
-                <span className="text-amber-400/90"> · {res} m/px (downsampled — selection too large for 10 m)</span>
+              const first = props.scenes[0];
+              const previewRes = first?.data?.metadata?.resolution?.[0];
+              if (typeof previewRes !== 'number') return null;
+              if (first?.analysisGrids?.length) {
+                return (
+                  <span className="text-slate-500">
+                    {' '}
+                    · analysis at 10 m ({first.analysisGrids.length} polygon windows) · map preview {previewRes} m/px
+                  </span>
+                );
+              }
+              return previewRes > 10 ? (
+                <span className="text-amber-400/90"> · {previewRes} m/px (downsampled — selection too large for 10 m)</span>
               ) : (
-                <span className="text-slate-500"> · {res} m/px</span>
+                <span className="text-slate-500"> · {previewRes} m/px</span>
               );
             })()}
           </div>

@@ -27,6 +27,16 @@ export function getCachedTiff(url: string): Promise<any> {
   return actualPromise;
 }
 
+/**
+ * Drop the cached GeoTIFF objects (and their fetched-block caches). Called
+ * between scenes of a series download: blocks of one date's COGs are never
+ * reused for another date, and hundreds of small window reads would
+ * otherwise keep all downloaded blocks in memory.
+ */
+export function clearTiffCache(): void {
+  tiffCache.clear();
+}
+
 export interface RenderingOptions {
   mode: 'rgb' | 'single' | 'index';
   bands: [number, number, number]; // 1-based indices

@@ -8,6 +8,7 @@ import {
   loadPolygonsFromFile,
 } from './lib/polygon-source';
 import { fetchSentinelSeries, SeriesFetchParams, SeriesProgress } from './lib/fetch-series';
+import { clusterFeatureBboxes } from './lib/cluster';
 import { extractZones, ZoneExtraction, ZoneProgress } from './lib/zones';
 import { runPixelPca, pcaScoresToCsv, PcaRunResult } from './lib/pca';
 import { isCancelledError } from './lib/cancel';
@@ -198,7 +199,10 @@ export default function App() {
       setSeriesProgress(null);
       clearFromZones();
       try {
-        const result = await fetchSentinelSeries(bbox, params, setSeriesProgress, () => op.cancelled);
+        // One padded bbox per polygon cluster — fetched at native 10 m for
+        // the analysis even when the preview mosaic is downsampled.
+        const clusters = clusterFeatureBboxes(selectedFeatures);
+        const result = await fetchSentinelSeries(bbox, params, setSeriesProgress, () => op.cancelled, clusters);
         setScenes(result.layers);
         setFailedDates(result.failedDates);
         setPartialDates(result.partialDates);
@@ -225,9 +229,10 @@ export default function App() {
     [clearFromZones]
   );
 
-  /** Ground pixel size of the fetched series (m). 10 m natively; coarser when the selection is large. */
+  /** Ground pixel size the analysis runs at (m). The 10 m cluster grids win over the preview mosaic. */
   const pixelSize = useMemo(() => {
-    const res = scenes[0]?.data?.metadata?.resolution?.[0];
+    const first = scenes[0];
+    const res = first?.analysisGrids?.[0]?.metadata?.resolution?.[0] ?? first?.data?.metadata?.resolution?.[0];
     return typeof res === 'number' ? res : null;
   }, [scenes]);
 

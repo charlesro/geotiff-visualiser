@@ -23,6 +23,12 @@ export interface RasterLayer extends BaseLayer {
   stacItem?: any;
   originalBuffer?: ArrayBuffer;
   originalSource?: any;
+  /**
+   * Native-resolution (10 m) grids covering only the analysed polygons,
+   * one per polygon cluster. When present, pixel extraction reads these
+   * instead of `data` (which may be downsampled for large selections).
+   */
+  analysisGrids?: GeoTIFFData[];
 }
 
 export interface VectorLayer extends BaseLayer {

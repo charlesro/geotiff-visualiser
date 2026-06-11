@@ -31,12 +31,21 @@ const MAX_DIM = 2048;
 /** Canvases below this edge get supersampled so Leaflet doesn't blur them. */
 const MIN_CANVAS_SIZE = 512;
 
+export interface MosaicOptions {
+  /**
+   * Skip the preview canvas (analysis-only grids): a 1×1 placeholder is
+   * returned as `image` and no supersampling happens.
+   */
+  skipCanvas?: boolean;
+}
+
 export async function fetchSceneMosaic(
   tiles: MosaicTile[],
   wgs84Bbox: Bbox,
   crs: string,
   options: RenderingOptions,
-  isCancelled?: CancelCheck
+  isCancelled?: CancelCheck,
+  mosaicOptions: MosaicOptions = {}
 ): Promise<GeoTIFFData> {
   if (tiles.length === 0) throw new Error('No tiles to mosaic.');
 
@@ -78,8 +87,15 @@ export async function fetchSceneMosaic(
 
   // Render the preview canvas; supersample small grids with nearest-neighbour
   // so individual pixels stay sharp on the map.
-  let canvas = renderRasterToCanvas((bandNum: number) => bands[getAssetKey(bandNum)] || new Float32Array(gridW * gridH), options, gridW, gridH);
-  if (gridW < MIN_CANVAS_SIZE || gridH < MIN_CANVAS_SIZE) {
+  let canvas: HTMLCanvasElement;
+  if (mosaicOptions.skipCanvas) {
+    canvas = document.createElement('canvas');
+    canvas.width = 1;
+    canvas.height = 1;
+  } else {
+    canvas = renderRasterToCanvas((bandNum: number) => bands[getAssetKey(bandNum)] || new Float32Array(gridW * gridH), options, gridW, gridH);
+  }
+  if (!mosaicOptions.skipCanvas && (gridW < MIN_CANVAS_SIZE || gridH < MIN_CANVAS_SIZE)) {
     const scale = Math.ceil(Math.max(MIN_CANVAS_SIZE / gridW, MIN_CANVAS_SIZE / gridH));
     const big = document.createElement('canvas');
     big.width = gridW * scale;

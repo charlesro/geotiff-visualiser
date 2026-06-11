@@ -11,6 +11,7 @@ import { fetchSceneMosaic, MosaicTile } from './mosaic';
 import { createRasterLayer, DEFAULT_OPTIONS } from './layer-factory';
 import { getBboxIntersectionArea, Bbox } from './geo';
 import { CancelCheck, throwIfCancelled } from './cancel';
+import { GeoTIFFData, clearTiffCache } from './geotiff-utils';
 
 /**
  * Sentinel-2 time-series acquisition for the workflow.
@@ -55,7 +56,9 @@ export async function fetchSentinelSeries(
   bbox: Bbox,
   params: SeriesFetchParams,
   onProgress: (p: SeriesProgress) => void,
-  isCancelled?: CancelCheck
+  isCancelled?: CancelCheck,
+  /** Padded bboxes of the polygon clusters — fetched at native 10 m for the analysis. */
+  analysisBboxes: Bbox[] = []
 ): Promise<SeriesFetchResult> {
   onProgress({ stage: 'searching', current: 0, total: 1, message: 'Searching the Sentinel-2 catalogue…' });
 
@@ -104,11 +107,21 @@ export async function fetchSentinelSeries(
     });
 
     try {
-      layers.push(await downloadScene(item, bbox, seriesId, params.token, isCancelled));
+      const onWindows = (done: number, total: number) =>
+        onProgress({
+          stage: 'downloading',
+          current: i,
+          total: picked.length,
+          message: `Scene ${i + 1}/${picked.length} (${date}) — 10 m window ${done}/${total}…`,
+        });
+      layers.push(await downloadScene(item, bbox, seriesId, params.token, isCancelled, analysisBboxes, onWindows));
     } catch (e) {
       throwIfCancelled(isCancelled);
       console.error(`Failed to download scene ${date}:`, e);
       failedDates.push(date);
+    } finally {
+      // Block caches of this date's COGs are useless for the next date.
+      clearTiffCache();
     }
   }
 
@@ -162,7 +175,9 @@ async function downloadScene(
   bbox: Bbox,
   seriesId: string,
   token?: string,
-  isCancelled?: CancelCheck
+  isCancelled?: CancelCheck,
+  analysisBboxes: Bbox[] = [],
+  onWindows?: (done: number, total: number) => void
 ): Promise<RasterLayer> {
   // All tiles of the overpass that touch the selection take part in the
   // mosaic. Tiles can sit in different UTM zones near a zone boundary; the
@@ -197,6 +212,16 @@ async function downloadScene(
   const crs = bestEpsg ? `EPSG:${bestEpsg}` : 'EPSG:4326';
   const date = item.properties.datetime.split('T')[0];
   const data = await fetchSceneMosaic(mosaicTiles, bbox, crs, DEFAULT_OPTIONS, isCancelled);
+
+  // When the preview mosaic was downsampled, additionally fetch one
+  // native-10 m grid per polygon cluster — the analysis reads those, so the
+  // interior/edge split stays at 10 m no matter how large the selection is.
+  const previewRes = data.metadata.resolution?.[0] ?? 10;
+  let analysisGrids: GeoTIFFData[] | undefined;
+  if (previewRes > 10 && analysisBboxes.length > 0) {
+    analysisGrids = await fetchAnalysisGrids(mosaicTiles, analysisBboxes, crs, isCancelled, onWindows);
+  }
+
   return createRasterLayer({
     name: `S2 ${date}`,
     data,
@@ -205,5 +230,36 @@ async function downloadScene(
     seriesId,
     datetime: item.properties.datetime,
     remoteBbox: bbox,
+    analysisGrids,
   });
+}
+
+/** Download the per-cluster 10 m windows, a few clusters at a time. */
+async function fetchAnalysisGrids(
+  tiles: MosaicTile[],
+  bboxes: Bbox[],
+  crs: string,
+  isCancelled?: CancelCheck,
+  onWindows?: (done: number, total: number) => void
+): Promise<GeoTIFFData[]> {
+  const grids: GeoTIFFData[] = [];
+  const queue = bboxes.map((b, i) => ({ bbox: b, index: i }));
+  let done = 0;
+  onWindows?.(0, bboxes.length);
+
+  const WORKERS = 3; // each window already reads its bands in parallel
+  await Promise.all(
+    Array.from({ length: WORKERS }, async () => {
+      for (;;) {
+        const next = queue.shift();
+        if (!next) return;
+        throwIfCancelled(isCancelled);
+        grids[next.index] = await fetchSceneMosaic(tiles, next.bbox, crs, DEFAULT_OPTIONS, isCancelled, {
+          skipCanvas: true,
+        });
+        onWindows?.(++done, bboxes.length);
+      }
+    })
+  );
+  return grids;
 }
