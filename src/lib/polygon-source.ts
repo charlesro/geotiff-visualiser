@@ -84,8 +84,12 @@ function normalizeFeatures(rawFeatures: { geometry: any; properties: Record<stri
 }
 
 /** Run a SQL query against the local DuckDB engine and parse polygons out of it. */
-export async function loadPolygonsFromDatabase(baseUrl: string, sql: string): Promise<PolygonLoadResult> {
-  const data = await runLocalQuery(baseUrl, sql);
+export async function loadPolygonsFromDatabase(
+  baseUrl: string,
+  sql: string,
+  signal?: AbortSignal
+): Promise<PolygonLoadResult> {
+  const data = await runLocalQuery(baseUrl, sql, signal);
   const rows: any[] = data.rows || [];
   if (rows.length === 0) {
     throw new Error('The query returned no rows.');

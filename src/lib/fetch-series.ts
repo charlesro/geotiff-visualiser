@@ -10,6 +10,7 @@ import {
 import { fetchSceneMosaic, MosaicTile } from './mosaic';
 import { createRasterLayer, DEFAULT_OPTIONS } from './layer-factory';
 import { getBboxIntersectionArea, Bbox } from './geo';
+import { CancelCheck, throwIfCancelled } from './cancel';
 
 /**
  * Sentinel-2 time-series acquisition for the workflow.
@@ -53,7 +54,8 @@ export interface SeriesFetchResult {
 export async function fetchSentinelSeries(
   bbox: Bbox,
   params: SeriesFetchParams,
-  onProgress: (p: SeriesProgress) => void
+  onProgress: (p: SeriesProgress) => void,
+  isCancelled?: CancelCheck
 ): Promise<SeriesFetchResult> {
   onProgress({ stage: 'searching', current: 0, total: 1, message: 'Searching the Sentinel-2 catalogue…' });
 
@@ -90,6 +92,7 @@ export async function fetchSentinelSeries(
   const failedDates: string[] = [];
 
   for (let i = 0; i < picked.length; i++) {
+    throwIfCancelled(isCancelled);
     const item = picked[i];
     const date = item.properties.datetime.split('T')[0];
     const tileCount = tilesOf(item).filter(t => intersectsBbox(t, bbox)).length;
@@ -101,8 +104,9 @@ export async function fetchSentinelSeries(
     });
 
     try {
-      layers.push(await downloadScene(item, bbox, seriesId, params.token));
+      layers.push(await downloadScene(item, bbox, seriesId, params.token, isCancelled));
     } catch (e) {
+      throwIfCancelled(isCancelled);
       console.error(`Failed to download scene ${date}:`, e);
       failedDates.push(date);
     }
@@ -157,7 +161,8 @@ async function downloadScene(
   item: STACItem,
   bbox: Bbox,
   seriesId: string,
-  token?: string
+  token?: string,
+  isCancelled?: CancelCheck
 ): Promise<RasterLayer> {
   // All tiles of the overpass that touch the selection take part in the
   // mosaic. Tiles can sit in different UTM zones near a zone boundary; the
@@ -191,7 +196,7 @@ async function downloadScene(
 
   const crs = bestEpsg ? `EPSG:${bestEpsg}` : 'EPSG:4326';
   const date = item.properties.datetime.split('T')[0];
-  const data = await fetchSceneMosaic(mosaicTiles, bbox, crs, DEFAULT_OPTIONS);
+  const data = await fetchSceneMosaic(mosaicTiles, bbox, crs, DEFAULT_OPTIONS, isCancelled);
   return createRasterLayer({
     name: `S2 ${date}`,
     data,

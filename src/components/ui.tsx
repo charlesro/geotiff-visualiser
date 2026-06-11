@@ -76,6 +76,20 @@ export function Button({
   );
 }
 
+/** Red Stop button shown next to an action while it is running. */
+export function StopButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      title="Stop the current operation"
+      className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-red-500/40 px-3 py-1.5 text-sm font-medium text-red-400 transition-colors hover:bg-red-500/10"
+    >
+      <span className="h-2.5 w-2.5 rounded-[2px] bg-current" />
+      Stop
+    </button>
+  );
+}
+
 /** Amber hint shown when a step's prerequisite isn't met yet. */
 export function PrereqNote({ message }: { message: string }) {
   return (

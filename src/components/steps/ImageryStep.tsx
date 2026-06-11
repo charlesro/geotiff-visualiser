@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Eye, EyeOff, Satellite, Trash2 } from 'lucide-react';
 import { RasterLayer } from '../../types';
 import { SeriesFetchParams, SeriesProgress } from '../../lib/fetch-series';
-import { Button, ErrorNote, Field, inputClass, PrereqNote, ProgressBar } from '../ui';
+import { DatasetDateRange } from '../../lib/neighbor-query';
+import { Button, ErrorNote, Field, inputClass, PrereqNote, ProgressBar, StopButton } from '../ui';
 import { cn } from '../../lib/utils';
 
 /**
@@ -18,6 +19,9 @@ interface ImageryStepProps {
   failedDates: string[];
   partialDates: number;
   onFetch: (params: SeriesFetchParams) => void;
+  onCancel: () => void;
+  /** Acquisition span of the connected dataset — the default fetch period. */
+  datasetRange: DatasetDateRange | null;
   previewSceneId: string | null;
   onPreviewScene: (id: string | null) => void;
   onDeleteScene: (id: string) => void;
@@ -32,8 +36,16 @@ function defaultDates(): { start: string; end: string } {
 
 export default function ImageryStep(props: ImageryStepProps) {
   const defaults = defaultDates();
-  const [startDate, setStartDate] = useState(defaults.start);
-  const [endDate, setEndDate] = useState(defaults.end);
+  const [startDate, setStartDate] = useState(props.datasetRange?.start || defaults.start);
+  const [endDate, setEndDate] = useState(props.datasetRange?.end || defaults.end);
+
+  // When the dataset's date span becomes known (Connect in step 1), adopt it.
+  useEffect(() => {
+    if (props.datasetRange) {
+      setStartDate(props.datasetRange.start);
+      setEndDate(props.datasetRange.end);
+    }
+  }, [props.datasetRange]);
   const [maxCloud, setMaxCloud] = useState(20);
   const [count, setCount] = useState(12);
   const [token, setToken] = useState(() => localStorage.getItem('mpc_token') || '');
@@ -97,10 +109,13 @@ export default function ImageryStep(props: ImageryStepProps) {
         </div>
       </details>
 
-      <Button onClick={fetchSeries} busy={props.busy} disabled={props.selectedCount === 0} className="w-full">
-        <Satellite className="h-3.5 w-3.5" />
-        Fetch time series · {props.selectedCount} polygon{props.selectedCount === 1 ? '' : 's'}
-      </Button>
+      <div className="flex gap-2">
+        <Button onClick={fetchSeries} busy={props.busy} disabled={props.selectedCount === 0} className="flex-1">
+          <Satellite className="h-3.5 w-3.5" />
+          Fetch time series · {props.selectedCount} polygon{props.selectedCount === 1 ? '' : 's'}
+        </Button>
+        {props.busy && <StopButton onClick={props.onCancel} />}
+      </div>
 
       {props.busy && props.progress && (
         <ProgressBar current={props.progress.current} total={props.progress.total} message={props.progress.message} />

@@ -2,6 +2,7 @@ import { GeoTIFFData, RenderingOptions, getCachedTiff } from './geotiff-utils';
 import { renderRasterToCanvas } from './raster-render';
 import { getAssetKey } from './sentinel';
 import { Bbox, projectBboxToCrs, unprojectBboxToWgs84 } from './geo';
+import { CancelCheck, throwIfCancelled } from './cancel';
 
 /**
  * Multi-tile scene mosaic.
@@ -34,7 +35,8 @@ export async function fetchSceneMosaic(
   tiles: MosaicTile[],
   wgs84Bbox: Bbox,
   crs: string,
-  options: RenderingOptions
+  options: RenderingOptions,
+  isCancelled?: CancelCheck
 ): Promise<GeoTIFFData> {
   if (tiles.length === 0) throw new Error('No tiles to mosaic.');
 
@@ -66,6 +68,7 @@ export async function fetchSceneMosaic(
   }
   const PARALLEL = 6;
   for (let i = 0; i < reads.length; i += PARALLEL) {
+    throwIfCancelled(isCancelled);
     await Promise.all(
       reads
         .slice(i, i + PARALLEL)

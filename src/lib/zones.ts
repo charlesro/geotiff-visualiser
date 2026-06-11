@@ -1,6 +1,7 @@
 import { RasterLayer } from '../types';
 import { extractPixelTimeseriesOptions } from './pixel-extraction';
 import { polygonLabel } from './polygon-source';
+import { CancelCheck, throwIfCancelled } from './cancel';
 
 /**
  * Buffer-zone pixel extraction.
@@ -47,7 +48,8 @@ export async function extractZones(
   distance: number,
   metric: string,
   includeOutside: boolean,
-  onProgress: (p: ZoneProgress) => void
+  onProgress: (p: ZoneProgress) => void,
+  isCancelled?: CancelCheck
 ): Promise<ZoneExtraction> {
   if (features.length === 0) throw new Error('No polygons selected.');
   if (layers.length === 0) throw new Error('No imagery fetched.');
@@ -60,6 +62,7 @@ export async function extractZones(
   const dates = new Set<string>();
 
   for (let i = 0; i < features.length; i++) {
+    throwIfCancelled(isCancelled);
     const feature = features[i];
     const label = polygonLabel(feature);
     onProgress({ done: i, total: features.length, label });

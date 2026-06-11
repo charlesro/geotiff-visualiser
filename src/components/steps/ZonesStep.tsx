@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Scissors } from 'lucide-react';
 import { ZoneExtraction, ZoneProgress } from '../../lib/zones';
-import { Button, ErrorNote, Field, inputClass, PrereqNote, ProgressBar, Stat } from '../ui';
+import { Button, ErrorNote, Field, inputClass, PrereqNote, ProgressBar, Stat, StopButton } from '../ui';
 
 /**
  * Step 3 — split the pixels of every selected polygon into interior
@@ -23,6 +23,7 @@ interface ZonesStepProps {
   sceneCount: number;
   selectedCount: number;
   onRun: (distance: number, metric: string, includeOutside: boolean) => void;
+  onCancel: () => void;
 }
 
 export default function ZonesStep(props: ZonesStepProps) {
@@ -73,15 +74,18 @@ export default function ZonesStep(props: ZonesStepProps) {
         Also include pixels up to {distance} m <em>outside</em> the boundary in the edge set
       </label>
 
-      <Button
-        onClick={() => props.onRun(distance, metric, includeOutside)}
-        busy={props.busy}
-        disabled={props.sceneCount === 0 || props.selectedCount === 0}
-        className="w-full"
-      >
-        <Scissors className="h-3.5 w-3.5" />
-        Extract pixel zones
-      </Button>
+      <div className="flex gap-2">
+        <Button
+          onClick={() => props.onRun(distance, metric, includeOutside)}
+          busy={props.busy}
+          disabled={props.sceneCount === 0 || props.selectedCount === 0}
+          className="flex-1"
+        >
+          <Scissors className="h-3.5 w-3.5" />
+          Extract pixel zones
+        </Button>
+        {props.busy && <StopButton onClick={props.onCancel} />}
+      </div>
 
       {props.busy && props.progress && (
         <ProgressBar

@@ -119,3 +119,31 @@ export async function fetchSpeciesList(baseUrl: string, parquetPath: string): Pr
   );
   return (data.rows || []).map((r: any) => String(r.crp_lbl));
 }
+
+export interface DatasetDateRange {
+  start: string;
+  end: string;
+}
+
+/**
+ * Acquisition date span of the dataset. The melted parquet stores one column
+ * per metric and date (e.g. crp_cd__2021-01-08), so the span is read from
+ * the date suffixes of the column names.
+ */
+export async function fetchDatasetDateRange(
+  baseUrl: string,
+  parquetPath: string
+): Promise<DatasetDateRange | null> {
+  const data = await runLocalQuery(
+    baseUrl,
+    `SELECT min(d) AS start_date, max(d) AS end_date
+FROM (
+  SELECT regexp_extract(column_name, '([0-9]{4}-[0-9]{2}-[0-9]{2})$', 1) AS d
+  FROM (DESCRIBE SELECT * FROM read_parquet(${sqlString(parquetPath)}))
+)
+WHERE d <> '';`
+  );
+  const row = (data.rows || [])[0];
+  if (!row?.start_date || !row?.end_date) return null;
+  return { start: String(row.start_date), end: String(row.end_date) };
+}

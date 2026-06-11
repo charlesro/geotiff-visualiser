@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { saveAs } from 'file-saver';
 import { Layers, RotateCcw } from 'lucide-react';
 import { RasterLayer } from './types';
@@ -10,6 +10,8 @@ import {
 import { fetchSentinelSeries, SeriesFetchParams, SeriesProgress } from './lib/fetch-series';
 import { extractZones, ZoneExtraction, ZoneProgress } from './lib/zones';
 import { runPixelPca, pcaScoresToCsv, PcaRunResult } from './lib/pca';
+import { isCancelledError } from './lib/cancel';
+import { DatasetDateRange } from './lib/neighbor-query';
 import MapPanel, { ScenePreview } from './components/MapPanel';
 import Sidebar, { StepDescriptor } from './components/Sidebar';
 import PolygonsStep from './components/steps/PolygonsStep';
@@ -61,6 +63,35 @@ export default function App() {
   const [activeStep, setActiveStep] = useState(1);
   const [fitRequest, setFitRequest] = useState<{ bounds: Bbox; token: number } | null>(null);
 
+  // Acquisition span of the connected dataset; used as the default fetch period.
+  const [datasetRange, setDatasetRange] = useState<DatasetDateRange | null>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('ppca_dataset_range') || 'null');
+    } catch {
+      return null;
+    }
+  });
+  const onDatasetRange = useCallback((range: DatasetDateRange) => {
+    setDatasetRange(range);
+    localStorage.setItem('ppca_dataset_range', JSON.stringify(range));
+  }, []);
+
+  // One cancellation handle for whichever operation is currently running.
+  // Stop flips the flag (polled by the long loops) and aborts in-flight
+  // engine queries.
+  const opRef = useRef<{ cancelled: boolean; abort: AbortController } | null>(null);
+  const beginOp = () => {
+    const op = { cancelled: false, abort: new AbortController() };
+    opRef.current = op;
+    return op;
+  };
+  const cancelOp = useCallback(() => {
+    if (opRef.current) {
+      opRef.current.cancelled = true;
+      opRef.current.abort.abort();
+    }
+  }, []);
+
   const requestFit = useCallback((bounds: Bbox | null) => {
     if (bounds) setFitRequest({ bounds, token: Date.now() });
   }, []);
@@ -100,13 +131,14 @@ export default function App() {
 
   const loadFromDb = useCallback(
     async (url: string, sql: string) => {
+      const op = beginOp();
       setPolygonsBusy(true);
       setPolygonsError(null);
       try {
-        const result = await loadPolygonsFromDatabase(url, sql);
+        const result = await loadPolygonsFromDatabase(url, sql, op.abort.signal);
         onPolygonsLoaded(result, 'database');
       } catch (e) {
-        setPolygonsError(errorMessage(e));
+        if (!isCancelledError(e)) setPolygonsError(errorMessage(e));
       } finally {
         setPolygonsBusy(false);
       }
@@ -160,12 +192,13 @@ export default function App() {
       // Margin so edge pixels just outside the polygons are covered too.
       const bbox = bufferBboxMeters(bounds, 120);
 
+      const op = beginOp();
       setSeriesBusy(true);
       setSeriesError(null);
       setSeriesProgress(null);
       clearFromZones();
       try {
-        const result = await fetchSentinelSeries(bbox, params, setSeriesProgress);
+        const result = await fetchSentinelSeries(bbox, params, setSeriesProgress, () => op.cancelled);
         setScenes(result.layers);
         setFailedDates(result.failedDates);
         setPartialDates(result.partialDates);
@@ -173,7 +206,7 @@ export default function App() {
         requestFit(bbox);
       } catch (e) {
         setScenes([]);
-        setSeriesError(errorMessage(e));
+        if (!isCancelledError(e)) setSeriesError(errorMessage(e));
       } finally {
         setSeriesBusy(false);
         setSeriesProgress(null);
@@ -203,16 +236,25 @@ export default function App() {
 
   const runZones = useCallback(
     async (distance: number, metric: string, includeOutside: boolean) => {
+      const op = beginOp();
       setZonesBusy(true);
       setZonesError(null);
       setPcaResult(null);
       setShowPcaPanel(false);
       try {
-        const result = await extractZones(selectedFeatures, scenes, distance, metric, includeOutside, setZonesProgress);
+        const result = await extractZones(
+          selectedFeatures,
+          scenes,
+          distance,
+          metric,
+          includeOutside,
+          setZonesProgress,
+          () => op.cancelled
+        );
         setZones(result);
       } catch (e) {
         setZones(null);
-        setZonesError(errorMessage(e));
+        if (!isCancelledError(e)) setZonesError(errorMessage(e));
       } finally {
         setZonesBusy(false);
         setZonesProgress(null);
@@ -277,6 +319,8 @@ export default function App() {
           error={polygonsError}
           onLoadFromDb={loadFromDb}
           onLoadFromFile={loadFromFile}
+          onCancel={cancelOp}
+          onDatasetRange={onDatasetRange}
           onToggle={togglePolygon}
           onSelectAll={() => {
             setSelectedIds(new Set((polygons?.features || []).map((f: any) => f.properties.__pid)));
@@ -306,6 +350,8 @@ export default function App() {
           failedDates={failedDates}
           partialDates={partialDates}
           onFetch={fetchSeries}
+          onCancel={cancelOp}
+          datasetRange={datasetRange}
           previewSceneId={previewSceneId}
           onPreviewScene={setPreviewSceneId}
           onDeleteScene={deleteScene}
@@ -329,6 +375,7 @@ export default function App() {
           sceneCount={scenes.length}
           selectedCount={selectedIds.size}
           onRun={runZones}
+          onCancel={cancelOp}
         />
       ),
     },

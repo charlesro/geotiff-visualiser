@@ -63,11 +63,12 @@ export async function listLocalFiles(baseUrl: string): Promise<string[]> {
 }
 
 /** POST /query — run a DuckDB SQL query. */
-export async function runLocalQuery(baseUrl: string, query: string): Promise<any> {
+export async function runLocalQuery(baseUrl: string, query: string, signal?: AbortSignal): Promise<any> {
   const response = await fetchLocalServer(baseUrl, '/query', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query })
+    body: JSON.stringify({ query }),
+    signal
   });
   const data = await response.json();
   if (!response.ok || data.status === 'error') {

@@ -1,10 +1,12 @@
 import React, { useRef, useState } from 'react';
 import { Database, FileUp, CheckSquare, Square, Plug, Search } from 'lucide-react';
-import { Button, ErrorNote, Field, inputClass } from '../ui';
+import { Button, ErrorNote, Field, inputClass, StopButton } from '../ui';
 import { polygonLabel } from '../../lib/polygon-source';
 import {
   buildNeighborPairsQuery,
   fetchSpeciesList,
+  fetchDatasetDateRange,
+  DatasetDateRange,
   DEFAULT_NEIGHBOR_PARAMS,
   NeighborPairsParams,
 } from '../../lib/neighbor-query';
@@ -54,6 +56,8 @@ interface PolygonsStepProps {
   error: string | null;
   onLoadFromDb: (url: string, sql: string) => void;
   onLoadFromFile: (file: File) => void;
+  onCancel: () => void;
+  onDatasetRange: (range: DatasetDateRange) => void;
   onToggle: (pid: number) => void;
   onSelectAll: () => void;
   onClearSelection: () => void;
@@ -88,6 +92,13 @@ export default function PolygonsStep(props: PolygonsStepProps) {
       const list = await fetchSpeciesList(dbUrl, params.parquetPath);
       setSpecies(list);
       setConnectState('ok');
+      // The dataset's acquisition span becomes the default period of step 2.
+      try {
+        const range = await fetchDatasetDateRange(dbUrl, params.parquetPath);
+        if (range) props.onDatasetRange(range);
+      } catch {
+        /* non-fatal — step 2 falls back to "last year" */
+      }
     } catch (e) {
       setConnectState('idle');
       setSpecies([]);
@@ -229,10 +240,13 @@ export default function PolygonsStep(props: PolygonsStepProps) {
                   />
                 </Field>
               </div>
-              <Button onClick={loadPairs} busy={props.busy} className="w-full">
-                <Search className="h-3.5 w-3.5" />
-                Find neighbour pairs
-              </Button>
+              <div className="flex gap-2">
+                <Button onClick={loadPairs} busy={props.busy} className="flex-1">
+                  <Search className="h-3.5 w-3.5" />
+                  Find neighbour pairs
+                </Button>
+                {props.busy && <StopButton onClick={props.onCancel} />}
+              </div>
             </>
           ) : (
             <>
@@ -244,9 +258,12 @@ export default function PolygonsStep(props: PolygonsStepProps) {
                   spellCheck={false}
                 />
               </Field>
-              <Button onClick={loadCustomSql} busy={props.busy} className="w-full">
-                Load polygons
-              </Button>
+              <div className="flex gap-2">
+                <Button onClick={loadCustomSql} busy={props.busy} className="flex-1">
+                  Load polygons
+                </Button>
+                {props.busy && <StopButton onClick={props.onCancel} />}
+              </div>
             </>
           )}
           <ErrorNote message={connectError} />
