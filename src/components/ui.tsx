@@ -76,6 +76,15 @@ export function Button({
   );
 }
 
+/** Amber hint shown when a step's prerequisite isn't met yet. */
+export function PrereqNote({ message }: { message: string }) {
+  return (
+    <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-2.5 py-2 text-xs text-amber-300/90">
+      {message}
+    </div>
+  );
+}
+
 export function ErrorNote({ message }: { message: string | null }) {
   if (!message) return null;
   return (

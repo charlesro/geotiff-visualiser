@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Scissors } from 'lucide-react';
 import { ZoneExtraction, ZoneProgress } from '../../lib/zones';
-import { Button, ErrorNote, Field, inputClass, ProgressBar, Stat } from '../ui';
+import { Button, ErrorNote, Field, inputClass, PrereqNote, ProgressBar, Stat } from '../ui';
 
 /**
  * Step 3 — split the pixels of every selected polygon into interior
@@ -32,6 +32,11 @@ export default function ZonesStep(props: ZonesStepProps) {
 
   return (
     <>
+      {props.selectedCount === 0 ? (
+        <PrereqNote message="Select at least one polygon in step 1 first." />
+      ) : props.sceneCount === 0 ? (
+        <PrereqNote message="Fetch a Sentinel-2 time series in step 2 first — the zones are extracted from those scenes." />
+      ) : null}
       <div className="grid grid-cols-2 gap-2">
         <Field label="Buffer distance (m)">
           <input

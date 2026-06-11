@@ -2,7 +2,7 @@ import React from 'react';
 import { BarChart3, Download, ExternalLink } from 'lucide-react';
 import { ZoneExtraction } from '../../lib/zones';
 import { PcaRunResult } from '../../lib/pca';
-import { Button, ErrorNote, Stat } from '../ui';
+import { Button, ErrorNote, PrereqNote, Stat } from '../ui';
 
 /**
  * Step 4 — run the PCA on the extracted pixel time series and open the
@@ -26,6 +26,7 @@ export default function PcaStep(props: PcaStepProps) {
 
   return (
     <>
+      {!props.zones && <PrereqNote message="Extract the pixel zones in step 3 first — the PCA runs on those pixels." />}
       {props.zones && (
         <p className="text-xs leading-relaxed text-slate-500">
           Observations: <span className="text-slate-300">{pixelCount} pixels</span> (interior + edge) · features:{' '}

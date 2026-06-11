@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Eye, EyeOff, Satellite } from 'lucide-react';
 import { RasterLayer } from '../../types';
 import { SeriesFetchParams, SeriesProgress } from '../../lib/fetch-series';
-import { Button, ErrorNote, Field, inputClass, ProgressBar } from '../ui';
+import { Button, ErrorNote, Field, inputClass, PrereqNote, ProgressBar } from '../ui';
 import { cn } from '../../lib/utils';
 
 /**
@@ -44,6 +44,9 @@ export default function ImageryStep(props: ImageryStepProps) {
 
   return (
     <>
+      {props.selectedCount === 0 && (
+        <PrereqNote message="Select at least one polygon in step 1 (tick it in the list or click it on the map) to enable the fetch." />
+      )}
       <div className="grid grid-cols-2 gap-2">
         <Field label="From">
           <input type="date" className={inputClass} value={startDate} onChange={e => setStartDate(e.target.value)} />

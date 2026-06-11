@@ -35,11 +35,10 @@ export default function Sidebar({
           return (
             <section key={step.id} className="border-b border-white/5">
               <button
-                onClick={() => step.enabled && onActivate(step.id)}
-                disabled={!step.enabled}
+                onClick={() => onActivate(step.id)}
                 className={cn(
-                  'flex w-full items-center gap-3 px-4 py-3 text-left transition-colors',
-                  step.enabled ? 'hover:bg-white/[0.03]' : 'cursor-not-allowed opacity-45'
+                  'flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-white/[0.03]',
+                  !step.enabled && !open && 'opacity-55'
                 )}
               >
                 <span
