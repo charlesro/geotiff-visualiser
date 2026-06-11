@@ -1,13 +1,37 @@
 import React from 'react';
-import { Loader2, AlertTriangle } from 'lucide-react';
+import { Loader2, AlertTriangle, Info } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 /** Small shared form primitives so every step looks identical. */
 
-export function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
+export function InfoTip({ text }: { text: string }) {
+  return (
+    <span className="group relative inline-flex align-middle">
+      <Info className="h-3 w-3 cursor-help text-slate-600 transition-colors group-hover:text-sky-400" />
+      <span className="pointer-events-none invisible absolute bottom-full left-1/2 z-[1200] mb-1.5 w-60 -translate-x-1/2 rounded-md border border-white/10 bg-[#1a2027] px-2.5 py-2 text-[11px] font-normal normal-case tracking-normal text-slate-300 shadow-xl group-hover:visible">
+        {text}
+      </span>
+    </span>
+  );
+}
+
+export function Field({
+  label,
+  children,
+  hint,
+  info,
+}: {
+  label: string;
+  children: React.ReactNode;
+  hint?: string;
+  info?: string;
+}) {
   return (
     <label className="block">
-      <span className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-slate-500">{label}</span>
+      <span className="mb-1 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-slate-500">
+        {label}
+        {info && <InfoTip text={info} />}
+      </span>
       {children}
       {hint && <span className="mt-1 block text-[11px] text-slate-600">{hint}</span>}
     </label>

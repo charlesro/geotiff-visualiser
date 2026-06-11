@@ -143,7 +143,12 @@ export async function loadPolygonsFromFile(file: File): Promise<PolygonLoadResul
 /** Best human-readable label for a polygon in lists and tooltips. */
 export function polygonLabel(feature: any): string {
   const props = feature?.properties || {};
-  const candidates = ['name', 'nom', 'label', 'parcel', 'plot', 'code', 'id'];
+  // Neighbour-pairs rows: species + field id (+ which side of the pair).
+  if (props.crp_lbl !== undefined && props.NewID !== undefined) {
+    const role = props.role_in_pair === 'species_2' ? ' (2)' : props.role_in_pair === 'species_1' ? ' (1)' : '';
+    return `${props.crp_lbl} · ${props.NewID}${role}`;
+  }
+  const candidates = ['name', 'nom', 'label', 'parcel', 'plot', 'code', 'id', 'newid'];
   for (const key of Object.keys(props)) {
     if (key === '__pid') continue;
     if (candidates.includes(key.toLowerCase())) {

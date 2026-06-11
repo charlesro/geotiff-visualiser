@@ -27,11 +27,17 @@ export function normalizeLocalUrl(urlStr: string): string {
   return urlStr;
 }
 
-/** Fetch an absolute URL with the local-server bypass headers. */
+/**
+ * Fetch an absolute URL, adding the tunnel-bypass headers only for
+ * non-localhost servers. On localhost the extra headers would just trigger a
+ * CORS preflight the engine may reject.
+ */
 export function fetchWithLocalHeaders(url: string, init: RequestInit = {}): Promise<Response> {
-  return fetch(normalizeLocalUrl(url), {
+  const normalized = normalizeLocalUrl(url);
+  const isLocalhost = normalized.includes('localhost') || normalized.includes('127.0.0.1');
+  return fetch(normalized, {
     ...init,
-    headers: { ...LOCAL_SERVER_HEADERS, ...(init.headers || {}) }
+    headers: { ...(isLocalhost ? {} : LOCAL_SERVER_HEADERS), ...(init.headers || {}) }
   });
 }
 
