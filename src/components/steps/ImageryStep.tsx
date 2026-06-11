@@ -16,6 +16,7 @@ interface ImageryStepProps {
   progress: SeriesProgress | null;
   error: string | null;
   failedDates: string[];
+  partialDates: number;
   onFetch: (params: SeriesFetchParams) => void;
   previewSceneId: string | null;
   onPreviewScene: (id: string | null) => void;
@@ -113,6 +114,12 @@ export default function ImageryStep(props: ImageryStepProps) {
       {props.scenes.length > 0 && (
         <div className="space-y-2">
           <div className="text-xs text-slate-400">{props.scenes.length} scenes in the series — click to preview</div>
+          {props.partialDates > 0 && (
+            <p className="text-[11px] leading-relaxed text-slate-600">
+              {props.partialDates} date(s) were skipped because their satellite swath only covers part of the
+              selection.
+            </p>
+          )}
           <div className="max-h-44 overflow-y-auto rounded-md border border-white/10">
             {props.scenes.map(scene => {
               const date = scene.datetime?.split('T')[0] || scene.name;

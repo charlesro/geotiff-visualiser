@@ -5,6 +5,8 @@ import 'leaflet/dist/leaflet.css';
 import { Bbox } from '../lib/geo';
 import { ZoneExtraction } from '../lib/zones';
 import { polygonLabel } from '../lib/polygon-source';
+import { RasterLayer } from '../types';
+import SceneTimeline from './SceneTimeline';
 import { Square } from 'lucide-react';
 import { cn } from '../lib/utils';
 
@@ -25,6 +27,9 @@ interface MapPanelProps {
   onTogglePolygon: (pid: number) => void;
   zones: ZoneExtraction | null;
   preview: ScenePreview | null;
+  scenes: RasterLayer[];
+  previewSceneId: string | null;
+  onPreviewScene: (id: string | null) => void;
   /** Changes to this object trigger a fitBounds. */
   fitRequest: { bounds: Bbox; token: number } | null;
 }
@@ -78,58 +83,82 @@ function FitController({ fitRequest }: { fitRequest: MapPanelProps['fitRequest']
 function BboxSelector({ polygons, onSelect }: { polygons: any | null; onSelect: (pid: number) => void }) {
   const map = useMap();
   const [drawMode, setDrawMode] = useState(false);
-  const [startLatLng, setStartLatLng] = useState<L.LatLng | null>(null);
+  const [firstPoint, setFirstPoint] = useState<L.LatLng | null>(null);
   const [rect, setRect] = useState<L.Rectangle | null>(null);
+  const [marker, setMarker] = useState<L.CircleMarker | null>(null);
 
   useMapEvents({
-    mousedown: (e) => {
+    click: (e) => {
       if (!drawMode) return;
-      setStartLatLng(e.latlng);
+
+      if (!firstPoint) {
+        // First click — place a corner marker and wait for the second click
+        if (marker) map.removeLayer(marker);
+        const m = L.circleMarker(e.latlng, { radius: 5, color: '#38bdf8', fillColor: '#38bdf8', fillOpacity: 1, weight: 2 });
+        m.addTo(map);
+        setMarker(m);
+        setFirstPoint(e.latlng);
+      } else {
+        // Second click — complete the rectangle
+        const bounds = L.latLngBounds(firstPoint, e.latlng);
+        if (rect) map.removeLayer(rect);
+        if (marker) map.removeLayer(marker);
+        setRect(null);
+        setMarker(null);
+        setFirstPoint(null);
+
+        // Find all polygons whose bounds intersect the drawn box
+        if (polygons?.features) {
+          for (const f of polygons.features) {
+            if (!f.properties?.__pid && f.properties?.__pid !== 0) continue;
+            try {
+              const fbounds = L.geoJSON(f).getBounds();
+              if (fbounds.intersects(bounds)) {
+                onSelect(f.properties.__pid);
+              }
+            } catch {
+              /* skip invalid geometries */
+            }
+          }
+        }
+        setDrawMode(false);
+      }
     },
     mousemove: (e) => {
-      if (!drawMode || !startLatLng) return;
+      if (!drawMode || !firstPoint) return;
       if (rect) map.removeLayer(rect);
-      const newRect = L.rectangle([[startLatLng.lat, startLatLng.lng], [e.latlng.lat, e.latlng.lng]], { color: '#38bdf8', fill: true, fillOpacity: 0.1, weight: 2 });
+      const newRect = L.rectangle(
+        [[firstPoint.lat, firstPoint.lng], [e.latlng.lat, e.latlng.lng]],
+        { color: '#38bdf8', fill: true, fillOpacity: 0.1, weight: 2, dashArray: '5 5' }
+      );
       newRect.addTo(map);
       setRect(newRect);
     },
-    mouseup: (e) => {
-      if (!drawMode || !startLatLng) return;
-      const bounds = L.latLngBounds(startLatLng, e.latlng);
-      if (rect) map.removeLayer(rect);
-      setRect(null);
-      setStartLatLng(null);
-
-      // Find all polygons whose bounds intersect the drawn box
-      if (polygons?.features) {
-        for (const f of polygons.features) {
-          if (!f.properties?.__pid && f.properties?.__pid !== 0) continue;
-          try {
-            const fbounds = L.geoJSON(f).getBounds();
-            if (fbounds.intersects(bounds)) {
-              onSelect(f.properties.__pid);
-            }
-          } catch {
-            /* skip invalid geometries */
-          }
-        }
-      }
-      setDrawMode(false);
-    },
   });
+
+  const cancel = () => {
+    if (rect) map.removeLayer(rect);
+    if (marker) map.removeLayer(marker);
+    setRect(null);
+    setMarker(null);
+    setFirstPoint(null);
+    setDrawMode(false);
+  };
 
   return (
     <button
-      onClick={() => setDrawMode(!drawMode)}
+      onClick={() => (drawMode ? cancel() : setDrawMode(true))}
       className={cn(
         'absolute left-3 top-12 z-[1000] flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors',
-        drawMode
-          ? 'border-sky-400 bg-sky-500/20 text-sky-200'
-          : 'border-white/10 bg-[#11151acc] text-slate-300 hover:text-slate-200'
+        drawMode && !firstPoint && 'border-sky-400 bg-sky-500/20 text-sky-200',
+        drawMode && firstPoint && 'border-amber-400 bg-amber-500/20 text-amber-200',
+        !drawMode && 'border-white/10 bg-[#11151acc] text-slate-300 hover:text-slate-200'
       )}
     >
       <Square className="h-3.5 w-3.5" />
-      {drawMode ? 'Drawing…' : 'Select by box'}
+      {!drawMode && 'Select by box'}
+      {drawMode && !firstPoint && 'Click first corner…'}
+      {drawMode && firstPoint && 'Click second corner…'}
     </button>
   );
 }
@@ -157,7 +186,7 @@ const speciesColor = (crpLbl: string | undefined): string => {
   return SPECIES_COLORS[Math.abs(hash) % SPECIES_COLORS.length];
 };
 
-export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones, preview, fitRequest }: MapPanelProps) {
+export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones, preview, scenes, previewSceneId, onPreviewScene, fitRequest }: MapPanelProps) {
   const [basemap, setBasemap] = useState<BasemapKey>('satellite');
 
   // GeoJSON layers only restyle when remounted, so key them on their inputs.
@@ -250,6 +279,9 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
           </button>
         ))}
       </div>
+
+      {/* Scene timeline */}
+      <SceneTimeline scenes={scenes} previewSceneId={previewSceneId} onPreviewScene={onPreviewScene} />
 
       {/* Zone legend */}
       {zones && (

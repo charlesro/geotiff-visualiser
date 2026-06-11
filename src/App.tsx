@@ -40,6 +40,7 @@ export default function App() {
   // Step 2 — imagery
   const [scenes, setScenes] = useState<RasterLayer[]>([]);
   const [failedDates, setFailedDates] = useState<string[]>([]);
+  const [partialDates, setPartialDates] = useState(0);
   const [seriesBusy, setSeriesBusy] = useState(false);
   const [seriesProgress, setSeriesProgress] = useState<SeriesProgress | null>(null);
   const [seriesError, setSeriesError] = useState<string | null>(null);
@@ -75,6 +76,7 @@ export default function App() {
   const clearFromImagery = useCallback(() => {
     setScenes([]);
     setFailedDates([]);
+    setPartialDates(0);
     setSeriesError(null);
     setPreviewSceneId(null);
     clearFromZones();
@@ -166,6 +168,7 @@ export default function App() {
         const result = await fetchSentinelSeries(bbox, params, setSeriesProgress);
         setScenes(result.layers);
         setFailedDates(result.failedDates);
+        setPartialDates(result.partialDates);
         setPreviewSceneId(result.layers[result.layers.length - 1]?.id ?? null);
         requestFit(bbox);
       } catch (e) {
@@ -291,6 +294,7 @@ export default function App() {
           progress={seriesProgress}
           error={seriesError}
           failedDates={failedDates}
+          partialDates={partialDates}
           onFetch={fetchSeries}
           previewSceneId={previewSceneId}
           onPreviewScene={setPreviewSceneId}
@@ -364,6 +368,9 @@ export default function App() {
             onTogglePolygon={togglePolygon}
             zones={zones}
             preview={preview}
+            scenes={scenes}
+            previewSceneId={previewSceneId}
+            onPreviewScene={setPreviewSceneId}
             fitRequest={fitRequest}
           />
           {showPcaPanel && pcaResult && (

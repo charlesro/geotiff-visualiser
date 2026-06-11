@@ -14,7 +14,7 @@ export { getAssetKey };
 
 const tiffCache = new Map<string, Promise<any>>();
 
-function getCachedTiff(url: string): Promise<any> {
+export function getCachedTiff(url: string): Promise<any> {
   const cleanUrl = url.split('?')[0]; // Cache by base URL
   if (tiffCache.has(cleanUrl)) {
     return tiffCache.get(cleanUrl)!;
