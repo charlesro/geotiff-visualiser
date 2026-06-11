@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Eye, EyeOff, Satellite } from 'lucide-react';
+import { Eye, EyeOff, Satellite, Trash2 } from 'lucide-react';
 import { RasterLayer } from '../../types';
 import { SeriesFetchParams, SeriesProgress } from '../../lib/fetch-series';
 import { Button, ErrorNote, Field, inputClass, PrereqNote, ProgressBar } from '../ui';
@@ -20,6 +20,7 @@ interface ImageryStepProps {
   onFetch: (params: SeriesFetchParams) => void;
   previewSceneId: string | null;
   onPreviewScene: (id: string | null) => void;
+  onDeleteScene: (id: string) => void;
 }
 
 function defaultDates(): { start: string; end: string } {
@@ -126,11 +127,11 @@ export default function ImageryStep(props: ImageryStepProps) {
               const cloud = scene.stacItem?.properties?.['eo:cloud_cover'];
               const previewing = props.previewSceneId === scene.id;
               return (
-                <button
+                <div
                   key={scene.id}
                   onClick={() => props.onPreviewScene(previewing ? null : scene.id)}
                   className={cn(
-                    'flex w-full items-center justify-between border-b border-white/5 px-2.5 py-1.5 text-xs last:border-0',
+                    'group flex w-full cursor-pointer items-center justify-between border-b border-white/5 px-2.5 py-1.5 text-xs last:border-0',
                     previewing ? 'bg-sky-500/10 text-sky-200' : 'text-slate-400 hover:bg-white/[0.03]'
                   )}
                 >
@@ -138,8 +139,18 @@ export default function ImageryStep(props: ImageryStepProps) {
                   <span className="flex items-center gap-2">
                     {typeof cloud === 'number' && <span className="text-slate-600">{cloud.toFixed(0)}% cloud</span>}
                     {previewing && <Eye className="h-3.5 w-3.5" />}
+                    <button
+                      onClick={e => {
+                        e.stopPropagation();
+                        props.onDeleteScene(scene.id);
+                      }}
+                      className="rounded p-0.5 text-slate-600 opacity-0 transition-all hover:bg-red-500/15 hover:text-red-400 group-hover:opacity-100"
+                      title="Remove this scene from the series"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
                   </span>
-                </button>
+                </div>
               );
             })}
           </div>

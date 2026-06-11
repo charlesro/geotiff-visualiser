@@ -30,6 +30,7 @@ interface MapPanelProps {
   scenes: RasterLayer[];
   previewSceneId: string | null;
   onPreviewScene: (id: string | null) => void;
+  onDeleteScene: (id: string) => void;
   /** Changes to this object trigger a fitBounds. */
   fitRequest: { bounds: Bbox; token: number } | null;
 }
@@ -186,8 +187,8 @@ const speciesColor = (crpLbl: string | undefined): string => {
   return SPECIES_COLORS[Math.abs(hash) % SPECIES_COLORS.length];
 };
 
-export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones, preview, scenes, previewSceneId, onPreviewScene, fitRequest }: MapPanelProps) {
-  const [basemap, setBasemap] = useState<BasemapKey>('satellite');
+export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones, preview, scenes, previewSceneId, onPreviewScene, onDeleteScene, fitRequest }: MapPanelProps) {
+  const [basemap, setBasemap] = useState<BasemapKey>('dark');
 
   // GeoJSON layers only restyle when remounted, so key them on their inputs.
   const polygonsKey = useMemo(
@@ -281,7 +282,12 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
       </div>
 
       {/* Scene timeline */}
-      <SceneTimeline scenes={scenes} previewSceneId={previewSceneId} onPreviewScene={onPreviewScene} />
+      <SceneTimeline
+        scenes={scenes}
+        previewSceneId={previewSceneId}
+        onPreviewScene={onPreviewScene}
+        onDeleteScene={onDeleteScene}
+      />
 
       {/* Zone legend */}
       {zones && (

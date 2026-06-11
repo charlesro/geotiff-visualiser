@@ -182,6 +182,16 @@ export default function App() {
     [selectedFeatures, clearFromZones, requestFit]
   );
 
+  const deleteScene = useCallback(
+    (id: string) => {
+      setScenes(prev => prev.filter(s => s.id !== id));
+      setPreviewSceneId(prev => (prev === id ? null : prev));
+      // Zones and PCA were computed from the full series — invalidate them.
+      clearFromZones();
+    },
+    [clearFromZones]
+  );
+
   const preview = useMemo<ScenePreview | null>(() => {
     if (!previewSceneId) return null;
     const scene = scenes.find(s => s.id === previewSceneId);
@@ -298,6 +308,7 @@ export default function App() {
           onFetch={fetchSeries}
           previewSceneId={previewSceneId}
           onPreviewScene={setPreviewSceneId}
+          onDeleteScene={deleteScene}
         />
       ),
     },
@@ -371,6 +382,7 @@ export default function App() {
             scenes={scenes}
             previewSceneId={previewSceneId}
             onPreviewScene={setPreviewSceneId}
+            onDeleteScene={deleteScene}
             fitRequest={fitRequest}
           />
           {showPcaPanel && pcaResult && (

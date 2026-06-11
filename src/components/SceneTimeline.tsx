@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight, Eye, EyeOff, Pause, Play } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Eye, EyeOff, Pause, Play, Trash2 } from 'lucide-react';
 import { RasterLayer } from '../types';
 import { cn } from '../lib/utils';
 
@@ -13,11 +13,12 @@ interface SceneTimelineProps {
   scenes: RasterLayer[];
   previewSceneId: string | null;
   onPreviewScene: (id: string | null) => void;
+  onDeleteScene: (id: string) => void;
 }
 
 const sceneDate = (s: RasterLayer): string => s.datetime?.split('T')[0] || s.name;
 
-export default function SceneTimeline({ scenes, previewSceneId, onPreviewScene }: SceneTimelineProps) {
+export default function SceneTimeline({ scenes, previewSceneId, onPreviewScene, onDeleteScene }: SceneTimelineProps) {
   const [playing, setPlaying] = useState(false);
 
   const ordered = useMemo(
@@ -115,7 +116,7 @@ export default function SceneTimeline({ scenes, previewSceneId, onPreviewScene }
       </div>
 
       {/* Current scene */}
-      <div className="flex w-36 items-center justify-end gap-2">
+      <div className="flex w-44 items-center justify-end gap-2">
         {active ? (
           <>
             <span className="font-mono text-xs text-sky-200">{sceneDate(active)}</span>
@@ -128,6 +129,13 @@ export default function SceneTimeline({ scenes, previewSceneId, onPreviewScene }
               title="Hide the overlay"
             >
               <EyeOff className="h-3.5 w-3.5" />
+            </button>
+            <button
+              onClick={() => onDeleteScene(active.id)}
+              className="rounded p-1 text-slate-400 transition-colors hover:bg-red-500/15 hover:text-red-400"
+              title="Remove this scene from the series"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
             </button>
           </>
         ) : (
