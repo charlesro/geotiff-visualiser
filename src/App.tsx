@@ -19,6 +19,7 @@ import { clusterBySpecies, SpeciesClustering, fieldKeyOf } from './lib/species-c
 import { runPixelPca, pcaScoresToCsv, PcaRunResult, ALL_PIXEL_ZONES } from './lib/pca';
 import { isCancelledError } from './lib/cancel';
 import { DatasetDateRange } from './lib/neighbor-query';
+import { cacheClear, cacheDelete, cacheGet, cacheSet, reviveScenes, serializeScenes } from './lib/persist';
 import MapPanel, { ScenePreview } from './components/MapPanel';
 import Sidebar, { StepDescriptor } from './components/Sidebar';
 import PolygonsStep from './components/steps/PolygonsStep';
@@ -97,6 +98,80 @@ export default function App() {
     setDatasetRange(range);
     localStorage.setItem('ppca_dataset_range', JSON.stringify(range));
   }, []);
+
+  // ----- Reload persistence ---------------------------------------------------
+  // Polygons, selection and the fetched series are cached in IndexedDB and
+  // restored on startup, so a refresh (or a dev update) doesn't force a
+  // re-fetch. Saves only start once the initial restore is done.
+  const hydratedRef = useRef(false);
+  /** The scenes array that already sits in the cache — skip re-saving it. */
+  const persistedScenesRef = useRef<RasterLayer[] | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const poly = await cacheGet<{ collection: any; sourceLabel: string }>('polygons');
+        if (poly?.collection) {
+          setPolygons((prev: any) => prev ?? poly.collection);
+          setSourceLabel(prev => prev || poly.sourceLabel);
+        }
+        const sel = await cacheGet<number[]>('selection');
+        if (sel?.length) setSelectedIds(prev => (prev.size > 0 ? prev : new Set(sel)));
+        const series = await cacheGet<any>('series');
+        if (series?.scenes?.length) {
+          const revived = reviveScenes(series.scenes);
+          persistedScenesRef.current = revived;
+          setScenes(prev => (prev.length > 0 ? prev : revived));
+          setFailedDates(prev => (prev.length > 0 ? prev : series.failedDates || []));
+          setPartialDates(prev => prev || series.partialDates || 0);
+          setFetchedSelectionKey(prev => prev ?? series.fetchedSelectionKey ?? null);
+        }
+        const preview = await cacheGet<string>('preview');
+        if (preview) setPreviewSceneId(prev => prev ?? preview);
+      } catch (e) {
+        console.warn('Cache restore failed:', e);
+      } finally {
+        hydratedRef.current = true;
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!hydratedRef.current) return;
+    if (polygons) cacheSet('polygons', { collection: polygons, sourceLabel });
+    else cacheDelete('polygons');
+  }, [polygons, sourceLabel]);
+
+  useEffect(() => {
+    if (!hydratedRef.current) return;
+    cacheSet('selection', Array.from(selectedIds));
+  }, [selectedIds]);
+
+  // The series is hundreds of MB of band data — debounce so pruning scenes
+  // with the Delete key doesn't write it once per keystroke.
+  useEffect(() => {
+    if (!hydratedRef.current) return;
+    if (scenes.length === 0) {
+      cacheDelete('series');
+      return;
+    }
+    if (scenes === persistedScenesRef.current) return; // just restored — already cached
+    const t = setTimeout(() => {
+      persistedScenesRef.current = scenes;
+      cacheSet('series', {
+        scenes: serializeScenes(scenes),
+        failedDates,
+        partialDates,
+        fetchedSelectionKey,
+      });
+    }, 1500);
+    return () => clearTimeout(t);
+  }, [scenes, failedDates, partialDates, fetchedSelectionKey]);
+
+  useEffect(() => {
+    if (!hydratedRef.current) return;
+    cacheSet('preview', previewSceneId);
+  }, [previewSceneId]);
 
   // One cancellation handle for whichever operation is currently running.
   // Stop flips the flag (polled by the long loops) and aborts in-flight
@@ -561,6 +636,7 @@ export default function App() {
     setPolygonsError(null);
     clearFromImagery();
     setActiveStep(1);
+    cacheClear();
   }, [clearFromImagery]);
 
   // ----- Workflow definition -------------------------------------------------
