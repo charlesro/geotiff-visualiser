@@ -20,7 +20,7 @@ import { PcaRunResult } from '../lib/pca';
 import { PixelZone } from '../lib/zones';
 import { CLUSTER_COLORS, fieldKeyOf } from '../lib/species-clusters';
 import { mixHexColors } from '../lib/unmix';
-import { speciesColor } from './MapPanel';
+import { ZONE_CLASSES, ZONE_COLOR, zoneColor, speciesColor, categoricalColor, NEUTRAL } from '../lib/legend';
 import { cn } from '../lib/utils';
 
 /**
@@ -30,19 +30,7 @@ import { cn } from '../lib/utils';
  * highlights the corresponding pixel on the map.
  */
 
-const PALETTE = ['#34d399', '#fbbf24', '#38bdf8', '#f472b6', '#a78bfa', '#fb923c', '#22d3ee', '#f87171', '#a3e635', '#e879f9'];
-const ZONE_COLOR: Record<string, string> = {
-  interior: '#34d399',
-  edge_other_species: '#f87171',
-  edge_same_species: '#fbbf24',
-  edge_isolated: '#94a3b8',
-};
-const ZONE_CHIPS: { key: PixelZone; label: string }[] = [
-  { key: 'interior', label: 'Interior' },
-  { key: 'edge_other_species', label: 'Edge · other' },
-  { key: 'edge_same_species', label: 'Edge · same' },
-  { key: 'edge_isolated', label: 'Edge · isolated' },
-];
+const ZONE_CHIPS = ZONE_CLASSES.map(z => ({ key: z.key, label: z.short }));
 
 type SymbolType = 'circle' | 'triangle' | 'square' | 'diamond' | 'star' | 'cross' | 'wye';
 const SYMBOL_TYPES: SymbolType[] = ['circle', 'triangle', 'square', 'diamond', 'star', 'cross', 'wye'];
@@ -165,14 +153,14 @@ export default function PcaPanel({
   );
 
   const colorOf = (attr: Attr, name: string, index: number): string => {
-    if (attr === 'zone') return ZONE_COLOR[name] || '#94a3b8';
+    if (attr === 'zone') return zoneColor(name);
     if (attr === 'species') return speciesColor(name);
     if (attr === 'scenario') {
-      if (name === 'unclustered') return '#64748b';
+      if (name === 'unclustered') return NEUTRAL;
       const n = Number(name.split(' ')[1]) - 1;
       return CLUSTER_COLORS[n % CLUSTER_COLORS.length];
     }
-    return PALETTE[index % PALETTE.length];
+    return categoricalColor(index);
   };
 
   const points = useMemo(() => {
@@ -618,7 +606,7 @@ export default function PcaPanel({
                     key={c}
                     type="monotone"
                     dataKey={`PC${c + 1}`}
-                    stroke={PALETTE[(c + 2) % PALETTE.length]}
+                    stroke={categoricalColor(c)}
                     dot={false}
                     strokeWidth={1.8}
                     isAnimationActive={false}

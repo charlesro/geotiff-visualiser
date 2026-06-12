@@ -121,6 +121,51 @@ export function ProgressBar({ current, total, message }: { current: number; tota
   );
 }
 
+/** A colour swatch — the same shape everywhere a colour is keyed to a label. */
+export function Swatch({ color, shape = 'dot' }: { color: string; shape?: 'dot' | 'line' | 'square' }) {
+  if (shape === 'line') return <span className="h-[3px] w-3.5 shrink-0 rounded-full" style={{ background: color }} />;
+  return (
+    <span
+      className={cn('h-2.5 w-2.5 shrink-0', shape === 'square' ? 'rounded-[3px]' : 'rounded-full')}
+      style={{ background: color }}
+    />
+  );
+}
+
+/** One legend entry: swatch + label, optional trailing count. */
+export function LegendRow({
+  color,
+  label,
+  count,
+  shape,
+}: {
+  color: string;
+  label: string;
+  count?: number;
+  shape?: 'dot' | 'line' | 'square';
+}) {
+  return (
+    <div className="flex items-center gap-2 py-0.5 text-xs text-slate-300">
+      <Swatch color={color} shape={shape} />
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      {count !== undefined && <span className="shrink-0 tabular-nums text-slate-500">{count.toLocaleString()}</span>}
+    </div>
+  );
+}
+
+/** A horizontal colour gradient with end labels — for continuous encodings. */
+export function GradientLegend({ from, to, leftLabel, rightLabel }: { from: string; to: string; leftLabel: string; rightLabel: string }) {
+  return (
+    <div>
+      <div className="h-2 w-full rounded" style={{ background: `linear-gradient(to right, ${from}, ${to})` }} />
+      <div className="mt-0.5 flex justify-between text-[10px] text-slate-500">
+        <span className="truncate">{leftLabel}</span>
+        <span className="truncate">{rightLabel}</span>
+      </div>
+    </div>
+  );
+}
+
 export function Stat({ label, value, accent }: { label: string; value: React.ReactNode; accent?: string }) {
   return (
     <div className="rounded-md border border-white/10 bg-[#0b0e11] px-2.5 py-2">

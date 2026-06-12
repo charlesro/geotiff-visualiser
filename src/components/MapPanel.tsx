@@ -8,6 +8,8 @@ import { polygonLabel } from '../lib/polygon-source';
 import { NdviPixel } from '../lib/ndvi-series';
 import { CLUSTER_COLORS, fieldKeyOf } from '../lib/species-clusters';
 import { mixHexColors } from '../lib/unmix';
+import { ZONE_CLASSES, zoneColor, speciesColor, NEUTRAL } from '../lib/legend';
+import { LegendRow, GradientLegend } from './ui';
 import { RasterLayer } from '../types';
 import SceneTimeline from './SceneTimeline';
 import { Activity, Eye, EyeOff, Square } from 'lucide-react';
@@ -184,38 +186,6 @@ function BboxSelector({ polygons, onSelect }: { polygons: any | null; onSelect: 
   );
 }
 
-const ZONE_COLORS: Record<string, string> = {
-  interior: '#34d399',
-  edge_other_species: '#f87171',
-  edge_same_species: '#fbbf24',
-  edge_isolated: '#94a3b8',
-};
-
-const ZONE_LEGEND: { key: string; label: (d: number) => string }[] = [
-  { key: 'interior', label: d => `Interior (≥ ${d} m inside)` },
-  { key: 'edge_other_species', label: () => 'Edge — other species next to it' },
-  { key: 'edge_same_species', label: () => 'Edge — same species next to it' },
-  { key: 'edge_isolated', label: () => 'Edge — no neighbouring field' },
-];
-
-// Deterministic color cycle for crop species (crp_lbl).
-const SPECIES_COLORS = [
-  '#ef4444', '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899',
-  '#06b6d4', '#f97316', '#14b8a6', '#d946ef', '#6366f1', '#84cc16',
-  '#fb923c', '#22d3ee', '#f87171', '#60a5fa', '#34d399', '#fbbf24',
-];
-
-export const speciesColor = (crpLbl: string | undefined): string => {
-  if (!crpLbl) return '#e2e8f0';
-  // Hash the species name to a consistent index.
-  let hash = 0;
-  for (let i = 0; i < crpLbl.length; i++) {
-    hash = ((hash << 5) - hash) + crpLbl.charCodeAt(i);
-    hash = hash & hash; // Convert to 32bit integer
-  }
-  return SPECIES_COLORS[Math.abs(hash) % SPECIES_COLORS.length];
-};
-
 export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones, clusterAssignment, clusterVersion, preview, clusterPreviews, scenes, previewSceneId, onPreviewScene, onDeleteScene, onInspectPolygon, inspectPixels, highlightPixel, onPickPixel, fitRequest }: MapPanelProps) {
   const [basemap, setBasemap] = useState<BasemapKey>('dark');
   const [showZoneDots, setShowZoneDots] = useState(true);
@@ -232,12 +202,45 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
   const handlersRef = useRef({ onTogglePolygon, onInspectPolygon });
   handlersRef.current = { onTogglePolygon, onInspectPolygon };
 
+  // What the polygon outlines encode right now — drives both the colouring
+  // and the legend, so the two can never disagree.
+  const polygonMode: 'scenario' | 'species' | 'neutral' =
+    clusterAssignment && clusterAssignment.size > 0 ? 'scenario' : zones && showZoneDots ? 'neutral' : 'species';
+
   // GeoJSON layers only restyle when remounted, so key them on their inputs.
   const polygonsKey = useMemo(
-    () => `polys-${polygons?.features?.length ?? 0}-${Array.from(selectedIds).join('.')}-cl${clusterVersion}`,
-    [polygons, selectedIds, clusterVersion]
+    () => `polys-${polygons?.features?.length ?? 0}-${Array.from(selectedIds).join('.')}-cl${clusterVersion}-${polygonMode}`,
+    [polygons, selectedIds, clusterVersion, polygonMode]
   );
   const zonesKey = useMemo(() => (zones ? Date.now() : 0), [zones]);
+
+  // Legend data for the active polygon encoding.
+  const speciesLegend = useMemo<[string, number][]>(() => {
+    if (!polygons || polygonMode !== 'species') return [];
+    const counts = new Map<string, number>();
+    for (const f of polygons.features) {
+      const s = f.properties?.crp_lbl ?? f.properties?.species;
+      if (s == null) continue;
+      counts.set(String(s), (counts.get(String(s)) || 0) + 1);
+    }
+    return Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+  }, [polygons, polygonMode]);
+
+  const scenarioLegend = useMemo<[number, number][]>(() => {
+    if (polygonMode !== 'scenario' || !clusterAssignment) return [];
+    const counts = new Map<number, number>();
+    for (const v of clusterAssignment.values()) counts.set(v, (counts.get(v) || 0) + 1);
+    return Array.from(counts.entries()).sort((a, b) => a[0] - b[0]);
+  }, [clusterAssignment, polygonMode]);
+
+  const zoneCount = (key: string): number =>
+    key === 'interior'
+      ? zones?.interior.features.length ?? 0
+      : key === 'edge_other_species'
+        ? zones?.edgeCounts.other ?? 0
+        : key === 'edge_same_species'
+          ? zones?.edgeCounts.same ?? 0
+          : zones?.edgeCounts.isolated ?? 0;
 
   const polygonStyle = (feature: any) => {
     const selected = selectedIds.has(feature?.properties?.__pid);
@@ -247,14 +250,16 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
       const c = CLUSTER_COLORS[scenario % CLUSTER_COLORS.length];
       return { color: c, weight: selected ? 2.5 : 1.8, opacity: 1, fillColor: c, fillOpacity: 0.3 };
     }
+    if (selected) {
+      return { color: '#38bdf8', weight: 2.5, opacity: 1, fillColor: '#38bdf8', fillOpacity: 0.18 };
+    }
+    // Once the pixel zones are drawn, the dots carry the colour — mute the
+    // outlines to neutral so two colour meanings aren't on screen at once.
+    if (polygonMode === 'neutral') {
+      return { color: NEUTRAL, weight: 1, opacity: 0.4, fillColor: NEUTRAL, fillOpacity: 0.04 };
+    }
     const baseColor = speciesColor(feature?.properties?.crp_lbl);
-    return {
-      color: selected ? '#38bdf8' : baseColor,
-      weight: selected ? 2.5 : 1.2,
-      opacity: selected ? 1 : 0.7,
-      fillColor: selected ? '#38bdf8' : baseColor,
-      fillOpacity: selected ? 0.18 : 0.12,
-    };
+    return { color: baseColor, weight: 1.2, opacity: 0.7, fillColor: baseColor, fillOpacity: 0.12 };
   };
 
   const onEachPolygon = (feature: any, layer: L.Layer) => {
@@ -276,7 +281,7 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
   // polygons underneath (selection and the NDVI inspector).
   const pixelToMarker = (feature: any, latlng: L.LatLng) => {
     const props = feature.properties || {};
-    let fill = ZONE_COLORS[props.zone] || '#94a3b8';
+    let fill = zoneColor(props.zone);
     // Mixing view: blend the two species' own colours by the species-A
     // proportion (B at 0 → A at 1).
     if (showMixing && props.zone === 'edge_other_species' && typeof props.mix_frac_a === 'number') {
@@ -380,7 +385,7 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
               pathOptions={{
                 color: selected ? '#ffffff' : '#0b0e11',
                 weight: selected ? 2.5 : 1,
-                fillColor: ZONE_COLORS[p.zone] || '#94a3b8',
+                fillColor: zoneColor(p.zone),
                 fillOpacity: 0.95,
               }}
               eventHandlers={{ click: () => onPickPixel(p) }}
@@ -434,67 +439,75 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
         onDeleteScene={onDeleteScene}
       />
 
-      {/* Zone legend — sits above the scene timeline when one is shown */}
-      {zones && (
+      {/* Legend — one panel, every colour on screen explained. Sits above the
+          scene timeline when one is shown. */}
+      {polygons && (
         <div
           className={cn(
-            'absolute right-3 z-[1000] rounded-md border border-white/10 bg-[#11151acc] px-3 py-2 text-xs text-slate-300 backdrop-blur',
-            scenes.length > 0 ? 'bottom-20' : 'bottom-6'
+            'absolute right-3 z-[1000] w-60 overflow-y-auto rounded-md border border-white/10 bg-[#11151acc] px-3 py-2 backdrop-blur',
+            scenes.length > 0 ? 'bottom-20 max-h-[calc(100%-7rem)]' : 'bottom-6 max-h-[calc(100%-4rem)]'
           )}
         >
-          <div className="mb-1 flex items-center justify-between gap-3 font-medium text-slate-200">
-            <span>
-              Pixel zones · {zones.metric} · {zones.distance} m
-            </span>
-            <button
-              onClick={() => setShowZoneDots(s => !s)}
-              className="text-slate-400 transition-colors hover:text-white"
-              title={showZoneDots ? 'Hide the pixel dots' : 'Show the pixel dots'}
-            >
-              {showZoneDots ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
-            </button>
+          {/* What the polygon outlines mean */}
+          <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-slate-500">
+            Fields · {polygonMode === 'scenario' ? 'growth scenario' : polygonMode === 'neutral' ? 'muted' : 'by species'}
           </div>
-          {ZONE_LEGEND.map(({ key, label }) => {
-            const count =
-              key === 'interior'
-                ? zones.interior.features.length
-                : key === 'edge_other_species'
-                  ? zones.edgeCounts.other
-                  : key === 'edge_same_species'
-                    ? zones.edgeCounts.same
-                    : zones.edgeCounts.isolated;
-            return (
-              <div key={key} className="flex items-center gap-2 py-0.5">
-                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: ZONE_COLORS[key] }} />
-                {label(zones.distance)} · {count} px
-              </div>
-            );
-          })}
+          {polygonMode === 'species' &&
+            speciesLegend.slice(0, 6).map(([s, c]) => (
+              <LegendRow key={s} color={speciesColor(s)} label={s} count={c} shape="square" />
+            ))}
+          {polygonMode === 'species' && speciesLegend.length > 6 && (
+            <div className="py-0.5 text-[10px] text-slate-600">+{speciesLegend.length - 6} more species</div>
+          )}
+          {polygonMode === 'scenario' &&
+            scenarioLegend.map(([n, c]) => (
+              <LegendRow key={n} color={CLUSTER_COLORS[n % CLUSTER_COLORS.length]} label={`Scenario ${n + 1}`} count={c} shape="square" />
+            ))}
+          {polygonMode === 'neutral' && (
+            <div className="py-0.5 text-[11px] text-slate-500">Outlines muted — coloured by pixel class below.</div>
+          )}
+          {selectedIds.size > 0 && <LegendRow color="#38bdf8" label="Selected" count={selectedIds.size} shape="square" />}
 
-          {hasMixing && (
+          {/* What the pixel dots mean */}
+          {zones && (
             <div className="mt-2 border-t border-white/10 pt-2">
-              <label className="flex cursor-pointer items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={showMixing}
-                  onChange={e => setShowMixing(e.target.checked)}
-                  className="accent-sky-500"
-                />
-                <span className="font-medium text-slate-200">Species mix</span>
-                <span className="text-slate-500">({zones.unmixing!.count} px)</span>
-              </label>
-              {showMixing && (
-                <div className="mt-1.5">
-                  <div
-                    className="h-2 w-full rounded"
-                    style={{
-                      background: `linear-gradient(to right, ${speciesColor(zones.unmixing!.speciesB)}, ${speciesColor(zones.unmixing!.speciesA)})`,
-                    }}
-                  />
-                  <div className="mt-0.5 flex justify-between text-[10px] text-slate-500">
-                    <span>{zones.unmixing!.speciesB}</span>
-                    <span>{zones.unmixing!.speciesA}</span>
-                  </div>
+              <div className="mb-1 flex items-start justify-between gap-2">
+                <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                  Pixel class · {zones.metric} · {zones.distance} m
+                </span>
+                <button
+                  onClick={() => setShowZoneDots(s => !s)}
+                  className="shrink-0 text-slate-400 transition-colors hover:text-white"
+                  title={showZoneDots ? 'Hide the pixel dots' : 'Show the pixel dots'}
+                >
+                  {showZoneDots ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+                </button>
+              </div>
+              {ZONE_CLASSES.map(z => (
+                <LegendRow key={z.key} color={z.color} label={z.short} count={zoneCount(z.key)} />
+              ))}
+
+              {hasMixing && (
+                <div className="mt-2 border-t border-white/10 pt-2">
+                  <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={showMixing}
+                      onChange={e => setShowMixing(e.target.checked)}
+                      className="accent-sky-500"
+                    />
+                    <span className="font-medium text-slate-200">Recolour edge·other by species mix</span>
+                  </label>
+                  {showMixing && (
+                    <div className="mt-1.5">
+                      <GradientLegend
+                        from={speciesColor(zones.unmixing!.speciesB)}
+                        to={speciesColor(zones.unmixing!.speciesA)}
+                        leftLabel={`100% ${zones.unmixing!.speciesB}`}
+                        rightLabel={`100% ${zones.unmixing!.speciesA}`}
+                      />
+                    </div>
+                  )}
                 </div>
               )}
             </div>

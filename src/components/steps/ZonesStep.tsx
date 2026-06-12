@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Scissors } from 'lucide-react';
 import { ZoneExtraction, ZoneProgress } from '../../lib/zones';
+import { zoneColor, zoneShort } from '../../lib/legend';
 import { Button, ErrorNote, Field, inputClass, PrereqNote, ProgressBar, Stat, StopButton } from '../ui';
 
 /**
@@ -126,10 +127,10 @@ export default function ZonesStep(props: ZonesStepProps) {
       {props.zones && (
         <div className="space-y-2">
           <div className="grid grid-cols-3 gap-2">
-            <Stat label="Interior px" value={props.zones.interior.features.length} accent="#34d399" />
-            <Stat label="Edge · other sp." value={props.zones.edgeCounts.other} accent="#f87171" />
-            <Stat label="Edge · same sp." value={props.zones.edgeCounts.same} accent="#fbbf24" />
-            <Stat label="Edge · isolated" value={props.zones.edgeCounts.isolated} accent="#94a3b8" />
+            <Stat label={zoneShort('interior')} value={props.zones.interior.features.length} accent={zoneColor('interior')} />
+            <Stat label={zoneShort('edge_other_species')} value={props.zones.edgeCounts.other} accent={zoneColor('edge_other_species')} />
+            <Stat label={zoneShort('edge_same_species')} value={props.zones.edgeCounts.same} accent={zoneColor('edge_same_species')} />
+            <Stat label={zoneShort('edge_isolated')} value={props.zones.edgeCounts.isolated} accent={zoneColor('edge_isolated')} />
             <Stat label="Dates" value={props.zones.dates.length} />
           </div>
           {props.zones.unmixing && props.zones.unmixing.count > 0 && (

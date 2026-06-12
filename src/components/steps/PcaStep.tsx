@@ -3,6 +3,7 @@ import { BarChart3, Download, ExternalLink } from 'lucide-react';
 import { PixelZone, ZoneExtraction } from '../../lib/zones';
 import { PcaRunResult } from '../../lib/pca';
 import { SpeciesClustering, CLUSTER_COLORS } from '../../lib/species-clusters';
+import { ZONE_CLASSES } from '../../lib/legend';
 import { Button, ErrorNote, Field, inputClass, PrereqNote, Stat } from '../ui';
 import { cn } from '../../lib/utils';
 
@@ -24,12 +25,11 @@ export const parsePcaScope = (scope: string): { species: string; cluster: number
   return { species: scope.slice(0, sep), cluster: Number(scope.slice(sep + 1)) };
 };
 
-const ZONE_CHIPS: { key: PixelZone; label: string; color: string }[] = [
-  { key: 'interior', label: 'Interior', color: '#34d399' },
-  { key: 'edge_other_species', label: 'Edge · other', color: '#f87171' },
-  { key: 'edge_same_species', label: 'Edge · same', color: '#fbbf24' },
-  { key: 'edge_isolated', label: 'Edge · isolated', color: '#94a3b8' },
-];
+const ZONE_CHIPS: { key: PixelZone; label: string; color: string }[] = ZONE_CLASSES.map(z => ({
+  key: z.key,
+  label: z.short,
+  color: z.color,
+}));
 
 function ZonePicker({
   label,

@@ -11,6 +11,7 @@ import {
   ResponsiveContainer,
 } from 'recharts';
 import { NdviInspection, NdviPixel } from '../lib/ndvi-series';
+import { ZONE_CLASSES, ZONE_COLOR } from '../lib/legend';
 import { cn } from '../lib/utils';
 
 /**
@@ -20,14 +21,7 @@ import { cn } from '../lib/utils';
  * select each other; the zone chips highlight a whole category.
  */
 
-const ZONE_STYLE: { key: string; label: string; color: string }[] = [
-  { key: 'interior', label: 'Interior', color: '#34d399' },
-  { key: 'edge_other_species', label: 'Edge · other species', color: '#f87171' },
-  { key: 'edge_same_species', label: 'Edge · same species', color: '#fbbf24' },
-  { key: 'edge_isolated', label: 'Edge · isolated', color: '#94a3b8' },
-];
-
-const ZONE_COLOR: Record<string, string> = Object.fromEntries(ZONE_STYLE.map(z => [z.key, z.color]));
+const ZONE_STYLE = ZONE_CLASSES.map(z => ({ key: z.key, label: z.short, color: z.color }));
 
 /** Per-pixel mode draws one line per pixel; keep the chart responsive. */
 const MAX_PIXEL_LINES = 300;
