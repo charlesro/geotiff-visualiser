@@ -62,23 +62,30 @@ export async function extractPixelTimeseriesOptions(
   // Set up search and core boundaries based on buffer state
   let targetFeature = feature; // Outer search boundary
   let coreFeature = feature;    // Inner core boundary
+  // True when the negative buffer swallowed the polygon entirely: the field
+  // is narrower than 2× the buffer distance, so NO pixel is interior — they
+  // are all within `buffer` of the boundary. Falling back to the original
+  // polygon here would wrongly mark every pixel interior.
+  let coreEmpty = false;
 
   if (bufferMeters !== 0) {
     try {
       const buffered = buffer(feature, bufferMeters, { units: 'meters' });
-      if (buffered) {
-        if (bufferMeters > 0) {
+      const hasGeometry = !!(buffered?.geometry?.coordinates?.length);
+      if (bufferMeters > 0) {
+        if (hasGeometry) {
           targetFeature = buffered; // Search boundary is buffered (larger)
-          coreFeature = feature;     // Core is original (smaller)
-        } else {
-          targetFeature = feature;  // Search boundary is original (larger)
-          coreFeature = buffered;   // Core is buffered (smaller)
         }
+        coreFeature = feature; // Core is original (smaller)
+      } else if (hasGeometry) {
+        targetFeature = feature; // Search boundary is original (larger)
+        coreFeature = buffered;  // Core is buffered (smaller)
       } else {
-        console.warn("Buffer returned undefined, falling back to original feature.");
+        coreEmpty = true;
       }
     } catch (e) {
       console.error("Failed to buffer feature:", e);
+      if (bufferMeters < 0) coreEmpty = true;
     }
   }
 
@@ -109,15 +116,16 @@ export async function extractPixelTimeseriesOptions(
   const pointFeatures: any[] = [];
   const excludedPointFeatures: any[] = [];
   
-  // Keep original buffer boundaries in both feature lists if applicable for styling
-  if (bufferMeters !== 0) {
+  // Keep original buffer boundaries in both feature lists if applicable for
+  // styling (no inner outline when the core collapsed to nothing).
+  if (bufferMeters !== 0 && !coreEmpty) {
     const parentProps = feature?.properties || {};
     pointFeatures.push({
       type: "Feature",
       geometry: coreFeature.geometry || coreFeature,
-      properties: { 
+      properties: {
         ...parentProps,
-        type: 'buffer_boundary' 
+        type: 'buffer_boundary'
       }
     });
     excludedPointFeatures.push({
@@ -276,6 +284,8 @@ export async function extractPixelTimeseriesOptions(
           let isInsideCore = false;
           if (bufferMeters === 0) {
             isInsideCore = true;
+          } else if (coreEmpty) {
+            isInsideCore = false; // field too narrow to have an interior
           } else if (coreFeature.geometry?.type === 'Point' || coreFeature.type === 'Point') {
             const coords = coreFeature.geometry?.coordinates || coreFeature.coordinates;
             if (coords) {
