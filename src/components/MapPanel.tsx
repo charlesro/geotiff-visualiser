@@ -289,9 +289,13 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
     }
     return L.circleMarker(latlng, {
       radius: 3,
-      stroke: false,
+      // Thin dark outline so the dots stay legible over bright fields.
+      stroke: true,
+      color: '#0b0e11',
+      weight: 0.8,
+      opacity: 0.9,
       fillColor: fill,
-      fillOpacity: 0.85,
+      fillOpacity: 0.95,
       interactive: false,
     });
   };
