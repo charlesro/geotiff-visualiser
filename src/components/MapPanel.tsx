@@ -402,9 +402,14 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
         onDeleteScene={onDeleteScene}
       />
 
-      {/* Zone legend */}
+      {/* Zone legend — sits above the scene timeline when one is shown */}
       {zones && (
-        <div className="absolute bottom-6 right-3 z-[1000] rounded-md border border-white/10 bg-[#11151acc] px-3 py-2 text-xs text-slate-300 backdrop-blur">
+        <div
+          className={cn(
+            'absolute right-3 z-[1000] rounded-md border border-white/10 bg-[#11151acc] px-3 py-2 text-xs text-slate-300 backdrop-blur',
+            scenes.length > 0 ? 'bottom-20' : 'bottom-6'
+          )}
+        >
           <div className="mb-1 flex items-center justify-between gap-3 font-medium text-slate-200">
             <span>
               Pixel zones · {zones.metric} · {zones.distance} m

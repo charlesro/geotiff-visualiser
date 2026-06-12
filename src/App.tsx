@@ -417,10 +417,16 @@ export default function App() {
     setHighlightPixel(prev => (prev?.id === pixel.id ? null : pixel));
   }, []);
 
-  // Keyboard navigation: arrow keys to switch scenes.
+  // Keyboard navigation: arrow keys switch scenes, Delete removes the
+  // previewed one (the preview then advances, so Delete can be pressed
+  // repeatedly to prune the series).
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (scenes.length === 0) return;
+      // Keys typed in a form field (dates, counts…) are not scene commands.
+      const target = e.target as HTMLElement | null;
+      if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
+
       const currentIdx = scenes.findIndex(s => s.id === previewSceneId);
       const validIdx = currentIdx >= 0 ? currentIdx : 0;
 
@@ -430,11 +436,14 @@ export default function App() {
       } else if (e.key === 'ArrowRight' && validIdx < scenes.length - 1) {
         e.preventDefault();
         setPreviewSceneId(scenes[validIdx + 1].id);
+      } else if ((e.key === 'Delete' || e.key === 'Backspace') && previewSceneId) {
+        e.preventDefault();
+        deleteScene(previewSceneId);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [scenes, previewSceneId]);
+  }, [scenes, previewSceneId, deleteScene]);
 
   // ----- Step 4 handlers -----------------------------------------------------
 
