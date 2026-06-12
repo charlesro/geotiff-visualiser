@@ -400,6 +400,25 @@ export default function App() {
     setHighlightPixel(prev => (prev?.id === pixel.id ? null : pixel));
   }, []);
 
+  // Keyboard navigation: arrow keys to switch scenes.
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (scenes.length === 0) return;
+      const currentIdx = scenes.findIndex(s => s.id === previewSceneId);
+      const validIdx = currentIdx >= 0 ? currentIdx : 0;
+
+      if (e.key === 'ArrowLeft' && validIdx > 0) {
+        e.preventDefault();
+        setPreviewSceneId(scenes[validIdx - 1].id);
+      } else if (e.key === 'ArrowRight' && validIdx < scenes.length - 1) {
+        e.preventDefault();
+        setPreviewSceneId(scenes[validIdx + 1].id);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [scenes, previewSceneId]);
+
   // ----- Step 4 handlers -----------------------------------------------------
 
   const runPca = useCallback(async () => {
