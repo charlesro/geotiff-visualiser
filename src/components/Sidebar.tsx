@@ -29,10 +29,18 @@ export default function Sidebar({
 }) {
   const [collapsed, setCollapsed] = useState(false);
 
-  // Slim rail: step numbers only, the map gets the room.
-  if (collapsed) {
-    return (
-      <div className="flex h-full w-12 shrink-0 flex-col items-center gap-1 border-r border-white/10 bg-[#11151a] py-2">
+  // The full panel is hidden — not unmounted — while collapsed, so the step
+  // forms keep their values (buffer distance, dates…) across collapse and
+  // step switches.
+  return (
+    <>
+      {/* Slim rail: step numbers only, the map gets the room. */}
+      <div
+        className={cn(
+          'flex h-full w-12 shrink-0 flex-col items-center gap-1 border-r border-white/10 bg-[#11151a] py-2',
+          !collapsed && 'hidden'
+        )}
+      >
         <button
           onClick={() => setCollapsed(false)}
           className="mb-1 rounded-md p-1.5 text-slate-500 hover:bg-white/5 hover:text-slate-200"
@@ -61,11 +69,10 @@ export default function Sidebar({
           </button>
         ))}
       </div>
-    );
-  }
 
-  return (
-    <div className="flex h-full w-[390px] shrink-0 flex-col border-r border-white/10 bg-[#11151a]">
+      <div
+        className={cn('flex h-full w-[390px] shrink-0 flex-col border-r border-white/10 bg-[#11151a]', collapsed && 'hidden')}
+      >
       <div className="flex items-center justify-end border-b border-white/5 px-2 py-1">
         <button
           onClick={() => setCollapsed(true)}
@@ -111,11 +118,13 @@ export default function Sidebar({
                   className={cn('h-4 w-4 shrink-0 text-slate-600 transition-transform', open && 'rotate-180')}
                 />
               </button>
-              {open && <div className="space-y-3 px-4 pb-4 pt-1">{step.content}</div>}
+              {/* Hidden, not unmounted, when closed: the form state survives. */}
+              <div className={cn('space-y-3 px-4 pb-4 pt-1', !open && 'hidden')}>{step.content}</div>
             </section>
           );
         })}
       </div>
-    </div>
+      </div>
+    </>
   );
 }

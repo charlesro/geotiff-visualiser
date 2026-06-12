@@ -25,6 +25,13 @@ import { CancelCheck, throwIfCancelled } from './cancel';
  * Pixels across wider gaps (a road between the fields…) come out isolated
  * instead of inheriting a neighbour class from 30 m away.
  *
+ * Pixels in the open gap between two facing fields (outside both polygons)
+ * are also part of the boundary zone: the thin ring up to `neighbourGap`
+ * outside each field is extracted, and a gap pixel is kept — as
+ * edge_other_species / edge_same_species — when a neighbouring field lies
+ * within reach and the pixel is inside no field. Each gap pixel is emitted
+ * once even though it sits in the rings of both facing fields.
+ *
  * Implemented on top of extractPixelTimeseriesOptions: a negative buffer
  * makes the inward-shrunk polygon the "core" (its pixels are the interior
  * set, the remainder of the polygon the edge set); a positive buffer adds
@@ -135,7 +142,7 @@ function buildEdgeClassifier(contextFeatures: any[], maxReach: number) {
     });
   }
 
-  return (lng: number, lat: number, ownKey: string, ownSpecies: string | null, reach: number): EdgeClass => {
+  const classify = (lng: number, lat: number, ownKey: string, ownSpecies: string | null, reach: number): EdgeClass => {
     let foundSame = false;
     for (const e of entries) {
       if (e.key === ownKey) continue;
@@ -150,6 +157,38 @@ function buildEdgeClassifier(contextFeatures: any[], maxReach: number) {
     }
     return foundSame ? 'edge_same_species' : 'edge_isolated';
   };
+
+  /**
+   * Classification for a pixel in the open gap between fields (outside its
+   * own polygon). Returns null when the pixel is not really in a gap: inside
+   * another field (that field's crop, not a gap) or with no neighbouring
+   * field within reach (road verge, open land…).
+   */
+  const classifyGap = (
+    lng: number,
+    lat: number,
+    ownKey: string,
+    ownSpecies: string | null,
+    reach: number
+  ): EdgeClass | null => {
+    let foundOther = false;
+    let foundSame = false;
+    for (const e of entries) {
+      if (e.key === ownKey) continue;
+      if (lng < e.bbox[0] || lng > e.bbox[2] || lat < e.bbox[1] || lat > e.bbox[3]) continue;
+      if (e.rings === undefined) e.rings = ringsOf(e.feature);
+      if (booleanPointInPolygon([lng, lat], e.feature)) return null; // inside another field
+      const d = distToBoundaryM(lng, lat, e.rings);
+      if (d > reach) continue;
+      if (e.species !== null && ownSpecies !== null) {
+        if (e.species !== ownSpecies) foundOther = true;
+        else foundSame = true;
+      }
+    }
+    return foundOther ? 'edge_other_species' : foundSame ? 'edge_same_species' : null;
+  };
+
+  return { classify, classifyGap };
 }
 
 export interface ZoneProgress {
@@ -187,13 +226,16 @@ export async function extractZones(
     return true;
   });
 
-  const classifyEdge = buildEdgeClassifier(
+  const { classify: classifyEdge, classifyGap } = buildEdgeClassifier(
     contextFeatures.length > 0 ? contextFeatures : features,
     // Bbox prefilter bound: edge pixels lie within `distance` of their own
     // boundary (also outside when includeOutside), so their reach never
     // exceeds distance + gap.
     distance + neighbourGap
   );
+
+  // Gap pixels can fall in the rings of both facing fields — emit them once.
+  const seenGapIds = new Set<string>();
 
   const interiorPoints: any[] = [];
   const edgePoints: any[] = [];
@@ -224,6 +266,15 @@ export async function extractZones(
     const coreBoundary = inner.pixelPoints.features.find((f: any) => !notBoundary(f));
     if (coreBoundary) boundaryFeatures.push(coreBoundary);
 
+    // Pixels in the open gap between this field and a facing one (outside
+    // both polygons) are part of the boundary zone: extract the thin outer
+    // ring and keep only the pixels a neighbouring field really faces.
+    const gapCandidates: any[] = [];
+    if (!includeOutside && neighbourGap > 0) {
+      const outer = await extractPixelTimeseriesOptions(feature, layers, neighbourGap, metric);
+      gapCandidates.push(...(outer.excludedPixelPoints?.features || []).filter(notBoundary));
+    }
+
     if (includeOutside) {
       // Positive buffer: the excluded set is the ring outside the boundary.
       const outer = await extractPixelTimeseriesOptions(feature, layers, distance, metric);
@@ -244,6 +295,20 @@ export async function extractZones(
       if (cls === 'edge_other_species') edgeCounts.other++;
       else if (cls === 'edge_same_species') edgeCounts.same++;
       else edgeCounts.isolated++;
+    }
+
+    for (const p of gapCandidates) {
+      const id = p.properties?.id;
+      if (id && seenGapIds.has(id)) continue;
+      const [lng, lat] = p.geometry.coordinates;
+      const reach = distToBoundaryM(lng, lat, ownRings) + neighbourGap;
+      const cls = classifyGap(lng, lat, ownKey, ownSpecies, reach);
+      if (!cls) continue; // not a gap pixel: inside a field, or nothing across
+      if (id) seenGapIds.add(id);
+      p.properties.zone = cls;
+      if (cls === 'edge_other_species') edgeCounts.other++;
+      else edgeCounts.same++;
+      edge.push(p);
     }
 
     interiorPoints.push(...interior);
