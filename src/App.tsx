@@ -28,7 +28,9 @@ import ImageryStep from './components/steps/ImageryStep';
 import ZonesStep from './components/steps/ZonesStep';
 import ClusterStep from './components/steps/ClusterStep';
 import PcaStep, { PCA_SCOPE_ALL, parsePcaScope } from './components/steps/PcaStep';
+import BoundaryStep from './components/steps/BoundaryStep';
 import PcaPanel from './components/PcaPanel';
+import BoundaryProfilePanel from './components/BoundaryProfilePanel';
 
 /**
  * Polygon Time-Series PCA.
@@ -83,6 +85,7 @@ export default function App() {
   const [pcaBusy, setPcaBusy] = useState(false);
   const [pcaError, setPcaError] = useState<string | null>(null);
   const [showPcaPanel, setShowPcaPanel] = useState(false);
+  const [showBoundaryPanel, setShowBoundaryPanel] = useState(false);
   /** Width of the results drawer (drag its left edge to resize). */
   const [pcaPanelWidth, setPcaPanelWidth] = useState(() => {
     const saved = Number(localStorage.getItem('ppca_panel_w'));
@@ -840,6 +843,14 @@ export default function App() {
         />
       ),
     },
+    {
+      id: 6,
+      title: 'Boundary profile',
+      summary: 'Edge-response curve over distance to the boundary',
+      enabled: zones !== null,
+      done: false,
+      content: <BoundaryStep zones={zones} onOpen={() => setShowBoundaryPanel(true)} />,
+    },
   ];
 
   return (
@@ -905,6 +916,9 @@ export default function App() {
               onClose={closePcaPanel}
               onExportCsv={exportCsv}
             />
+          )}
+          {showBoundaryPanel && zones && (
+            <BoundaryProfilePanel zones={zones} onClose={() => setShowBoundaryPanel(false)} />
           )}
         </main>
       </div>

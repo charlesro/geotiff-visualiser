@@ -286,14 +286,22 @@ export async function extractZones(
     const ownKey = featureKey(feature);
     const ownSpecies = speciesOf(feature);
     const ownRings = ringsOf(feature);
-    for (const p of interior) p.properties.zone = 'interior';
+    // Signed distance to the field boundary, stored on every pixel: positive
+    // inside the field, negative in the gap outside. The boundary-profile
+    // analysis pools all pixels along this axis.
+    for (const p of interior) {
+      p.properties.zone = 'interior';
+      const [lng, lat] = p.geometry.coordinates;
+      p.properties.edge_dist_m = distToBoundaryM(lng, lat, ownRings);
+    }
     for (const p of edge) {
       const [lng, lat] = p.geometry.coordinates;
+      const d = distToBoundaryM(lng, lat, ownRings);
       // A neighbour counts only if it can sit directly across the boundary
       // from this pixel: within its own boundary distance + the gap.
-      const reach = distToBoundaryM(lng, lat, ownRings) + neighbourGap;
-      const cls = classifyEdge(lng, lat, ownKey, ownSpecies, reach);
+      const cls = classifyEdge(lng, lat, ownKey, ownSpecies, d + neighbourGap);
       p.properties.zone = cls;
+      p.properties.edge_dist_m = booleanPointInPolygon([lng, lat], feature) ? d : -d;
       if (cls === 'edge_other_species') edgeCounts.other++;
       else if (cls === 'edge_same_species') edgeCounts.same++;
       else edgeCounts.isolated++;
@@ -307,12 +315,14 @@ export async function extractZones(
       // only when the strip it sits in — own boundary distance + distance
       // to the facing field — is narrower than the neighbour gap. Anything
       // wider (wedges at corners, open land) is not a between-fields gap.
-      const budget = neighbourGap - distToBoundaryM(lng, lat, ownRings);
+      const dOwn = distToBoundaryM(lng, lat, ownRings);
+      const budget = neighbourGap - dOwn;
       if (budget <= 0) continue;
       const cls = classifyGap(lng, lat, ownKey, ownSpecies, budget);
       if (!cls) continue; // not a gap pixel: inside a field, or nothing across
       if (id) seenGapIds.add(id);
       p.properties.zone = cls;
+      p.properties.edge_dist_m = -dOwn; // outside the field
       if (cls === 'edge_other_species') edgeCounts.other++;
       else edgeCounts.same++;
       edge.push(p);
