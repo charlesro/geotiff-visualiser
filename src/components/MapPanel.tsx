@@ -199,7 +199,7 @@ const SPECIES_COLORS = [
   '#fb923c', '#22d3ee', '#f87171', '#60a5fa', '#34d399', '#fbbf24',
 ];
 
-const speciesColor = (crpLbl: string | undefined): string => {
+export const speciesColor = (crpLbl: string | undefined): string => {
   if (!crpLbl) return '#e2e8f0';
   // Hash the species name to a consistent index.
   let hash = 0;

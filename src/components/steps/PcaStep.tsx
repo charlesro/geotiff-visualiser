@@ -85,6 +85,8 @@ interface PcaStepProps {
   /** Subset of extracted fields (pids) the PCA runs on; null = all. */
   fields: Set<number> | null;
   onFieldsChange: (fields: Set<number> | null) => void;
+  /** pid → pair_id from the neighbour-pairs query, to group the field list. */
+  pairOf: Map<number, string>;
   fitZones: PixelZone[];
   onFitZonesChange: (zones: PixelZone[]) => void;
   projectZones: PixelZone[];
@@ -101,12 +103,45 @@ export default function PcaStep(props: PcaStepProps) {
   const perPolygon = props.zones?.perPolygon || [];
   const fieldCount = props.fields === null ? perPolygon.length : props.fields.size;
 
+  const setFields = (next: Set<number>) =>
+    props.onFieldsChange(next.size === perPolygon.length ? null : next);
+  const currentFields = () => new Set(props.fields === null ? perPolygon.map(p => p.pid) : props.fields);
+
   const toggleField = (pid: number) => {
-    const next = new Set(props.fields === null ? perPolygon.map(p => p.pid) : props.fields);
+    const next = currentFields();
     if (next.has(pid)) next.delete(pid);
     else next.add(pid);
-    props.onFieldsChange(next.size === perPolygon.length ? null : next);
+    setFields(next);
   };
+
+  const togglePair = (pids: number[], include: boolean) => {
+    const next = currentFields();
+    for (const pid of pids) {
+      if (include) next.add(pid);
+      else next.delete(pid);
+    }
+    setFields(next);
+  };
+
+  // Group the extracted fields by neighbour pair so each pair can be ticked
+  // as a unit; fields outside any pair go to the trailing group.
+  const fieldGroups = React.useMemo(() => {
+    const byPair = new Map<string, typeof perPolygon>();
+    const solo: typeof perPolygon = [];
+    for (const p of perPolygon) {
+      const pair = props.pairOf.get(p.pid);
+      if (pair === undefined) {
+        solo.push(p);
+        continue;
+      }
+      if (!byPair.has(pair)) byPair.set(pair, []);
+      byPair.get(pair)!.push(p);
+    }
+    const groups = Array.from(byPair.entries())
+      .sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }))
+      .map(([pair, items]) => ({ pair, items }));
+    return { groups, solo };
+  }, [perPolygon, props.pairOf]);
 
   const scoped = parsePcaScope(props.scope);
   const scopeColor = scoped ? CLUSTER_COLORS[scoped.cluster % CLUSTER_COLORS.length] : null;
@@ -161,8 +196,46 @@ export default function PcaStep(props: PcaStepProps) {
               None
             </button>
           </div>
-          <div className="mt-1 max-h-40 overflow-y-auto">
-            {perPolygon.map(p => {
+          <div className="mt-1 max-h-48 overflow-y-auto">
+            {fieldGroups.groups.map(({ pair, items }) => {
+              const pids = items.map(p => p.pid);
+              const allIn = pids.every(pid => props.fields === null || props.fields.has(pid));
+              return (
+                <div key={pair} className="mb-1 rounded border border-white/5 px-1.5 py-1">
+                  <label className="flex cursor-pointer items-center gap-2 text-[11px] font-medium text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={allIn}
+                      onChange={() => togglePair(pids, !allIn)}
+                      className="accent-sky-500"
+                    />
+                    Pair {pair.replace('_', ' ↔ ')}
+                  </label>
+                  {items.map(p => {
+                    const checked = props.fields === null || props.fields.has(p.pid);
+                    return (
+                      <label
+                        key={p.pid}
+                        className="ml-4 flex cursor-pointer items-center gap-2 py-0.5 text-[11px] text-slate-400 hover:text-slate-200"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleField(p.pid)}
+                          className="accent-sky-500"
+                        />
+                        <span className="truncate">{p.label}</span>
+                        <span className="ml-auto shrink-0 text-slate-600">{p.interior + p.edge} px</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              );
+            })}
+            {fieldGroups.solo.length > 0 && fieldGroups.groups.length > 0 && (
+              <div className="mt-1 text-[10px] font-medium uppercase tracking-wide text-slate-600">Unpaired</div>
+            )}
+            {fieldGroups.solo.map(p => {
               const checked = props.fields === null || props.fields.has(p.pid);
               return (
                 <label

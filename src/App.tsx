@@ -474,6 +474,15 @@ export default function App() {
     [zones]
   );
 
+  /** pid → pair_id from the neighbour-pairs query (empty for file loads). */
+  const pairOf = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const f of polygons?.features || []) {
+      if (f.properties?.pair_id != null) m.set(f.properties.__pid, String(f.properties.pair_id));
+    }
+    return m;
+  }, [polygons]);
+
   /** Field key → scenario index, for the map coloring. */
   const clusterAssignment = useMemo(() => {
     if (!clustering) return null;
@@ -520,6 +529,24 @@ export default function App() {
       setPcaBusy(false);
     }
   }, [zones, clustering, pcaScope, pcaFields, pcaFitZones, pcaProjectZones]);
+
+  // Changing the projected classes from the results panel re-runs the
+  // projection live. Refs avoid re-firing when the run itself lands.
+  const pcaLive = useRef({ runPca, active: false });
+  pcaLive.current = { runPca, active: pcaResult !== null };
+  useEffect(() => {
+    if (pcaLive.current.active) pcaLive.current.runPca();
+  }, [pcaProjectZones]);
+
+  /** Scatter point picked in the results panel → white ring on the map. */
+  const pickPcaPixel = useCallback((p: { id: string; zone: PixelZone; lng: number; lat: number } | null) => {
+    setHighlightPixel(p ? { id: p.id, zone: p.zone, lng: p.lng, lat: p.lat, values: {} } : null);
+  }, []);
+
+  const closePcaPanel = useCallback(() => {
+    setShowPcaPanel(false);
+    setHighlightPixel(null);
+  }, []);
 
   const exportCsv = useCallback(() => {
     if (!pcaResult) return;
@@ -652,6 +679,7 @@ export default function App() {
           onScopeChange={setPcaScope}
           fields={pcaFields}
           onFieldsChange={setPcaFields}
+          pairOf={pairOf}
           fitZones={pcaFitZones}
           onFitZonesChange={setPcaFitZones}
           projectZones={pcaProjectZones}
@@ -715,7 +743,17 @@ export default function App() {
             onHighlightPixel={setHighlightPixel}
           />
           {showPcaPanel && pcaResult && (
-            <PcaPanel result={pcaResult} onClose={() => setShowPcaPanel(false)} onExportCsv={exportCsv} />
+            <PcaPanel
+              result={pcaResult}
+              busy={pcaBusy}
+              clusterAssignment={clusterAssignment}
+              projectZones={pcaProjectZones}
+              onProjectZonesChange={setPcaProjectZones}
+              highlightPixelId={highlightPixel?.id ?? null}
+              onPickPixel={pickPcaPixel}
+              onClose={closePcaPanel}
+              onExportCsv={exportCsv}
+            />
           )}
         </main>
       </div>

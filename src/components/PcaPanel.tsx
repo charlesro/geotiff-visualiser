@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { X, Download } from 'lucide-react';
+import { X, Download, Loader2 } from 'lucide-react';
 import {
   ScatterChart,
   Scatter,
@@ -14,15 +14,19 @@ import {
   LineChart,
   Line,
   CartesianGrid,
+  Symbols,
 } from 'recharts';
 import { PcaRunResult } from '../lib/pca';
-import { isTsColumn } from '../lib/timeseries';
+import { PixelZone } from '../lib/zones';
+import { CLUSTER_COLORS, fieldKeyOf } from '../lib/species-clusters';
+import { speciesColor } from './MapPanel';
 import { cn } from '../lib/utils';
 
 /**
- * Results drawer: PC scatter plot (colourable by zone, polygon or any
- * categorical attribute), explained variance, and component loadings over
- * the acquisition dates.
+ * Results drawer — the working surface for the PCA. The scatter is fully
+ * driven from here: which pixel classes are projected, a colour encoding and
+ * a shape encoding (two attributes visible at once), and point picking that
+ * highlights the corresponding pixel on the map.
  */
 
 const PALETTE = ['#34d399', '#fbbf24', '#38bdf8', '#f472b6', '#a78bfa', '#fb923c', '#22d3ee', '#f87171', '#a3e635', '#e879f9'];
@@ -32,56 +36,185 @@ const ZONE_COLOR: Record<string, string> = {
   edge_same_species: '#fbbf24',
   edge_isolated: '#94a3b8',
 };
+const ZONE_CHIPS: { key: PixelZone; label: string }[] = [
+  { key: 'interior', label: 'Interior' },
+  { key: 'edge_other_species', label: 'Edge · other' },
+  { key: 'edge_same_species', label: 'Edge · same' },
+  { key: 'edge_isolated', label: 'Edge · isolated' },
+];
 
-const EXCLUDED_ATTRS = new Set(['id', '__pid', 'zone', 'polygon_id', 'type']);
+type SymbolType = 'circle' | 'triangle' | 'square' | 'diamond' | 'star' | 'cross' | 'wye';
+const SYMBOL_TYPES: SymbolType[] = ['circle', 'triangle', 'square', 'diamond', 'star', 'cross', 'wye'];
+
+type Attr = 'zone' | 'species' | 'scenario' | 'field' | 'pair';
+const ATTR_LABEL: Record<Attr, string> = {
+  zone: 'pixel class',
+  species: 'species',
+  scenario: 'scenario',
+  field: 'field',
+  pair: 'pair',
+};
+
+/** Keep the scatter responsive — evenly sampled above this. */
+const MAX_POINTS = 4000;
+
+export interface PcaPickedPixel {
+  id: string;
+  zone: PixelZone;
+  lng: number;
+  lat: number;
+}
 
 interface PcaPanelProps {
   result: PcaRunResult;
+  busy: boolean;
+  /** Field key → scenario index, from step 4 (null = not clustered). */
+  clusterAssignment: Map<string, number> | null;
+  /** Classes projected in the space — editable right here. */
+  projectZones: PixelZone[];
+  onProjectZonesChange: (zones: PixelZone[]) => void;
+  /** Point picked in the scatter, mirrored as a ring on the map. */
+  highlightPixelId: string | null;
+  onPickPixel: (pixel: PcaPickedPixel | null) => void;
   onClose: () => void;
   onExportCsv: () => void;
 }
 
-export default function PcaPanel({ result, onClose, onExportCsv }: PcaPanelProps) {
+export default function PcaPanel({
+  result,
+  busy,
+  clusterAssignment,
+  projectZones,
+  onProjectZonesChange,
+  highlightPixelId,
+  onPickPixel,
+  onClose,
+  onExportCsv,
+}: PcaPanelProps) {
   const [tab, setTab] = useState<'scatter' | 'variance' | 'loadings'>('scatter');
   const [pcX, setPcX] = useState(0);
   const [pcY, setPcY] = useState(1);
-  const [colorBy, setColorBy] = useState('zone');
+  const [colorBy, setColorBy] = useState<Attr>('zone');
+  const [shapeBy, setShapeBy] = useState<Attr | 'none'>('none');
 
-  const colorOptions = useMemo(() => {
-    const options = ['zone', 'polygon'];
-    const counts = new Map<string, Set<string>>();
+  const hasPairs = useMemo(() => result.rows.some(r => r.properties?.pair_id != null), [result]);
+  const attrOptions = useMemo(() => {
+    const opts: Attr[] = ['zone', 'species'];
+    if (clusterAssignment) opts.push('scenario');
+    opts.push('field');
+    if (hasPairs) opts.push('pair');
+    return opts;
+  }, [clusterAssignment, hasPairs]);
+
+  const attrValue = useMemo(
+    () =>
+      (row: PcaRunResult['rows'][number], attr: Attr): string => {
+        const props = row.properties || {};
+        switch (attr) {
+          case 'zone':
+            return row.zone;
+          case 'species':
+            return String(props.crp_lbl ?? props.species ?? 'unknown');
+          case 'scenario': {
+            const c = clusterAssignment?.get(fieldKeyOf(props));
+            return c !== undefined ? `scenario ${c + 1}` : 'unclustered';
+          }
+          case 'field':
+            return String(props.NewID ?? row.polygonId ?? 'unknown');
+          case 'pair':
+            return props.pair_id != null ? String(props.pair_id) : 'no pair';
+        }
+      },
+    [clusterAssignment]
+  );
+
+  /** Ordered categories of an attribute with their counts over all rows. */
+  const categoriesOf = (attr: Attr): { name: string; count: number }[] => {
+    const counts = new Map<string, number>();
     for (const row of result.rows) {
-      for (const [key, value] of Object.entries(row.properties)) {
-        if (EXCLUDED_ATTRS.has(key) || isTsColumn(key)) continue;
-        if (typeof value !== 'string' && typeof value !== 'boolean') continue;
-        if (!counts.has(key)) counts.set(key, new Set());
-        counts.get(key)!.add(String(value));
-      }
+      const v = attrValue(row, attr);
+      counts.set(v, (counts.get(v) || 0) + 1);
     }
-    for (const [key, values] of counts) {
-      if (values.size >= 2 && values.size <= 12) options.push(key);
-    }
-    return options;
-  }, [result]);
-
-  const categoryOf = (row: PcaRunResult['rows'][number]): string => {
-    if (colorBy === 'zone') return row.zone;
-    if (colorBy === 'polygon') return String(row.polygonId ?? 'unknown');
-    return String(row.properties[colorBy] ?? 'unknown');
+    return Array.from(counts.entries())
+      .sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }))
+      .map(([name, count]) => ({ name, count }));
   };
 
-  const groups = useMemo(() => {
-    const map = new Map<string, { x: number; y: number; pixelId: string }[]>();
-    for (const row of result.rows) {
-      const cat = categoryOf(row);
-      if (!map.has(cat)) map.set(cat, []);
-      map.get(cat)!.push({ x: row.scores[pcX], y: row.scores[pcY], pixelId: row.pixelId });
-    }
-    return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [result, pcX, pcY, colorBy]);
+  const colorCats = useMemo(() => categoriesOf(colorBy), [result, colorBy, attrValue]);
+  const shapeCats = useMemo(
+    () => (shapeBy === 'none' ? [] : categoriesOf(shapeBy)),
+    [result, shapeBy, attrValue]
+  );
 
-  const groupColor = (name: string, index: number): string =>
-    colorBy === 'zone' ? ZONE_COLOR[name] || PALETTE[index % PALETTE.length] : PALETTE[index % PALETTE.length];
+  const colorOf = (attr: Attr, name: string, index: number): string => {
+    if (attr === 'zone') return ZONE_COLOR[name] || '#94a3b8';
+    if (attr === 'species') return speciesColor(name);
+    if (attr === 'scenario') {
+      if (name === 'unclustered') return '#64748b';
+      const n = Number(name.split(' ')[1]) - 1;
+      return CLUSTER_COLORS[n % CLUSTER_COLORS.length];
+    }
+    return PALETTE[index % PALETTE.length];
+  };
+
+  const points = useMemo(() => {
+    const rows =
+      result.rows.length > MAX_POINTS
+        ? Array.from({ length: MAX_POINTS }, (_, i) => result.rows[Math.floor((i * result.rows.length) / MAX_POINTS)])
+        : result.rows;
+    const colorIdx = new Map(colorCats.map((c, i) => [c.name, i]));
+    const shapeIdx = new Map(shapeCats.map((c, i) => [c.name, i]));
+    return rows.map(row => {
+      const cv = attrValue(row, colorBy);
+      const sv = shapeBy === 'none' ? null : attrValue(row, shapeBy);
+      return {
+        x: row.scores[pcX],
+        y: row.scores[pcY],
+        pixelId: row.pixelId,
+        color: colorOf(colorBy, cv, colorIdx.get(cv) ?? 0),
+        symbol: (sv === null ? 'circle' : SYMBOL_TYPES[(shapeIdx.get(sv) ?? 0) % SYMBOL_TYPES.length]) as SymbolType,
+        row,
+      };
+    });
+  }, [result, pcX, pcY, colorBy, shapeBy, colorCats, shapeCats, attrValue]);
+
+  const pick = (p: (typeof points)[number]) => {
+    if (highlightPixelId === p.pixelId) onPickPixel(null);
+    else onPickPixel({ id: p.pixelId, zone: p.row.zone, lng: p.row.lng, lat: p.row.lat });
+  };
+
+  const pickedRow = useMemo(
+    () => (highlightPixelId ? result.rows.find(r => r.pixelId === highlightPixelId) || null : null),
+    [highlightPixelId, result]
+  );
+
+  const toggleProjected = (zone: PixelZone) => {
+    if (projectZones.includes(zone)) {
+      if (projectZones.length === 1) return; // keep at least one class in the space
+      onProjectZonesChange(projectZones.filter(z => z !== zone));
+    } else {
+      onProjectZonesChange([...projectZones, zone]);
+    }
+  };
+
+  const renderPoint = (props: any) => {
+    const { cx, cy, payload } = props;
+    if (typeof cx !== 'number' || typeof cy !== 'number') return <g />;
+    const selected = payload.pixelId === highlightPixelId;
+    return (
+      <g onClick={() => pick(payload)} style={{ cursor: 'pointer' }}>
+        {selected && <circle cx={cx} cy={cy} r={9} fill="none" stroke="#ffffff" strokeWidth={2} />}
+        <Symbols
+          cx={cx}
+          cy={cy}
+          type={payload.symbol}
+          size={selected ? 90 : 32}
+          fill={payload.color}
+          fillOpacity={selected ? 1 : 0.8}
+        />
+      </g>
+    );
+  };
 
   const varianceData = result.explained.map((v, i) => ({
     pc: `PC${i + 1}`,
@@ -101,13 +234,24 @@ export default function PcaPanel({ result, onClose, onExportCsv }: PcaPanelProps
   const selectClass =
     'rounded-md border border-white/10 bg-[#0b0e11] px-2 py-1 text-xs text-slate-300 focus:outline-none';
 
+  const pickedLabel = (row: PcaRunResult['rows'][number]): string => {
+    const props = row.properties || {};
+    const species = props.crp_lbl ?? props.species;
+    return species && props.NewID !== undefined ? `${species} · ${props.NewID}` : String(row.polygonId ?? row.pixelId);
+  };
+
   return (
-    <div className="absolute inset-y-0 right-0 z-[1100] flex w-[620px] max-w-full flex-col border-l border-white/10 bg-[#0d1117f5] backdrop-blur">
+    <div className="absolute inset-y-0 right-0 z-[1100] flex w-[660px] max-w-full flex-col border-l border-white/10 bg-[#0d1117f5] backdrop-blur">
       <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
         <div>
-          <h2 className="text-sm font-semibold text-slate-100">PCA results</h2>
+          <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-100">
+            PCA results
+            {busy && <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-400" />}
+          </h2>
           <p className="text-[11px] text-slate-500">
-            {result.rows.length} pixels · {result.metric} · {result.dates.length} dates ·{' '}
+            axes fit on {result.fitCount} px (
+            {result.fitZones.map(z => ZONE_CHIPS.find(c => c.key === z)?.label ?? z).join(', ')}) ·{' '}
+            {result.rows.length} px placed · {result.metric} · {result.dates.length} dates ·{' '}
             {result.cumulative[result.components - 1]?.toFixed(1)}% variance in {result.components} PCs
           </p>
         </div>
@@ -139,7 +283,34 @@ export default function PcaPanel({ result, onClose, onExportCsv }: PcaPanelProps
       <div className="flex-1 overflow-y-auto p-4">
         {tab === 'scatter' && (
           <>
-            <div className="mb-3 flex flex-wrap items-center gap-3 text-xs text-slate-500">
+            {/* Projected classes — live, re-runs the projection */}
+            <div className="mb-2 flex flex-wrap items-center gap-1.5">
+              <span className="mr-1 text-[11px] font-medium uppercase tracking-wide text-slate-500">Projected</span>
+              {ZONE_CHIPS.map(z => {
+                const active = projectZones.includes(z.key);
+                return (
+                  <button
+                    key={z.key}
+                    onClick={() => toggleProjected(z.key)}
+                    disabled={busy}
+                    className={cn(
+                      'flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] transition-colors',
+                      active
+                        ? 'border-white/30 bg-white/10 text-slate-200'
+                        : 'border-white/10 text-slate-600 hover:text-slate-400'
+                    )}
+                  >
+                    <span
+                      className={cn('h-1.5 w-1.5 rounded-full', !active && 'opacity-30')}
+                      style={{ background: ZONE_COLOR[z.key] }}
+                    />
+                    {z.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="mb-2 flex flex-wrap items-center gap-3 text-xs text-slate-500">
               <label className="flex items-center gap-1.5">
                 X
                 <select className={selectClass} value={pcX} onChange={e => setPcX(Number(e.target.value))}>
@@ -157,17 +328,35 @@ export default function PcaPanel({ result, onClose, onExportCsv }: PcaPanelProps
                 </select>
               </label>
               <label className="flex items-center gap-1.5">
-                Colour by
-                <select className={selectClass} value={colorBy} onChange={e => setColorBy(e.target.value)}>
-                  {colorOptions.map(opt => (
-                    <option key={opt} value={opt}>
-                      {opt}
+                Colour
+                <select className={selectClass} value={colorBy} onChange={e => setColorBy(e.target.value as Attr)}>
+                  {attrOptions.map(a => (
+                    <option key={a} value={a}>
+                      {ATTR_LABEL[a]}
                     </option>
                   ))}
                 </select>
               </label>
+              <label className="flex items-center gap-1.5">
+                Shape
+                <select
+                  className={selectClass}
+                  value={shapeBy}
+                  onChange={e => setShapeBy(e.target.value as Attr | 'none')}
+                >
+                  <option value="none">none</option>
+                  {attrOptions
+                    .filter(a => a !== colorBy)
+                    .map(a => (
+                      <option key={a} value={a}>
+                        {ATTR_LABEL[a]}
+                      </option>
+                    ))}
+                </select>
+              </label>
             </div>
-            <ResponsiveContainer width="100%" height={460}>
+
+            <ResponsiveContainer width="100%" height={400}>
               <ScatterChart margin={{ top: 10, right: 10, bottom: 10, left: 0 }}>
                 <CartesianGrid stroke="#ffffff14" />
                 <XAxis
@@ -184,17 +373,88 @@ export default function PcaPanel({ result, onClose, onExportCsv }: PcaPanelProps
                   tick={{ fill: '#64748b', fontSize: 11 }}
                   label={{ value: pcLabel(pcY), angle: -90, position: 'insideLeft', fill: '#94a3b8', fontSize: 12 }}
                 />
-                <ZAxis range={[18, 18]} />
+                <ZAxis range={[32, 32]} />
                 <Tooltip
                   cursor={{ strokeDasharray: '3 3', stroke: '#475569' }}
-                  contentStyle={{ background: '#11151a', border: '1px solid #ffffff1a', borderRadius: 6, fontSize: 11 }}
+                  content={({ payload }) => {
+                    const p = payload?.[0]?.payload;
+                    if (!p) return null;
+                    return (
+                      <div className="rounded-md border border-white/10 bg-[#11151a] px-2 py-1 text-[11px] text-slate-300">
+                        <div>{pickedLabel(p.row)}</div>
+                        <div className="text-slate-500">
+                          {p.row.zone} · {p.x.toFixed(3)}, {p.y.toFixed(3)} · click to locate
+                        </div>
+                      </div>
+                    );
+                  }}
                 />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-                {groups.map(([name, points], i) => (
-                  <Scatter key={name} name={`${name} (${points.length})`} data={points} fill={groupColor(name, i)} isAnimationActive={false} />
-                ))}
+                <Scatter data={points} shape={renderPoint} isAnimationActive={false} />
               </ScatterChart>
             </ResponsiveContainer>
+
+            {/* Colour legend */}
+            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
+              <span className="font-medium uppercase tracking-wide text-slate-600">{ATTR_LABEL[colorBy]}</span>
+              {colorCats.slice(0, 14).map((c, i) => (
+                <span key={c.name} className="flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-full" style={{ background: colorOf(colorBy, c.name, i) }} />
+                  {c.name} ({c.count})
+                </span>
+              ))}
+              {colorCats.length > 14 && <span className="text-slate-600">+{colorCats.length - 14} more</span>}
+            </div>
+
+            {/* Shape legend */}
+            {shapeBy !== 'none' && (
+              <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
+                <span className="font-medium uppercase tracking-wide text-slate-600">{ATTR_LABEL[shapeBy]}</span>
+                {shapeCats.slice(0, SYMBOL_TYPES.length).map((c, i) => (
+                  <span key={c.name} className="flex items-center gap-1.5">
+                    <svg width={12} height={12}>
+                      <Symbols cx={6} cy={6} type={SYMBOL_TYPES[i % SYMBOL_TYPES.length]} size={42} fill="#cbd5e1" />
+                    </svg>
+                    {c.name} ({c.count})
+                  </span>
+                ))}
+                {shapeCats.length > SYMBOL_TYPES.length && (
+                  <span className="text-amber-400/80">
+                    +{shapeCats.length - SYMBOL_TYPES.length} more — only {SYMBOL_TYPES.length} shapes exist, pick a
+                    coarser attribute
+                  </span>
+                )}
+              </div>
+            )}
+
+            {result.rows.length > MAX_POINTS && (
+              <p className="mt-1 text-[10px] text-slate-600">
+                showing {MAX_POINTS} of {result.rows.length} points (evenly sampled)
+              </p>
+            )}
+
+            {/* Picked point */}
+            {pickedRow && (
+              <div className="mt-2 rounded-md border border-white/15 bg-white/[0.04] px-3 py-2 text-[11px] text-slate-300">
+                <div className="mb-0.5 flex items-center justify-between">
+                  <span className="font-medium text-slate-200">{pickedLabel(pickedRow)}</span>
+                  <button onClick={() => onPickPixel(null)} className="text-slate-500 hover:text-slate-300">
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-slate-400">
+                  <span>class: {pickedRow.zone}</span>
+                  {pickedRow.properties?.pair_id != null && <span>pair: {String(pickedRow.properties.pair_id)}</span>}
+                  {clusterAssignment && <span>{attrValue(pickedRow, 'scenario')}</span>}
+                  <span>
+                    {pickedRow.lat.toFixed(5)}, {pickedRow.lng.toFixed(5)}
+                  </span>
+                  <span className="col-span-2">
+                    scores: {pickedRow.scores.map((s, i) => `PC${i + 1} ${s.toFixed(3)}`).join(' · ')}
+                  </span>
+                </div>
+                <div className="mt-1 text-slate-500">The white ring on the map marks this pixel.</div>
+              </div>
+            )}
           </>
         )}
 
