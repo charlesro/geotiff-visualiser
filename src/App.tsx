@@ -84,7 +84,12 @@ export default function App() {
   const [showPcaPanel, setShowPcaPanel] = useState(false);
 
   const [activeStep, setActiveStep] = useState(1);
-  const [fitRequest, setFitRequest] = useState<{ bounds: Bbox; token: number } | null>(null);
+  const [fitRequest, setFitRequest] = useState<{
+    bounds: Bbox;
+    token: number;
+    padRight?: number;
+    maxZoom?: number;
+  } | null>(null);
 
   // Acquisition span of the connected dataset; used as the default fetch period.
   const [datasetRange, setDatasetRange] = useState<DatasetDateRange | null>(() => {
@@ -189,8 +194,8 @@ export default function App() {
     }
   }, []);
 
-  const requestFit = useCallback((bounds: Bbox | null) => {
-    if (bounds) setFitRequest({ bounds, token: Date.now() });
+  const requestFit = useCallback((bounds: Bbox | null, opts?: { padRight?: number; maxZoom?: number }) => {
+    if (bounds) setFitRequest({ bounds, token: Date.now(), ...opts });
   }, []);
 
   const clearFromClustering = useCallback(() => {
@@ -613,10 +618,18 @@ export default function App() {
     if (pcaLive.current.active) pcaLive.current.runPca();
   }, [pcaProjectZones]);
 
-  /** Scatter point picked in the results panel → white ring on the map. */
-  const pickPcaPixel = useCallback((p: { id: string; zone: PixelZone; lng: number; lat: number } | null) => {
-    setHighlightPixel(p ? { id: p.id, zone: p.zone, lng: p.lng, lat: p.lat, values: {} } : null);
-  }, []);
+  /** Scatter point picked in the results panel → white ring on the map and
+   *  the map flies to the pixel (offset so the drawer doesn't cover it). */
+  const pickPcaPixel = useCallback(
+    (p: { id: string; zone: PixelZone; lng: number; lat: number } | null) => {
+      setHighlightPixel(p ? { id: p.id, zone: p.zone, lng: p.lng, lat: p.lat, values: {} } : null);
+      if (p) {
+        const d = 0.0008; // ~80 m — lands at field scale around the pixel
+        requestFit([p.lng - d, p.lat - d, p.lng + d, p.lat + d], { padRight: 660, maxZoom: 17 });
+      }
+    },
+    [requestFit]
+  );
 
   const closePcaPanel = useCallback(() => {
     setShowPcaPanel(false);

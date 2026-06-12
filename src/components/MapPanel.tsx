@@ -45,8 +45,9 @@ interface MapPanelProps {
   /** Pixel picked in the NDVI panel or on the map, marked with a white ring. */
   highlightPixel: { id?: string; lng: number; lat: number } | null;
   onPickPixel: (pixel: NdviPixel) => void;
-  /** Changes to this object trigger a fitBounds. */
-  fitRequest: { bounds: Bbox; token: number } | null;
+  /** Changes to this object trigger a fitBounds. `padRight` keeps the target
+   *  clear of a drawer covering the right side of the map. */
+  fitRequest: { bounds: Bbox; token: number; padRight?: number; maxZoom?: number } | null;
 }
 
 const BASEMAPS = {
@@ -89,7 +90,11 @@ function FitController({ fitRequest }: { fitRequest: MapPanelProps['fitRequest']
         [minLat, minLng],
         [maxLat, maxLng],
       ],
-      { padding: [40, 40], maxZoom: 16 }
+      {
+        paddingTopLeft: [40, 40],
+        paddingBottomRight: [40 + (fitRequest.padRight ?? 0), 40],
+        maxZoom: fitRequest.maxZoom ?? 16,
+      }
     );
   }, [fitRequest, map]);
   return null;
@@ -370,12 +375,26 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
           );
         })}
         {highlightPixel && (
-          <CircleMarker
-            center={[highlightPixel.lat, highlightPixel.lng]}
-            radius={10}
-            pathOptions={{ color: '#ffffff', weight: 2.5, fill: false }}
-            interactive={false}
-          />
+          <>
+            <CircleMarker
+              center={[highlightPixel.lat, highlightPixel.lng]}
+              radius={14}
+              pathOptions={{ color: '#0b0e11', weight: 5, fill: false, opacity: 0.6 }}
+              interactive={false}
+            />
+            <CircleMarker
+              center={[highlightPixel.lat, highlightPixel.lng]}
+              radius={14}
+              pathOptions={{ color: '#ffffff', weight: 2.5, fill: false }}
+              interactive={false}
+            />
+            <CircleMarker
+              center={[highlightPixel.lat, highlightPixel.lng]}
+              radius={2.5}
+              pathOptions={{ stroke: false, fillColor: '#ffffff', fillOpacity: 1 }}
+              interactive={false}
+            />
+          </>
         )}
       </MapContainer>
 
