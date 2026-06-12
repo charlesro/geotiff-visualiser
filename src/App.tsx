@@ -14,7 +14,7 @@ import { fetchSentinelSeries, SeriesFetchParams, SeriesProgress } from './lib/fe
 import { clusterFeatureBboxes } from './lib/cluster';
 import { renderAnalysisGridPreview } from './lib/mosaic';
 import { DEFAULT_OPTIONS } from './lib/layer-factory';
-import { extractZones, PixelZone, ZoneExtraction, ZoneProgress } from './lib/zones';
+import { extractZones, featureKey, PixelZone, ZoneExtraction, ZoneProgress } from './lib/zones';
 import { clusterBySpecies, SpeciesClustering, fieldKeyOf } from './lib/species-clusters';
 import { runPixelPca, pcaScoresToCsv, PcaRunResult, ALL_PIXEL_ZONES } from './lib/pca';
 import { isCancelledError } from './lib/cancel';
@@ -565,14 +565,39 @@ export default function App() {
     [zones]
   );
 
-  /** pid → pair_id from the neighbour-pairs query (empty for file loads). */
-  const pairOf = useMemo(() => {
-    const m = new Map<number, string>();
+  /**
+   * Extracted fields grouped by neighbour pair for the PCA field list. Pair
+   * membership is resolved by field identity (NewID), so a field belonging
+   * to several pairs appears under each of them (the pairs query loads one
+   * row per field per pair, but the extraction keeps each field once).
+   * Pairs and fields are ordered by pixel count, largest first.
+   */
+  const pcaFieldGroups = useMemo(() => {
+    const per = zones?.perPolygon || [];
+    const byKey = new Map(per.map(p => [p.key, p]));
+    const px = (p: { interior: number; edge: number }) => p.interior + p.edge;
+
+    const pairs = new Map<string, Map<number, (typeof per)[number]>>();
+    const inPair = new Set<string>();
     for (const f of polygons?.features || []) {
-      if (f.properties?.pair_id != null) m.set(f.properties.__pid, String(f.properties.pair_id));
+      const pairId = f.properties?.pair_id;
+      if (pairId == null) continue;
+      const entry = byKey.get(featureKey(f));
+      if (!entry) continue; // field not part of the extraction
+      const group = pairs.get(String(pairId)) ?? new Map();
+      group.set(entry.pid, entry);
+      pairs.set(String(pairId), group);
+      inPair.add(entry.key);
     }
-    return m;
-  }, [polygons]);
+
+    const groups = Array.from(pairs.entries()).map(([pair, members]) => {
+      const items = Array.from(members.values()).sort((a, b) => px(b) - px(a));
+      return { pair, items, px: items.reduce((s, p) => s + px(p), 0) };
+    });
+    groups.sort((a, b) => b.px - a.px);
+    const solo = per.filter(p => !inPair.has(p.key)).sort((a, b) => px(b) - px(a));
+    return { groups, solo };
+  }, [zones, polygons]);
 
   /** Field key → scenario index, for the map coloring. */
   const clusterAssignment = useMemo(() => {
@@ -779,7 +804,7 @@ export default function App() {
           onScopeChange={setPcaScope}
           fields={pcaFields}
           onFieldsChange={setPcaFields}
-          pairOf={pairOf}
+          fieldGroups={pcaFieldGroups}
           fitZones={pcaFitZones}
           onFitZonesChange={setPcaFitZones}
           projectZones={pcaProjectZones}

@@ -85,8 +85,11 @@ interface PcaStepProps {
   /** Subset of extracted fields (pids) the PCA runs on; null = all. */
   fields: Set<number> | null;
   onFieldsChange: (fields: Set<number> | null) => void;
-  /** pid → pair_id from the neighbour-pairs query, to group the field list. */
-  pairOf: Map<number, string>;
+  /** Extracted fields grouped by neighbour pair, ordered by pixel count. */
+  fieldGroups: {
+    groups: { pair: string; items: ZoneExtraction['perPolygon']; px: number }[];
+    solo: ZoneExtraction['perPolygon'];
+  };
   fitZones: PixelZone[];
   onFitZonesChange: (zones: PixelZone[]) => void;
   projectZones: PixelZone[];
@@ -123,25 +126,7 @@ export default function PcaStep(props: PcaStepProps) {
     setFields(next);
   };
 
-  // Group the extracted fields by neighbour pair so each pair can be ticked
-  // as a unit; fields outside any pair go to the trailing group.
-  const fieldGroups = React.useMemo(() => {
-    const byPair = new Map<string, typeof perPolygon>();
-    const solo: typeof perPolygon = [];
-    for (const p of perPolygon) {
-      const pair = props.pairOf.get(p.pid);
-      if (pair === undefined) {
-        solo.push(p);
-        continue;
-      }
-      if (!byPair.has(pair)) byPair.set(pair, []);
-      byPair.get(pair)!.push(p);
-    }
-    const groups = Array.from(byPair.entries())
-      .sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }))
-      .map(([pair, items]) => ({ pair, items }));
-    return { groups, solo };
-  }, [perPolygon, props.pairOf]);
+  const fieldGroups = props.fieldGroups;
 
   const scoped = parsePcaScope(props.scope);
   const scopeColor = scoped ? CLUSTER_COLORS[scoped.cluster % CLUSTER_COLORS.length] : null;
@@ -197,7 +182,7 @@ export default function PcaStep(props: PcaStepProps) {
             </button>
           </div>
           <div className="mt-1 max-h-48 overflow-y-auto">
-            {fieldGroups.groups.map(({ pair, items }) => {
+            {fieldGroups.groups.map(({ pair, items, px }) => {
               const pids = items.map(p => p.pid);
               const allIn = pids.every(pid => props.fields === null || props.fields.has(pid));
               return (
@@ -210,6 +195,7 @@ export default function PcaStep(props: PcaStepProps) {
                       className="accent-sky-500"
                     />
                     Pair {pair.replace('_', ' ↔ ')}
+                    <span className="ml-auto shrink-0 font-normal text-slate-600">{px} px</span>
                   </label>
                   {items.map(p => {
                     const checked = props.fields === null || props.fields.has(p.pid);

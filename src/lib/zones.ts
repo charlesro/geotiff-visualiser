@@ -46,7 +46,7 @@ export interface ZoneExtraction {
   edge: any;
   /** Dashed helper geometries: the inward-shrunk boundaries. */
   boundaries: any;
-  perPolygon: { pid: number; label: string; interior: number; edge: number }[];
+  perPolygon: { pid: number; key: string; label: string; interior: number; edge: number }[];
   /** Edge pixels by neighbour class. */
   edgeCounts: { other: number; same: number; isolated: number };
   metric: string;
@@ -67,7 +67,7 @@ type EdgeClass = 'edge_other_species' | 'edge_same_species' | 'edge_isolated';
  * neighbour-pairs query returns one row per field per pair), and a field
  * must never count as its own neighbour.
  */
-const featureKey = (f: any): string => String(f?.properties?.NewID ?? `pid:${f?.properties?.__pid}`);
+export const featureKey = (f: any): string => String(f?.properties?.NewID ?? `pid:${f?.properties?.__pid}`);
 
 /** Outer rings + holes of a (Multi)Polygon, as [lng, lat] coordinate rings. */
 const ringsOf = (f: any): number[][][] => {
@@ -320,6 +320,7 @@ export async function extractZones(
     edgePoints.push(...edge);
     perPolygon.push({
       pid: feature.properties?.__pid ?? i,
+      key: ownKey,
       label,
       interior: interior.length,
       edge: edge.length,
