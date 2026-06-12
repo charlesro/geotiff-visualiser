@@ -15,6 +15,7 @@ import { clusterFeatureBboxes } from './lib/cluster';
 import { renderAnalysisGridPreview } from './lib/mosaic';
 import { DEFAULT_OPTIONS } from './lib/layer-factory';
 import { extractZones, ZoneExtraction, ZoneProgress } from './lib/zones';
+import { clusterBySpecies, SpeciesClustering, fieldKeyOf } from './lib/species-clusters';
 import { runPixelPca, pcaScoresToCsv, PcaRunResult } from './lib/pca';
 import { isCancelledError } from './lib/cancel';
 import { DatasetDateRange } from './lib/neighbor-query';
@@ -23,7 +24,8 @@ import Sidebar, { StepDescriptor } from './components/Sidebar';
 import PolygonsStep from './components/steps/PolygonsStep';
 import ImageryStep from './components/steps/ImageryStep';
 import ZonesStep from './components/steps/ZonesStep';
-import PcaStep from './components/steps/PcaStep';
+import ClusterStep from './components/steps/ClusterStep';
+import PcaStep, { PCA_SCOPE_ALL, parsePcaScope } from './components/steps/PcaStep';
 import PcaPanel from './components/PcaPanel';
 
 /**
@@ -64,7 +66,13 @@ export default function App() {
   const [zonesProgress, setZonesProgress] = useState<ZoneProgress | null>(null);
   const [zonesError, setZonesError] = useState<string | null>(null);
 
-  // Step 4 — PCA
+  // Step 4 — species clustering (growth scenarios)
+  const [clustering, setClustering] = useState<SpeciesClustering | null>(null);
+  const [clusteringBusy, setClusteringBusy] = useState(false);
+  const [clusteringError, setClusteringError] = useState<string | null>(null);
+
+  // Step 5 — PCA
+  const [pcaScope, setPcaScope] = useState<string>(PCA_SCOPE_ALL);
   const [pcaResult, setPcaResult] = useState<PcaRunResult | null>(null);
   const [pcaBusy, setPcaBusy] = useState(false);
   const [pcaError, setPcaError] = useState<string | null>(null);
@@ -106,13 +114,20 @@ export default function App() {
     if (bounds) setFitRequest({ bounds, token: Date.now() });
   }, []);
 
-  const clearFromZones = useCallback(() => {
-    setZones(null);
-    setZonesError(null);
+  const clearFromClustering = useCallback(() => {
+    setClustering(null);
+    setClusteringError(null);
+    setPcaScope(PCA_SCOPE_ALL);
     setPcaResult(null);
     setPcaError(null);
     setShowPcaPanel(false);
   }, []);
+
+  const clearFromZones = useCallback(() => {
+    setZones(null);
+    setZonesError(null);
+    clearFromClustering();
+  }, [clearFromClustering]);
 
   const clearFromImagery = useCallback(() => {
     setScenes([]);
@@ -309,6 +324,8 @@ export default function App() {
           polygons?.features || []
         );
         setZones(result);
+        // Scenarios and PCA were computed from the previous extraction.
+        clearFromClustering();
       } catch (e) {
         setZones(null);
         if (!isCancelledError(e)) setZonesError(errorMessage(e));
@@ -317,7 +334,7 @@ export default function App() {
         setZonesProgress(null);
       }
     },
-    [selectedFeatures, scenes, polygons]
+    [selectedFeatures, scenes, polygons, clearFromClustering]
   );
 
   // ----- NDVI inspector -------------------------------------------------------
@@ -421,6 +438,38 @@ export default function App() {
 
   // ----- Step 4 handlers -----------------------------------------------------
 
+  const runClustering = useCallback(
+    async (k: number) => {
+      if (!zones) return;
+      setClusteringBusy(true);
+      setClusteringError(null);
+      try {
+        // Let the spinner paint before the synchronous k-means work.
+        await new Promise(r => setTimeout(r, 30));
+        setClustering(clusterBySpecies(zones, k));
+        setPcaScope(PCA_SCOPE_ALL);
+      } catch (e) {
+        setClustering(null);
+        setClusteringError(errorMessage(e));
+      } finally {
+        setClusteringBusy(false);
+      }
+    },
+    [zones]
+  );
+
+  /** Field key → scenario index, for the map coloring. */
+  const clusterAssignment = useMemo(() => {
+    if (!clustering) return null;
+    const m = new Map<string, number>();
+    for (const group of clustering.groups) {
+      for (const f of group.fields) m.set(f.key, f.cluster);
+    }
+    return m;
+  }, [clustering]);
+
+  // ----- Step 5 handlers -----------------------------------------------------
+
   const runPca = useCallback(async () => {
     if (!zones) return;
     setPcaBusy(true);
@@ -428,7 +477,16 @@ export default function App() {
     try {
       // Let the spinner paint before the synchronous PCA work.
       await new Promise(r => setTimeout(r, 30));
-      const pixels = [...zones.interior.features, ...zones.edge.features];
+      let pixels = [...zones.interior.features, ...zones.edge.features];
+      // Restrict to one growth scenario from step 4 when a scope is chosen.
+      const scoped = parsePcaScope(pcaScope);
+      if (scoped && clustering) {
+        const group = clustering.groups.find(g => g.species === scoped.species);
+        const keys = new Set(
+          (group?.fields || []).filter(f => f.cluster === scoped.cluster).map(f => f.key)
+        );
+        pixels = pixels.filter(p => keys.has(fieldKeyOf(p.properties)));
+      }
       const result = runPixelPca(pixels, zones.metric);
       setPcaResult(result);
       setShowPcaPanel(true);
@@ -438,7 +496,7 @@ export default function App() {
     } finally {
       setPcaBusy(false);
     }
-  }, [zones]);
+  }, [zones, clustering, pcaScope]);
 
   const exportCsv = useCallback(() => {
     if (!pcaResult) return;
@@ -539,6 +597,24 @@ export default function App() {
     },
     {
       id: 4,
+      title: 'Species clustering',
+      summary: clustering
+        ? `${clustering.groups.length} species · up to ${clustering.k} scenarios each`
+        : 'Isolate growth scenarios within each species',
+      enabled: zones !== null,
+      done: clustering !== null,
+      content: (
+        <ClusterStep
+          zones={zones}
+          clustering={clustering}
+          busy={clusteringBusy}
+          error={clusteringError}
+          onRun={runClustering}
+        />
+      ),
+    },
+    {
+      id: 5,
       title: 'PCA',
       summary: pcaResult
         ? `PC1 ${pcaResult.explained[0].toFixed(1)}% · PC2 ${(pcaResult.explained[1] || 0).toFixed(1)}%`
@@ -548,6 +624,9 @@ export default function App() {
       content: (
         <PcaStep
           zones={zones}
+          clustering={clustering}
+          scope={pcaScope}
+          onScopeChange={setPcaScope}
           result={pcaResult}
           busy={pcaBusy}
           error={pcaError}
@@ -583,6 +662,8 @@ export default function App() {
             selectedIds={selectedIds}
             onTogglePolygon={togglePolygon}
             zones={zones}
+            clusterAssignment={clusterAssignment}
+            clusterVersion={clustering?.createdAt ?? 0}
             preview={preview}
             clusterPreviews={clusterPreviews}
             scenes={scenes}

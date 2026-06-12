@@ -6,6 +6,7 @@ import { Bbox } from '../lib/geo';
 import { ZoneExtraction } from '../lib/zones';
 import { polygonLabel } from '../lib/polygon-source';
 import { NdviPixel } from '../lib/ndvi-series';
+import { CLUSTER_COLORS, fieldKeyOf } from '../lib/species-clusters';
 import { RasterLayer } from '../types';
 import SceneTimeline from './SceneTimeline';
 import { Activity, Eye, EyeOff, Square } from 'lucide-react';
@@ -36,6 +37,9 @@ interface MapPanelProps {
   onDeleteScene: (id: string) => void;
   /** Called with the clicked polygon while "Inspect NDVI" mode is active. */
   onInspectPolygon: (feature: any) => void;
+  /** Field key → scenario index from step 4; colours the clustered fields. */
+  clusterAssignment: Map<string, number> | null;
+  clusterVersion: number;
   /** Pixels of the polygon open in the NDVI inspector — clickable markers. */
   inspectPixels: NdviPixel[] | null;
   /** Pixel picked in the NDVI panel or on the map, marked with a white ring. */
@@ -206,7 +210,7 @@ const speciesColor = (crpLbl: string | undefined): string => {
   return SPECIES_COLORS[Math.abs(hash) % SPECIES_COLORS.length];
 };
 
-export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones, preview, clusterPreviews, scenes, previewSceneId, onPreviewScene, onDeleteScene, onInspectPolygon, inspectPixels, highlightPixel, onPickPixel, fitRequest }: MapPanelProps) {
+export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones, clusterAssignment, clusterVersion, preview, clusterPreviews, scenes, previewSceneId, onPreviewScene, onDeleteScene, onInspectPolygon, inspectPixels, highlightPixel, onPickPixel, fitRequest }: MapPanelProps) {
   const [basemap, setBasemap] = useState<BasemapKey>('dark');
   const [showZoneDots, setShowZoneDots] = useState(true);
   const [probeMode, setProbeMode] = useState(false);
@@ -220,13 +224,19 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
 
   // GeoJSON layers only restyle when remounted, so key them on their inputs.
   const polygonsKey = useMemo(
-    () => `polys-${polygons?.features?.length ?? 0}-${Array.from(selectedIds).join('.')}`,
-    [polygons, selectedIds]
+    () => `polys-${polygons?.features?.length ?? 0}-${Array.from(selectedIds).join('.')}-cl${clusterVersion}`,
+    [polygons, selectedIds, clusterVersion]
   );
   const zonesKey = useMemo(() => (zones ? Date.now() : 0), [zones]);
 
   const polygonStyle = (feature: any) => {
     const selected = selectedIds.has(feature?.properties?.__pid);
+    // Growth-scenario colouring (step 4) takes precedence for clustered fields.
+    const scenario = clusterAssignment?.get(fieldKeyOf(feature?.properties));
+    if (scenario !== undefined) {
+      const c = CLUSTER_COLORS[scenario % CLUSTER_COLORS.length];
+      return { color: c, weight: selected ? 2.5 : 1.8, opacity: 1, fillColor: c, fillOpacity: 0.3 };
+    }
     const baseColor = speciesColor(feature?.properties?.crp_lbl);
     return {
       color: selected ? '#38bdf8' : baseColor,
@@ -239,7 +249,9 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
 
   const onEachPolygon = (feature: any, layer: L.Layer) => {
     const path = layer as L.Path;
-    layer.bindTooltip(polygonLabel(feature), { sticky: true, direction: 'top', opacity: 0.9 });
+    const scenario = clusterAssignment?.get(fieldKeyOf(feature?.properties));
+    const label = polygonLabel(feature) + (scenario !== undefined ? ` · scenario ${scenario + 1}` : '');
+    layer.bindTooltip(label, { sticky: true, direction: 'top', opacity: 0.9 });
     layer.on({
       click: () => {
         if (probeRef.current) handlersRef.current.onInspectPolygon(feature);
