@@ -188,6 +188,32 @@ export default function PcaPanel({
     [highlightPixelId, result]
   );
 
+  // Equal scale on both axes (same units per pixel), so distances in the
+  // scatter are honest: the domains are centred on the data and sized from
+  // the larger spread, corrected by the plot's width/height ratio.
+  const CHART_W = 620;
+  const CHART_H = 470;
+  const Y_AXIS_W = 60;
+  const X_AXIS_H = 40;
+  const plotW = CHART_W - 10 - Y_AXIS_W; // margins: right 10, left 0
+  const plotH = CHART_H - 10 - 10 - X_AXIS_H; // margins: top 10, bottom 10
+  const plotAspect = plotW / plotH;
+  const domains = useMemo(() => {
+    if (points.length === 0) return { x: [0, 1] as [number, number], y: [0, 1] as [number, number] };
+    let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+    for (const p of points) {
+      if (p.x < xMin) xMin = p.x;
+      if (p.x > xMax) xMax = p.x;
+      if (p.y < yMin) yMin = p.y;
+      if (p.y > yMax) yMax = p.y;
+    }
+    const cx = (xMin + xMax) / 2;
+    const cy = (yMin + yMax) / 2;
+    const ry = Math.max((yMax - yMin) / 2, (xMax - xMin) / 2 / plotAspect, 1e-6) * 1.08;
+    const rx = ry * plotAspect;
+    return { x: [cx - rx, cx + rx] as [number, number], y: [cy - ry, cy + ry] as [number, number] };
+  }, [points, plotAspect]);
+
   const toggleProjected = (zone: PixelZone) => {
     if (projectZones.includes(zone)) {
       if (projectZones.length === 1) return; // keep at least one class in the space
@@ -356,13 +382,15 @@ export default function PcaPanel({
               </label>
             </div>
 
-            <ResponsiveContainer width="100%" height={400}>
-              <ScatterChart margin={{ top: 10, right: 10, bottom: 10, left: 0 }}>
+            <ScatterChart width={CHART_W} height={CHART_H} margin={{ top: 10, right: 10, bottom: 10, left: 0 }}>
                 <CartesianGrid stroke="#ffffff14" />
                 <XAxis
                   type="number"
                   dataKey="x"
                   name={pcLabel(pcX)}
+                  domain={domains.x}
+                  height={X_AXIS_H}
+                  tickFormatter={(v: number) => v.toFixed(2)}
                   tick={{ fill: '#64748b', fontSize: 11 }}
                   label={{ value: pcLabel(pcX), position: 'insideBottom', offset: -5, fill: '#94a3b8', fontSize: 12 }}
                 />
@@ -370,6 +398,9 @@ export default function PcaPanel({
                   type="number"
                   dataKey="y"
                   name={pcLabel(pcY)}
+                  domain={domains.y}
+                  width={Y_AXIS_W}
+                  tickFormatter={(v: number) => v.toFixed(2)}
                   tick={{ fill: '#64748b', fontSize: 11 }}
                   label={{ value: pcLabel(pcY), angle: -90, position: 'insideLeft', fill: '#94a3b8', fontSize: 12 }}
                 />
@@ -390,8 +421,7 @@ export default function PcaPanel({
                   }}
                 />
                 <Scatter data={points} shape={renderPoint} isAnimationActive={false} />
-              </ScatterChart>
-            </ResponsiveContainer>
+            </ScatterChart>
 
             {/* Colour legend */}
             <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
