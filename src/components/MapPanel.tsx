@@ -30,6 +30,10 @@ interface MapPanelProps {
   polygons: any | null;
   selectedIds: Set<number>;
   onTogglePolygon: (pid: number) => void;
+  /** Add a batch of polygons to the selection (box draw); never deselects. */
+  onBoxSelect: (pids: number[]) => void;
+  /** Clear the whole selection. */
+  onClearSelection: () => void;
   zones: ZoneExtraction | null;
   preview: ScenePreview | null;
   /** Native-10 m windows of the previewed scene, drawn over the coarse mosaic. */
@@ -103,7 +107,7 @@ function FitController({ fitRequest }: { fitRequest: MapPanelProps['fitRequest']
   return null;
 }
 
-function BboxSelector({ polygons, onSelect }: { polygons: any | null; onSelect: (pid: number) => void }) {
+function BboxSelector({ polygons, onSelectBox }: { polygons: any | null; onSelectBox: (pids: number[]) => void }) {
   const map = useMap();
   const [drawMode, setDrawMode] = useState(false);
   const [firstPoint, setFirstPoint] = useState<L.LatLng | null>(null);
@@ -130,19 +134,19 @@ function BboxSelector({ polygons, onSelect }: { polygons: any | null; onSelect: 
         setMarker(null);
         setFirstPoint(null);
 
-        // Find all polygons whose bounds intersect the drawn box
+        // Add every polygon whose bounds intersect the drawn box to the
+        // selection in one batch (a box always *adds*, never toggles off).
         if (polygons?.features) {
+          const hits: number[] = [];
           for (const f of polygons.features) {
             if (!f.properties?.__pid && f.properties?.__pid !== 0) continue;
             try {
-              const fbounds = L.geoJSON(f).getBounds();
-              if (fbounds.intersects(bounds)) {
-                onSelect(f.properties.__pid);
-              }
+              if (L.geoJSON(f).getBounds().intersects(bounds)) hits.push(f.properties.__pid);
             } catch {
               /* skip invalid geometries */
             }
           }
+          if (hits.length) onSelectBox(hits);
         }
         setDrawMode(false);
       }
@@ -186,7 +190,7 @@ function BboxSelector({ polygons, onSelect }: { polygons: any | null; onSelect: 
   );
 }
 
-export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones, clusterAssignment, clusterVersion, preview, clusterPreviews, scenes, previewSceneId, onPreviewScene, onDeleteScene, onInspectPolygon, inspectPixels, highlightPixel, onPickPixel, fitRequest }: MapPanelProps) {
+export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBoxSelect, onClearSelection, zones, clusterAssignment, clusterVersion, preview, clusterPreviews, scenes, previewSceneId, onPreviewScene, onDeleteScene, onInspectPolygon, inspectPixels, highlightPixel, onPickPixel, fitRequest }: MapPanelProps) {
   const [basemap, setBasemap] = useState<BasemapKey>('dark');
   const [showZoneDots, setShowZoneDots] = useState(true);
   // Colour edge_other_species pixels by their mixing fraction instead of a
@@ -244,22 +248,30 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
 
   const polygonStyle = (feature: any) => {
     const selected = selectedIds.has(feature?.properties?.__pid);
-    // Growth-scenario colouring (step 4) takes precedence for clustered fields.
+    // The base fill keeps encoding the active mode (species / scenario /
+    // muted) even when selected — selection is shown as a blue outline on
+    // top, so the species colour stays visible.
     const scenario = clusterAssignment?.get(fieldKeyOf(feature?.properties));
+    let base: string;
+    let fillOpacity: number;
     if (scenario !== undefined) {
-      const c = CLUSTER_COLORS[scenario % CLUSTER_COLORS.length];
-      return { color: c, weight: selected ? 2.5 : 1.8, opacity: 1, fillColor: c, fillOpacity: 0.3 };
+      base = CLUSTER_COLORS[scenario % CLUSTER_COLORS.length];
+      fillOpacity = 0.3;
+    } else if (polygonMode === 'neutral') {
+      // Pixel zones drawn: dots carry the colour, so mute the outlines.
+      base = NEUTRAL;
+      fillOpacity = 0.04;
+    } else {
+      base = speciesColor(feature?.properties?.crp_lbl);
+      fillOpacity = 0.12;
     }
-    if (selected) {
-      return { color: '#38bdf8', weight: 2.5, opacity: 1, fillColor: '#38bdf8', fillOpacity: 0.18 };
-    }
-    // Once the pixel zones are drawn, the dots carry the colour — mute the
-    // outlines to neutral so two colour meanings aren't on screen at once.
-    if (polygonMode === 'neutral') {
-      return { color: NEUTRAL, weight: 1, opacity: 0.4, fillColor: NEUTRAL, fillOpacity: 0.04 };
-    }
-    const baseColor = speciesColor(feature?.properties?.crp_lbl);
-    return { color: baseColor, weight: 1.2, opacity: 0.7, fillColor: baseColor, fillOpacity: 0.12 };
+    return {
+      color: selected ? '#38bdf8' : base,
+      weight: selected ? 2.5 : scenario !== undefined ? 1.8 : 1.2,
+      opacity: selected ? 1 : 0.7,
+      fillColor: base,
+      fillOpacity: selected ? Math.max(fillOpacity, 0.2) : fillOpacity,
+    };
   };
 
   const onEachPolygon = (feature: any, layer: L.Layer) => {
@@ -321,7 +333,7 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
         <TileLayer key={basemap} url={BASEMAPS[basemap].url} attribution={BASEMAPS[basemap].attribution} maxZoom={19} />
         <ScaleControl position="bottomleft" />
         <FitController fitRequest={fitRequest} />
-        <BboxSelector polygons={polygons} onSelect={onTogglePolygon} />
+        <BboxSelector polygons={polygons} onSelectBox={onBoxSelect} />
         <button
           onClick={() => setProbeMode(p => !p)}
           className={cn(
@@ -470,7 +482,15 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
           {polygonMode === 'neutral' && (
             <div className="py-0.5 text-[11px] text-slate-500">Outlines muted — coloured by pixel class below.</div>
           )}
-          {selectedIds.size > 0 && <LegendRow color="#38bdf8" label="Selected" count={selectedIds.size} shape="square" />}
+          {selectedIds.size > 0 && (
+            <button onClick={onClearSelection} className="group flex w-full items-center gap-2 py-0.5 text-left" title="Clear the selection">
+              <span className="h-2.5 w-2.5 shrink-0 rounded-[3px]" style={{ background: '#38bdf8' }} />
+              <span className="min-w-0 flex-1 truncate text-xs text-slate-300 group-hover:text-white">
+                Selected <span className="text-slate-500 group-hover:text-slate-300">· clear</span>
+              </span>
+              <span className="shrink-0 tabular-nums text-xs text-slate-500">{selectedIds.size.toLocaleString()}</span>
+            </button>
+          )}
 
           {/* What the pixel dots mean */}
           {zones && (

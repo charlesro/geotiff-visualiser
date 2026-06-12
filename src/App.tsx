@@ -299,6 +299,24 @@ export default function App() {
     [clearFromZones]
   );
 
+  /** Box draw: add a batch of polygons to the selection (never deselects). */
+  const selectByBox = useCallback(
+    (pids: number[]) => {
+      setSelectedIds(prev => {
+        const next = new Set(prev);
+        for (const pid of pids) next.add(pid);
+        return next;
+      });
+      clearFromZones();
+    },
+    [clearFromZones]
+  );
+
+  const clearSelection = useCallback(() => {
+    setSelectedIds(new Set());
+    clearFromZones();
+  }, [clearFromZones]);
+
   const selectedFeatures = useMemo(
     () => (polygons?.features || []).filter((f: any) => selectedIds.has(f.properties.__pid)),
     [polygons, selectedIds]
@@ -847,6 +865,8 @@ export default function App() {
             polygons={polygons}
             selectedIds={selectedIds}
             onTogglePolygon={togglePolygon}
+            onBoxSelect={selectByBox}
+            onClearSelection={clearSelection}
             zones={zones}
             clusterAssignment={clusterAssignment}
             clusterVersion={clustering?.createdAt ?? 0}
