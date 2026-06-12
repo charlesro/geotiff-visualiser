@@ -68,6 +68,9 @@ export interface PcaPickedPixel {
 interface PcaPanelProps {
   result: PcaRunResult;
   busy: boolean;
+  /** Drawer width (px) — drag the left edge to change it. */
+  width: number;
+  onWidthChange: (w: number) => void;
   /** Field key → scenario index, from step 4 (null = not clustered). */
   clusterAssignment: Map<string, number> | null;
   /** Classes projected in the space — editable right here. */
@@ -83,6 +86,8 @@ interface PcaPanelProps {
 export default function PcaPanel({
   result,
   busy,
+  width,
+  onWidthChange,
   clusterAssignment,
   projectZones,
   onProjectZonesChange,
@@ -188,10 +193,25 @@ export default function PcaPanel({
     [highlightPixelId, result]
   );
 
+  // Drag the drawer's left edge to resize it (the map gets the rest).
+  const startResize = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const onMove = (ev: PointerEvent) => {
+      const w = Math.round(window.innerWidth - ev.clientX);
+      onWidthChange(Math.max(440, Math.min(window.innerWidth - 320, w)));
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
+
   // Equal scale on both axes (same units per pixel), so distances in the
   // scatter are honest: the domains are centred on the data and sized from
   // the larger spread, corrected by the plot's width/height ratio.
-  const CHART_W = 620;
+  const CHART_W = width - 40; // p-4 padding + border
   const CHART_H = 470;
   const Y_AXIS_W = 60;
   const X_AXIS_H = 40;
@@ -267,7 +287,15 @@ export default function PcaPanel({
   };
 
   return (
-    <div className="absolute inset-y-0 right-0 z-[1100] flex w-[660px] max-w-full flex-col border-l border-white/10 bg-[#0d1117f5] backdrop-blur">
+    <div
+      className="absolute inset-y-0 right-0 z-[1100] flex max-w-full flex-col border-l border-white/10 bg-[#0d1117f5] backdrop-blur"
+      style={{ width }}
+    >
+      <div
+        onPointerDown={startResize}
+        className="absolute inset-y-0 left-0 z-10 w-1.5 cursor-col-resize hover:bg-sky-500/40"
+        title="Drag to resize"
+      />
       <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
         <div>
           <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-100">

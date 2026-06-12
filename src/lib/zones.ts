@@ -1,4 +1,3 @@
-import buffer from '@turf/buffer';
 import booleanPointInPolygon from '@turf/boolean-point-in-polygon';
 import { RasterLayer } from '../types';
 import { extractPixelTimeseriesOptions } from './pixel-extraction';
@@ -16,11 +15,15 @@ import { CancelCheck, throwIfCancelled } from './cancel';
  *     (optionally also the ring up to `distance` outside the boundary)
  *
  * Edge pixels are further classified by what lies across the boundary,
- * using every loaded polygon as context:
- *   - edge_other_species: within `distance` of a field of another species
- *   - edge_same_species:  within `distance` of a field of the same species
- *   - edge_isolated:      no neighbouring field (road, hedge, open land…)
- * A pixel near both kinds of neighbour counts as edge_other_species.
+ * using every loaded polygon as context. A neighbour only counts when it is
+ * plausibly *directly across the boundary* from the pixel: its true distance
+ * to the pixel must not exceed the pixel's own distance to its boundary plus
+ * `neighbourGap` metres (the realistic boundary-to-neighbour separation).
+ *   - edge_other_species: such a neighbour of another species exists
+ *   - edge_same_species:  only such neighbours of the same species exist
+ *   - edge_isolated:      nothing within reach (road, hedge, open land…)
+ * Pixels across wider gaps (a road between the fields…) come out isolated
+ * instead of inheriting a neighbour class from 30 m away.
  *
  * Implemented on top of extractPixelTimeseriesOptions: a negative buffer
  * makes the inward-shrunk polygon the "core" (its pixels are the interior
@@ -42,6 +45,8 @@ export interface ZoneExtraction {
   metric: string;
   distance: number;
   includeOutside: boolean;
+  /** Max boundary-to-neighbour separation (m) for the edge classes. */
+  neighbourGap: number;
   /** Sorted acquisition dates covered by the extracted series. */
   dates: string[];
 }
@@ -57,28 +62,59 @@ type EdgeClass = 'edge_other_species' | 'edge_same_species' | 'edge_isolated';
  */
 const featureKey = (f: any): string => String(f?.properties?.NewID ?? `pid:${f?.properties?.__pid}`);
 
+/** Outer rings + holes of a (Multi)Polygon, as [lng, lat] coordinate rings. */
+const ringsOf = (f: any): number[][][] => {
+  const g = f?.geometry;
+  if (!g) return [];
+  if (g.type === 'Polygon') return g.coordinates;
+  if (g.type === 'MultiPolygon') return g.coordinates.flat();
+  return [];
+};
+
 /**
- * Edge pixels sit up to `distance` inside their own boundary, and paired
- * fields have a boundary-to-boundary gap of ~10 m, so the neighbour search
- * has to reach further than `distance` from the pixel.
+ * Distance (m) from a point to the closest ring segment, on a local
+ * equirectangular projection — exact enough at field scale and much cheaper
+ * than geodesic formulas.
  */
-const NEIGHBOUR_GAP_M = 15;
+function distToBoundaryM(lng: number, lat: number, rings: number[][][]): number {
+  const kx = 111_320 * Math.cos((lat * Math.PI) / 180);
+  const ky = 110_540;
+  let best = Infinity;
+  for (const ring of rings) {
+    for (let i = 0; i < ring.length - 1; i++) {
+      const ax = (ring[i][0] - lng) * kx;
+      const ay = (ring[i][1] - lat) * ky;
+      const bx = (ring[i + 1][0] - lng) * kx;
+      const by = (ring[i + 1][1] - lat) * ky;
+      const dx = bx - ax;
+      const dy = by - ay;
+      const len2 = dx * dx + dy * dy;
+      const t = len2 > 0 ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / len2)) : 0;
+      const px = ax + t * dx;
+      const py = ay + t * dy;
+      const d2 = px * px + py * py;
+      if (d2 < best) best = d2;
+    }
+  }
+  return Math.sqrt(best);
+}
 
 /**
  * Neighbour-aware classifier for edge pixels. Context polygons are
- * deduplicated by field identity and indexed by their padded bbox; the
- * buffered geometry is computed lazily only for polygons that pixels
- * actually come near.
+ * deduplicated by field identity and indexed by their padded bbox; ring
+ * coordinates are extracted lazily only for polygons that pixels actually
+ * come near. The caller passes the per-pixel reach: the pixel's distance to
+ * its own boundary + the neighbour gap, so a neighbour only counts when it
+ * sits directly across the boundary from that pixel.
  */
-function buildEdgeClassifier(contextFeatures: any[], distance: number) {
+function buildEdgeClassifier(contextFeatures: any[], maxReach: number) {
   const M_PER_DEG = 111_320;
-  const reach = distance + NEIGHBOUR_GAP_M;
   interface Entry {
     bbox: Bbox;
     feature: any;
     key: string;
     species: string | null;
-    buffered: any; // undefined = not yet computed, null = failed
+    rings?: number[][][];
   }
   const entries: Entry[] = [];
   const seen = new Set<string>();
@@ -89,30 +125,24 @@ function buildEdgeClassifier(contextFeatures: any[], distance: number) {
     if (!b) continue;
     seen.add(key);
     const midLat = (b[1] + b[3]) / 2;
-    const dLat = reach / M_PER_DEG;
-    const dLng = reach / (M_PER_DEG * Math.max(0.2, Math.cos((midLat * Math.PI) / 180)));
+    const dLat = maxReach / M_PER_DEG;
+    const dLng = maxReach / (M_PER_DEG * Math.max(0.2, Math.cos((midLat * Math.PI) / 180)));
     entries.push({
       bbox: [b[0] - dLng, b[1] - dLat, b[2] + dLng, b[3] + dLat],
       feature: f,
       key,
       species: speciesOf(f),
-      buffered: undefined,
     });
   }
 
-  return (lng: number, lat: number, ownKey: string, ownSpecies: string | null): EdgeClass => {
+  return (lng: number, lat: number, ownKey: string, ownSpecies: string | null, reach: number): EdgeClass => {
     let foundSame = false;
     for (const e of entries) {
       if (e.key === ownKey) continue;
       if (lng < e.bbox[0] || lng > e.bbox[2] || lat < e.bbox[1] || lat > e.bbox[3]) continue;
-      if (e.buffered === undefined) {
-        try {
-          e.buffered = buffer(e.feature, reach, { units: 'meters' }) || null;
-        } catch {
-          e.buffered = null;
-        }
-      }
-      if (!e.buffered || !booleanPointInPolygon([lng, lat], e.buffered)) continue;
+      if (e.rings === undefined) e.rings = ringsOf(e.feature);
+      const d = booleanPointInPolygon([lng, lat], e.feature) ? 0 : distToBoundaryM(lng, lat, e.rings);
+      if (d > reach) continue;
       if (e.species !== null && ownSpecies !== null) {
         if (e.species !== ownSpecies) return 'edge_other_species';
         foundSame = true;
@@ -139,7 +169,9 @@ export async function extractZones(
   onProgress: (p: ZoneProgress) => void,
   isCancelled?: CancelCheck,
   /** Every loaded polygon — the neighbour context for the edge classes. */
-  contextFeatures: any[] = []
+  contextFeatures: any[] = [],
+  /** Max boundary-to-neighbour separation (m) for the edge classes. */
+  neighbourGap: number = 12
 ): Promise<ZoneExtraction> {
   if (features.length === 0) throw new Error('No polygons selected.');
   if (layers.length === 0) throw new Error('No imagery fetched.');
@@ -157,7 +189,10 @@ export async function extractZones(
 
   const classifyEdge = buildEdgeClassifier(
     contextFeatures.length > 0 ? contextFeatures : features,
-    distance
+    // Bbox prefilter bound: edge pixels lie within `distance` of their own
+    // boundary (also outside when includeOutside), so their reach never
+    // exceeds distance + gap.
+    distance + neighbourGap
   );
 
   const interiorPoints: any[] = [];
@@ -197,10 +232,14 @@ export async function extractZones(
 
     const ownKey = featureKey(feature);
     const ownSpecies = speciesOf(feature);
+    const ownRings = ringsOf(feature);
     for (const p of interior) p.properties.zone = 'interior';
     for (const p of edge) {
       const [lng, lat] = p.geometry.coordinates;
-      const cls = classifyEdge(lng, lat, ownKey, ownSpecies);
+      // A neighbour counts only if it can sit directly across the boundary
+      // from this pixel: within its own boundary distance + the gap.
+      const reach = distToBoundaryM(lng, lat, ownRings) + neighbourGap;
+      const cls = classifyEdge(lng, lat, ownKey, ownSpecies, reach);
       p.properties.zone = cls;
       if (cls === 'edge_other_species') edgeCounts.other++;
       else if (cls === 'edge_same_species') edgeCounts.same++;
@@ -234,6 +273,7 @@ export async function extractZones(
     metric,
     distance,
     includeOutside,
+    neighbourGap,
     dates: Array.from(dates).sort(),
   };
 }

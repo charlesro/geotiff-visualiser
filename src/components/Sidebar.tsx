@@ -1,5 +1,5 @@
-import React from 'react';
-import { Check, ChevronDown } from 'lucide-react';
+import React, { useState } from 'react';
+import { Check, ChevronDown, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 /**
@@ -27,8 +27,54 @@ export default function Sidebar({
   activeStep: number;
   onActivate: (id: number) => void;
 }) {
+  const [collapsed, setCollapsed] = useState(false);
+
+  // Slim rail: step numbers only, the map gets the room.
+  if (collapsed) {
+    return (
+      <div className="flex h-full w-12 shrink-0 flex-col items-center gap-1 border-r border-white/10 bg-[#11151a] py-2">
+        <button
+          onClick={() => setCollapsed(false)}
+          className="mb-1 rounded-md p-1.5 text-slate-500 hover:bg-white/5 hover:text-slate-200"
+          title="Expand the workflow panel"
+        >
+          <PanelLeftOpen className="h-4 w-4" />
+        </button>
+        {steps.map(step => (
+          <button
+            key={step.id}
+            onClick={() => {
+              setCollapsed(false);
+              onActivate(step.id);
+            }}
+            title={step.title}
+            className={cn(
+              'flex h-7 w-7 items-center justify-center rounded-full text-xs font-semibold transition-colors',
+              step.done
+                ? 'bg-emerald-500/20 text-emerald-400'
+                : activeStep === step.id
+                  ? 'bg-sky-500/20 text-sky-300'
+                  : 'bg-white/10 text-slate-400 hover:bg-white/20'
+            )}
+          >
+            {step.done ? <Check className="h-3.5 w-3.5" /> : step.id}
+          </button>
+        ))}
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-full w-[390px] shrink-0 flex-col border-r border-white/10 bg-[#11151a]">
+      <div className="flex items-center justify-end border-b border-white/5 px-2 py-1">
+        <button
+          onClick={() => setCollapsed(true)}
+          className="rounded-md p-1 text-slate-600 hover:bg-white/5 hover:text-slate-300"
+          title="Collapse the workflow panel — more room for the map"
+        >
+          <PanelLeftClose className="h-4 w-4" />
+        </button>
+      </div>
       <div className="flex-1 overflow-y-auto">
         {steps.map(step => {
           const open = activeStep === step.id;

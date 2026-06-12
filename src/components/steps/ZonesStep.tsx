@@ -24,7 +24,7 @@ interface ZonesStepProps {
   selectedCount: number;
   /** Ground pixel size of the fetched scenes in metres (null before fetch). */
   pixelSize: number | null;
-  onRun: (distance: number, metric: string, includeOutside: boolean) => void;
+  onRun: (distance: number, metric: string, includeOutside: boolean, neighbourGap: number) => void;
   onCancel: () => void;
 }
 
@@ -32,6 +32,7 @@ export default function ZonesStep(props: ZonesStepProps) {
   const [distance, setDistance] = useState(10);
   const [metric, setMetric] = useState('NDVI');
   const [includeOutside, setIncludeOutside] = useState(false);
+  const [neighbourGap, setNeighbourGap] = useState(12);
 
   return (
     <>
@@ -71,6 +72,23 @@ export default function ZonesStep(props: ZonesStepProps) {
         polygon boundary; edge pixels are closer than {distance} m.
       </p>
 
+      <Field label={`Max gap to neighbour · ${neighbourGap} m`}>
+        <input
+          type="range"
+          min={0}
+          max={40}
+          step={1}
+          value={neighbourGap}
+          onChange={e => setNeighbourGap(Number(e.target.value))}
+          className="w-full accent-sky-500"
+        />
+      </Field>
+      <p className="text-[11px] leading-relaxed text-slate-600">
+        An edge pixel takes a neighbour's class only when that field lies directly across the boundary: closer to the
+        pixel than its own boundary distance + {neighbourGap} m. Fields across wider gaps (a road…) leave the pixel{' '}
+        <span className="text-slate-400">isolated</span>.
+      </p>
+
       <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-400">
         <input
           type="checkbox"
@@ -83,7 +101,7 @@ export default function ZonesStep(props: ZonesStepProps) {
 
       <div className="flex gap-2">
         <Button
-          onClick={() => props.onRun(distance, metric, includeOutside)}
+          onClick={() => props.onRun(distance, metric, includeOutside, neighbourGap)}
           busy={props.busy}
           disabled={props.sceneCount === 0 || props.selectedCount === 0}
           className="flex-1"

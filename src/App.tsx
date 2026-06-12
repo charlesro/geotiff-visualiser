@@ -82,6 +82,15 @@ export default function App() {
   const [pcaBusy, setPcaBusy] = useState(false);
   const [pcaError, setPcaError] = useState<string | null>(null);
   const [showPcaPanel, setShowPcaPanel] = useState(false);
+  /** Width of the results drawer (drag its left edge to resize). */
+  const [pcaPanelWidth, setPcaPanelWidth] = useState(() => {
+    const saved = Number(localStorage.getItem('ppca_panel_w'));
+    return saved >= 440 ? saved : 660;
+  });
+  const onPcaPanelWidth = useCallback((w: number) => {
+    setPcaPanelWidth(w);
+    localStorage.setItem('ppca_panel_w', String(w));
+  }, []);
 
   const [activeStep, setActiveStep] = useState(1);
   const [fitRequest, setFitRequest] = useState<{
@@ -392,7 +401,7 @@ export default function App() {
   // ----- Step 3 handlers -----------------------------------------------------
 
   const runZones = useCallback(
-    async (distance: number, metric: string, includeOutside: boolean) => {
+    async (distance: number, metric: string, includeOutside: boolean, neighbourGap: number) => {
       const op = beginOp();
       setZonesBusy(true);
       setZonesError(null);
@@ -408,7 +417,8 @@ export default function App() {
           setZonesProgress,
           () => op.cancelled,
           // Neighbour context for the edge classes: every loaded polygon.
-          polygons?.features || []
+          polygons?.features || [],
+          neighbourGap
         );
         setZones(result);
         // Scenarios and PCA were computed from the previous extraction.
@@ -465,7 +475,8 @@ export default function App() {
           false,
           () => {},
           undefined,
-          polygons?.features || []
+          polygons?.features || [],
+          zones?.neighbourGap ?? 12
         );
         if (!stale) setNdviInspection(summarizeExtraction(extraction, polygonLabel(inspectedFeature)));
       } catch (e) {
@@ -480,7 +491,7 @@ export default function App() {
     return () => {
       stale = true;
     };
-  }, [inspectedFeature, scenes, zones?.distance, polygons]);
+  }, [inspectedFeature, scenes, zones?.distance, zones?.neighbourGap, polygons]);
 
   const closeNdvi = useCallback(() => {
     setInspectedFeature(null);
@@ -625,10 +636,10 @@ export default function App() {
       setHighlightPixel(p ? { id: p.id, zone: p.zone, lng: p.lng, lat: p.lat, values: {} } : null);
       if (p) {
         const d = 0.0008; // ~80 m — lands at field scale around the pixel
-        requestFit([p.lng - d, p.lat - d, p.lng + d, p.lat + d], { padRight: 660, maxZoom: 17 });
+        requestFit([p.lng - d, p.lat - d, p.lng + d, p.lat + d], { padRight: pcaPanelWidth, maxZoom: 17 });
       }
     },
-    [requestFit]
+    [requestFit, pcaPanelWidth]
   );
 
   const closePcaPanel = useCallback(() => {
@@ -835,6 +846,8 @@ export default function App() {
             <PcaPanel
               result={pcaResult}
               busy={pcaBusy}
+              width={pcaPanelWidth}
+              onWidthChange={onPcaPanelWidth}
               clusterAssignment={clusterAssignment}
               projectZones={pcaProjectZones}
               onProjectZonesChange={setPcaProjectZones}
