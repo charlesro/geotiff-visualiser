@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { saveAs } from 'file-saver';
 import { Layers, RotateCcw } from 'lucide-react';
 import { RasterLayer } from './types';
@@ -8,7 +8,7 @@ import {
   loadPolygonsFromFile,
   polygonLabel,
 } from './lib/polygon-source';
-import { summarizeExtraction, NdviInspection } from './lib/ndvi-series';
+import { summarizeExtraction, NdviInspection, NdviPixel } from './lib/ndvi-series';
 import NdviPanel from './components/NdviPanel';
 import { fetchSentinelSeries, SeriesFetchParams, SeriesProgress } from './lib/fetch-series';
 import { clusterFeatureBboxes } from './lib/cluster';
@@ -305,17 +305,31 @@ export default function App() {
 
   // ----- NDVI inspector -------------------------------------------------------
 
+  const [inspectedFeature, setInspectedFeature] = useState<any | null>(null);
   const [ndviInspection, setNdviInspection] = useState<NdviInspection | null>(null);
   const [ndviBusy, setNdviBusy] = useState(false);
   const [ndviError, setNdviError] = useState<string | null>(null);
+  const [highlightPixel, setHighlightPixel] = useState<NdviPixel | null>(null);
 
-  const inspectNdvi = useCallback(
-    async (feature: any) => {
+  const inspectNdvi = useCallback((feature: any) => {
+    setHighlightPixel(null);
+    setInspectedFeature(feature);
+  }, []);
+
+  // The inspection recomputes whenever the series changes (scene deleted,
+  // re-fetch), so the chart always reflects the current scenes.
+  useEffect(() => {
+    if (!inspectedFeature) {
       setNdviInspection(null);
-      if (scenes.length === 0) {
-        setNdviError('Fetch a Sentinel-2 time series in step 2 first — the chart reads those scenes.');
-        return;
-      }
+      return;
+    }
+    if (scenes.length === 0) {
+      setNdviInspection(null);
+      setNdviError('Fetch a Sentinel-2 time series in step 2 first — the chart reads those scenes.');
+      return;
+    }
+    let stale = false;
+    (async () => {
       setNdviBusy(true);
       setNdviError(null);
       try {
@@ -323,7 +337,7 @@ export default function App() {
         // exactly the pixels and zone classes the analysis uses.
         const distance = zones?.distance ?? 10;
         const extraction = await extractZones(
-          [feature],
+          [inspectedFeature],
           scenes,
           distance,
           'NDVI',
@@ -332,21 +346,37 @@ export default function App() {
           undefined,
           polygons?.features || []
         );
-        setNdviInspection(summarizeExtraction(extraction, polygonLabel(feature)));
+        if (!stale) setNdviInspection(summarizeExtraction(extraction, polygonLabel(inspectedFeature)));
       } catch (e) {
-        setNdviError(errorMessage(e));
+        if (!stale) {
+          setNdviInspection(null);
+          setNdviError(errorMessage(e));
+        }
       } finally {
-        setNdviBusy(false);
+        if (!stale) setNdviBusy(false);
       }
-    },
-    [scenes, zones, polygons]
-  );
+    })();
+    return () => {
+      stale = true;
+    };
+  }, [inspectedFeature, scenes, zones?.distance, polygons]);
 
   const closeNdvi = useCallback(() => {
+    setInspectedFeature(null);
     setNdviInspection(null);
     setNdviError(null);
     setNdviBusy(false);
+    setHighlightPixel(null);
   }, []);
+
+  /** Chart date click → preview that scene on the map. */
+  const previewDate = useCallback(
+    (date: string) => {
+      const scene = scenes.find(s => s.datetime?.startsWith(date));
+      if (scene) setPreviewSceneId(scene.id);
+    },
+    [scenes]
+  );
 
   // ----- Step 4 handlers -----------------------------------------------------
 
@@ -518,9 +548,17 @@ export default function App() {
             onPreviewScene={setPreviewSceneId}
             onDeleteScene={deleteScene}
             onInspectPolygon={inspectNdvi}
+            highlightPixel={highlightPixel}
             fitRequest={fitRequest}
           />
-          <NdviPanel inspection={ndviInspection} busy={ndviBusy} error={ndviError} onClose={closeNdvi} />
+          <NdviPanel
+            inspection={ndviInspection}
+            busy={ndviBusy}
+            error={ndviError}
+            onClose={closeNdvi}
+            onSelectDate={previewDate}
+            onHighlightPixel={setHighlightPixel}
+          />
           {showPcaPanel && pcaResult && (
             <PcaPanel result={pcaResult} onClose={() => setShowPcaPanel(false)} onExportCsv={exportCsv} />
           )}

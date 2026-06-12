@@ -167,7 +167,9 @@ export default function ImageryStep(props: ImageryStepProps) {
                   onClick={() => props.onPreviewScene(previewing ? null : scene.id)}
                   className={cn(
                     'group flex w-full cursor-pointer items-center justify-between border-b border-white/5 px-2.5 py-1.5 text-xs last:border-0',
-                    previewing ? 'bg-sky-500/10 text-sky-200' : 'text-slate-400 hover:bg-white/[0.03]'
+                    previewing
+                      ? 'border-l-2 border-l-sky-400 bg-sky-500/15 text-sky-200'
+                      : 'border-l-2 border-l-transparent text-slate-400 hover:bg-white/[0.03]'
                   )}
                 >
                   <span className="font-mono">{date}</span>

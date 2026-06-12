@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { MapContainer, TileLayer, GeoJSON, ImageOverlay, ScaleControl, useMap, useMapEvents } from 'react-leaflet';
+import { MapContainer, TileLayer, GeoJSON, ImageOverlay, CircleMarker, ScaleControl, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { Bbox } from '../lib/geo';
@@ -35,6 +35,8 @@ interface MapPanelProps {
   onDeleteScene: (id: string) => void;
   /** Called with the clicked polygon while "Inspect NDVI" mode is active. */
   onInspectPolygon: (feature: any) => void;
+  /** Pixel picked in the NDVI panel, marked with a white ring. */
+  highlightPixel: { lng: number; lat: number } | null;
   /** Changes to this object trigger a fitBounds. */
   fitRequest: { bounds: Bbox; token: number } | null;
 }
@@ -200,7 +202,7 @@ const speciesColor = (crpLbl: string | undefined): string => {
   return SPECIES_COLORS[Math.abs(hash) % SPECIES_COLORS.length];
 };
 
-export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones, preview, clusterPreviews, scenes, previewSceneId, onPreviewScene, onDeleteScene, onInspectPolygon, fitRequest }: MapPanelProps) {
+export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones, preview, clusterPreviews, scenes, previewSceneId, onPreviewScene, onDeleteScene, onInspectPolygon, highlightPixel, fitRequest }: MapPanelProps) {
   const [basemap, setBasemap] = useState<BasemapKey>('dark');
   const [showZoneDots, setShowZoneDots] = useState(true);
   const [probeMode, setProbeMode] = useState(false);
@@ -291,11 +293,25 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
           {probeMode ? 'Click a polygon…' : 'Inspect NDVI'}
         </button>
 
+        {/* react-leaflet's ImageOverlay never updates `url` in place — key the
+            overlays on the previewed scene so switching dates swaps the image. */}
         {preview && (
-          <ImageOverlay url={preview.url} bounds={preview.bounds} opacity={preview.opacity} className="pixel-perfect" />
+          <ImageOverlay
+            key={`preview-${previewSceneId}`}
+            url={preview.url}
+            bounds={preview.bounds}
+            opacity={preview.opacity}
+            className="pixel-perfect"
+          />
         )}
         {clusterPreviews.map((c, i) => (
-          <ImageOverlay key={`cluster-${i}`} url={c.url} bounds={c.bounds} opacity={c.opacity} className="pixel-perfect" />
+          <ImageOverlay
+            key={`cluster-${previewSceneId}-${i}`}
+            url={c.url}
+            bounds={c.bounds}
+            opacity={c.opacity}
+            className="pixel-perfect"
+          />
         ))}
 
         {polygons && (
@@ -317,6 +333,15 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
               interactive={false}
             />
           </>
+        )}
+
+        {highlightPixel && (
+          <CircleMarker
+            center={[highlightPixel.lat, highlightPixel.lng]}
+            radius={9}
+            pathOptions={{ color: '#ffffff', weight: 2.5, fill: false }}
+            interactive={false}
+          />
         )}
       </MapContainer>
 

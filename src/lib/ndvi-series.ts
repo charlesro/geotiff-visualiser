@@ -14,9 +14,20 @@ export interface NdviSeriesPoint {
   edge_isolated?: number;
 }
 
+export interface NdviPixel {
+  id: string;
+  zone: PixelZone;
+  lng: number;
+  lat: number;
+  values: Record<string, number>;
+}
+
 export interface NdviInspection {
   label: string;
   series: NdviSeriesPoint[];
+  /** Every pixel with its zone and per-date values, for the per-pixel view. */
+  pixels: NdviPixel[];
+  dates: string[];
   counts: { interior: number; other: number; same: number; isolated: number };
   metric: string;
   distance: number;
@@ -49,9 +60,24 @@ export function summarizeExtraction(x: ZoneExtraction, label: string): NdviInspe
     return point;
   });
 
+  const pixels: NdviPixel[] = [];
+  const pushPixel = (f: any, zone: PixelZone) => {
+    const values: Record<string, number> = {};
+    for (const date of x.dates) {
+      const v = f.properties?.[`${x.metric}_${date}`];
+      if (typeof v === 'number' && isFinite(v)) values[date] = v;
+    }
+    const [lng, lat] = f.geometry.coordinates;
+    pixels.push({ id: String(f.properties?.id ?? `${lng}_${lat}`), zone, lng, lat, values });
+  };
+  for (const f of x.interior.features) pushPixel(f, 'interior');
+  for (const f of x.edge.features) pushPixel(f, f.properties?.zone || 'edge_isolated');
+
   return {
     label,
     series,
+    pixels,
+    dates: x.dates,
     counts: {
       interior: x.interior.features.length,
       other: x.edgeCounts.other,
