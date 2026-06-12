@@ -229,13 +229,20 @@ export default function App() {
 
   const deleteScene = useCallback(
     (id: string) => {
+      // When the previewed scene is deleted, advance to the next one (by
+      // date) so the series can be pruned scene after scene.
+      const ordered = [...scenes].sort(
+        (a, b) => new Date(a.datetime || 0).getTime() - new Date(b.datetime || 0).getTime()
+      );
+      const idx = ordered.findIndex(s => s.id === id);
+      const fallback = ordered[idx + 1] ?? ordered[idx - 1] ?? null;
       setScenes(prev => prev.filter(s => s.id !== id));
-      setPreviewSceneId(prev => (prev === id ? null : prev));
+      setPreviewSceneId(prev => (prev === id ? (fallback?.id ?? null) : prev));
       clusterPreviewCache.current.delete(id);
       // Zones and PCA were computed from the full series — invalidate them.
       clearFromZones();
     },
-    [clearFromZones]
+    [scenes, clearFromZones]
   );
 
   /** Ground pixel size the analysis runs at (m). The 10 m cluster grids win over the preview mosaic. */

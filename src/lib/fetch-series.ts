@@ -32,6 +32,8 @@ export interface SeriesFetchParams {
   endDate: string;
   maxCloudCover: number;
   targetCount: number;
+  /** Download every covered date instead of `targetCount` evenly-spaced ones. */
+  fetchAll?: boolean;
   token?: string;
 }
 
@@ -86,7 +88,7 @@ export async function fetchSentinelSeries(
     );
   }
 
-  const picked = selectEvenlySpaced(covered, params.targetCount).sort(
+  const picked = (params.fetchAll ? [...covered] : selectEvenlySpaced(covered, params.targetCount)).sort(
     (a, b) => new Date(a.properties.datetime).getTime() - new Date(b.properties.datetime).getTime()
   );
 

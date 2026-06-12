@@ -48,12 +48,20 @@ export default function ImageryStep(props: ImageryStepProps) {
   }, [props.datasetRange]);
   const [maxCloud, setMaxCloud] = useState(20);
   const [count, setCount] = useState(12);
+  const [fetchAll, setFetchAll] = useState(false);
   const [token, setToken] = useState(() => localStorage.getItem('mpc_token') || '');
   const [showToken, setShowToken] = useState(false);
 
   const fetchSeries = () => {
     localStorage.setItem('mpc_token', token);
-    props.onFetch({ startDate, endDate, maxCloudCover: maxCloud, targetCount: count, token: token || undefined });
+    props.onFetch({
+      startDate,
+      endDate,
+      maxCloudCover: maxCloud,
+      targetCount: count,
+      fetchAll,
+      token: token || undefined,
+    });
   };
 
   return (
@@ -81,17 +89,28 @@ export default function ImageryStep(props: ImageryStepProps) {
             className="w-full accent-sky-500"
           />
         </Field>
-        <Field label="Scenes" hint="Evenly spaced over the period.">
+        <Field label="Scenes" hint={fetchAll ? 'Ignored — fetching every date.' : 'Evenly spaced over the period.'}>
           <input
             type="number"
             min={3}
             max={60}
             className={inputClass}
             value={count}
+            disabled={fetchAll}
             onChange={e => setCount(Math.max(3, Number(e.target.value) || 3))}
           />
         </Field>
       </div>
+
+      <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-400">
+        <input
+          type="checkbox"
+          checked={fetchAll}
+          onChange={e => setFetchAll(e.target.checked)}
+          className="accent-sky-500"
+        />
+        Fetch <em>all</em> dates matching the cloud limit (can be many — watch the download time)
+      </label>
 
       <details className="text-xs text-slate-500">
         <summary className="cursor-pointer select-none hover:text-slate-300">Planetary Computer API key (optional)</summary>
