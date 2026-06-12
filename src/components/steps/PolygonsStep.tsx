@@ -1,6 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { Database, FileUp, CheckSquare, Square, Plug, Search } from 'lucide-react';
-import { Button, ErrorNote, Field, inputClass, StopButton } from '../ui';
+import { Button, ErrorNote, Field, inputClass, NumberInput, StopButton } from '../ui';
 import { polygonLabel } from '../../lib/polygon-source';
 import {
   buildNeighborPairsQuery,
@@ -221,23 +221,15 @@ export default function PolygonsStep(props: PolygonsStepProps) {
                   info={PARAM_INFO.distance}
                   hint={`≈ ${Math.round(params.neighborDistance * 111320)} m`}
                 >
-                  <input
-                    type="number"
-                    step="0.0001"
-                    min="0"
-                    className={inputClass}
+                  <NumberInput
+                    step={0.0001}
+                    min={0}
                     value={params.neighborDistance}
-                    onChange={e => setParam('neighborDistance', Number(e.target.value))}
+                    onChange={n => setParam('neighborDistance', n)}
                   />
                 </Field>
                 <Field label="Max pairs" info={PARAM_INFO.maxPairs}>
-                  <input
-                    type="number"
-                    min={1}
-                    className={inputClass}
-                    value={params.maxPairs}
-                    onChange={e => setParam('maxPairs', Math.max(1, Number(e.target.value) || 1))}
-                  />
+                  <NumberInput min={1} value={params.maxPairs} onChange={n => setParam('maxPairs', n)} />
                 </Field>
               </div>
               <div className="flex gap-2">

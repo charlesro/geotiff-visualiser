@@ -3,7 +3,7 @@ import { Boxes } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer } from 'recharts';
 import { ZoneExtraction } from '../../lib/zones';
 import { SpeciesClustering, CLUSTER_COLORS } from '../../lib/species-clusters';
-import { Button, ErrorNote, Field, inputClass, PrereqNote } from '../ui';
+import { Button, ErrorNote, Field, NumberInput, PrereqNote } from '../ui';
 
 /**
  * Step 4 — cluster the fields of each species by their growth curve, to
@@ -33,14 +33,7 @@ export default function ClusterStep(props: ClusterStepProps) {
       </p>
 
       <Field label="Scenarios per species (k)" hint="Capped at the species' field count.">
-        <input
-          type="number"
-          min={2}
-          max={8}
-          className={inputClass}
-          value={k}
-          onChange={e => setK(Math.min(8, Math.max(2, Number(e.target.value) || 2)))}
-        />
+        <NumberInput min={2} max={8} value={k} onChange={setK} />
       </Field>
 
       <Button onClick={() => props.onRun(k)} busy={props.busy} disabled={!props.zones} className="w-full">

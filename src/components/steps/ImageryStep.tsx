@@ -3,7 +3,7 @@ import { Eye, EyeOff, Satellite, Trash2 } from 'lucide-react';
 import { RasterLayer } from '../../types';
 import { SeriesFetchParams, SeriesProgress } from '../../lib/fetch-series';
 import { DatasetDateRange } from '../../lib/neighbor-query';
-import { Button, ErrorNote, Field, inputClass, PrereqNote, ProgressBar, StopButton } from '../ui';
+import { Button, ErrorNote, Field, inputClass, NumberInput, PrereqNote, ProgressBar, StopButton } from '../ui';
 import { cn } from '../../lib/utils';
 
 /**
@@ -92,15 +92,7 @@ export default function ImageryStep(props: ImageryStepProps) {
           />
         </Field>
         <Field label="Scenes" hint={fetchAll ? 'Ignored — fetching every date.' : 'Evenly spaced over the period.'}>
-          <input
-            type="number"
-            min={3}
-            max={60}
-            className={inputClass}
-            value={count}
-            disabled={fetchAll}
-            onChange={e => setCount(Math.max(3, Number(e.target.value) || 3))}
-          />
+          <NumberInput min={3} max={60} value={count} onChange={setCount} disabled={fetchAll} />
         </Field>
       </div>
 

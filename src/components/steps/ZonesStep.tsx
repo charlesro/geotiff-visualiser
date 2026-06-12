@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Scissors } from 'lucide-react';
 import { ZoneExtraction, ZoneProgress } from '../../lib/zones';
 import { zoneColor, zoneShort } from '../../lib/legend';
-import { Button, ErrorNote, Field, inputClass, PrereqNote, ProgressBar, Stat, StopButton } from '../ui';
+import { Button, ErrorNote, Field, inputClass, NumberInput, PrereqNote, ProgressBar, Stat, StopButton } from '../ui';
 
 /**
  * Step 3 — split the pixels of every selected polygon into interior
@@ -49,14 +49,7 @@ export default function ZonesStep(props: ZonesStepProps) {
       )}
       <div className="grid grid-cols-2 gap-2">
         <Field label="Buffer distance (m)">
-          <input
-            type="number"
-            min={1}
-            max={500}
-            className={inputClass}
-            value={distance}
-            onChange={e => setDistance(Math.max(1, Number(e.target.value) || 1))}
-          />
+          <NumberInput min={1} max={500} value={distance} onChange={setDistance} />
         </Field>
         <Field label="Metric">
           <select className={inputClass} value={metric} onChange={e => setMetric(e.target.value)}>

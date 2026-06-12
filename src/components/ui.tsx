@@ -42,6 +42,78 @@ export const inputClass =
   'w-full rounded-md border border-white/10 bg-[#0b0e11] px-2.5 py-1.5 text-sm text-slate-200 ' +
   'placeholder:text-slate-600 focus:border-sky-500/60 focus:outline-none';
 
+/**
+ * Number field that doesn't fight your typing.
+ *
+ * A raw `<input type="number">` with `value={n}` + min-clamping on every
+ * keystroke makes editing the leading digit impossible: to change 10 → 20 you
+ * select "10", type "2", and the clamp instantly rewrites it (2 is below the
+ * min, or `Number('') || fallback` kicks in). This holds the keystrokes as a
+ * string while focused and only clamps to [min, max] on blur, so partial
+ * edits are never rewritten under you.
+ */
+export function NumberInput({
+  value,
+  onChange,
+  min,
+  max,
+  step,
+  disabled,
+  className,
+}: {
+  value: number;
+  onChange: (n: number) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+  disabled?: boolean;
+  className?: string;
+}) {
+  const [text, setText] = React.useState(String(value));
+  const focused = React.useRef(false);
+
+  // Adopt external changes (reset, dataset defaults) only when not editing.
+  React.useEffect(() => {
+    if (!focused.current) setText(String(value));
+  }, [value]);
+
+  const clamp = (n: number) => {
+    if (min !== undefined) n = Math.max(min, n);
+    if (max !== undefined) n = Math.min(max, n);
+    return n;
+  };
+
+  return (
+    <input
+      type="number"
+      min={min}
+      max={max}
+      step={step}
+      disabled={disabled}
+      className={cn(className ?? inputClass, disabled && 'opacity-50')}
+      value={text}
+      onFocus={() => {
+        focused.current = true;
+      }}
+      onChange={e => {
+        const raw = e.target.value;
+        setText(raw);
+        // Push valid numbers up live but DON'T clamp mid-typing, so a value
+        // momentarily below the min (e.g. "2" on the way to "20") survives.
+        const n = Number(raw);
+        if (raw !== '' && Number.isFinite(n)) onChange(n);
+      }}
+      onBlur={e => {
+        focused.current = false;
+        const n = Number(e.target.value);
+        const final = clamp(Number.isFinite(n) ? n : min ?? 0);
+        onChange(final);
+        setText(String(final));
+      }}
+    />
+  );
+}
+
 export function Button({
   children,
   onClick,
