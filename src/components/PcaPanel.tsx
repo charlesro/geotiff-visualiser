@@ -19,6 +19,7 @@ import {
 import { PcaRunResult } from '../lib/pca';
 import { PixelZone } from '../lib/zones';
 import { CLUSTER_COLORS, fieldKeyOf } from '../lib/species-clusters';
+import { mixHexColors, MIX_LOW, MIX_HIGH } from '../lib/unmix';
 import { speciesColor } from './MapPanel';
 import { cn } from '../lib/utils';
 
@@ -46,13 +47,14 @@ const ZONE_CHIPS: { key: PixelZone; label: string }[] = [
 type SymbolType = 'circle' | 'triangle' | 'square' | 'diamond' | 'star' | 'cross' | 'wye';
 const SYMBOL_TYPES: SymbolType[] = ['circle', 'triangle', 'square', 'diamond', 'star', 'cross', 'wye'];
 
-type Attr = 'zone' | 'species' | 'scenario' | 'field' | 'pair';
+type Attr = 'zone' | 'species' | 'scenario' | 'field' | 'pair' | 'mixing';
 const ATTR_LABEL: Record<Attr, string> = {
   zone: 'pixel class',
   species: 'species',
   scenario: 'scenario',
   field: 'field',
   pair: 'pair',
+  mixing: 'mixing fraction',
 };
 
 /** Keep the scatter responsive — evenly sampled above this. */
@@ -103,13 +105,17 @@ export default function PcaPanel({
   const [shapeBy, setShapeBy] = useState<Attr | 'none'>('species');
 
   const hasPairs = useMemo(() => result.rows.some(r => r.properties?.pair_id != null), [result]);
+  const hasMixing = useMemo(() => result.rows.some(r => typeof r.properties?.mix_fraction === 'number'), [result]);
   const attrOptions = useMemo(() => {
     const opts: Attr[] = ['zone', 'species'];
     if (clusterAssignment) opts.push('scenario');
     opts.push('field');
     if (hasPairs) opts.push('pair');
+    if (hasMixing) opts.push('mixing');
     return opts;
-  }, [clusterAssignment, hasPairs]);
+  }, [clusterAssignment, hasPairs, hasMixing]);
+  // Shapes are categorical; the continuous mixing fraction can only colour.
+  const shapeOptions = useMemo(() => attrOptions.filter(a => a !== 'mixing'), [attrOptions]);
 
   const attrValue = useMemo(
     () =>
@@ -128,6 +134,8 @@ export default function PcaPanel({
             return String(props.NewID ?? row.polygonId ?? 'unknown');
           case 'pair':
             return props.pair_id != null ? String(props.pair_id) : 'no pair';
+          case 'mixing':
+            return ''; // continuous — coloured per point, no categories
         }
       },
     [clusterAssignment]
@@ -145,7 +153,7 @@ export default function PcaPanel({
       .map(([name, count]) => ({ name, count }));
   };
 
-  const colorCats = useMemo(() => categoriesOf(colorBy), [result, colorBy, attrValue]);
+  const colorCats = useMemo(() => (colorBy === 'mixing' ? [] : categoriesOf(colorBy)), [result, colorBy, attrValue]);
   const shapeCats = useMemo(
     () => (shapeBy === 'none' ? [] : categoriesOf(shapeBy)),
     [result, shapeBy, attrValue]
@@ -172,11 +180,20 @@ export default function PcaPanel({
     return rows.map(row => {
       const cv = attrValue(row, colorBy);
       const sv = shapeBy === 'none' ? null : attrValue(row, shapeBy);
+      // Mixing: continuous scale on the own-field fraction; pixels with no
+      // fraction (interior, isolated…) stay muted so the mixed ones stand out.
+      let color: string;
+      if (colorBy === 'mixing') {
+        const frac = row.properties?.mix_fraction;
+        color = typeof frac === 'number' ? mixHexColors(MIX_LOW, MIX_HIGH, frac) : '#334155';
+      } else {
+        color = colorOf(colorBy, cv, colorIdx.get(cv) ?? 0);
+      }
       return {
         x: row.scores[pcX],
         y: row.scores[pcY],
         pixelId: row.pixelId,
-        color: colorOf(colorBy, cv, colorIdx.get(cv) ?? 0),
+        color,
         symbol: (sv === null ? 'circle' : SYMBOL_TYPES[(shapeIdx.get(sv) ?? 0) % SYMBOL_TYPES.length]) as SymbolType,
         row,
       };
@@ -399,7 +416,7 @@ export default function PcaPanel({
                   onChange={e => setShapeBy(e.target.value as Attr | 'none')}
                 >
                   <option value="none">none</option>
-                  {attrOptions
+                  {shapeOptions
                     .filter(a => a !== colorBy)
                     .map(a => (
                       <option key={a} value={a}>
@@ -452,16 +469,30 @@ export default function PcaPanel({
             </ScatterChart>
 
             {/* Colour legend */}
-            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
-              <span className="font-medium uppercase tracking-wide text-slate-600">{ATTR_LABEL[colorBy]}</span>
-              {colorCats.slice(0, 14).map((c, i) => (
-                <span key={c.name} className="flex items-center gap-1.5">
-                  <span className="h-2 w-2 rounded-full" style={{ background: colorOf(colorBy, c.name, i) }} />
-                  {c.name} ({c.count})
-                </span>
-              ))}
-              {colorCats.length > 14 && <span className="text-slate-600">+{colorCats.length - 14} more</span>}
-            </div>
+            {colorBy === 'mixing' ? (
+              <div className="mt-2 text-[11px] text-slate-400">
+                <span className="mr-2 font-medium uppercase tracking-wide text-slate-600">mixing fraction</span>
+                <div className="mt-1 flex items-center gap-2">
+                  <span className="text-[10px]">neighbour</span>
+                  <div className="h-2 flex-1 rounded" style={{ background: `linear-gradient(to right, ${MIX_LOW}, ${MIX_HIGH})` }} />
+                  <span className="text-[10px]">own field</span>
+                </div>
+                <div className="mt-0.5 text-[10px] text-slate-600">
+                  edge-other pixels only; interior / isolated / same-species shown muted
+                </div>
+              </div>
+            ) : (
+              <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
+                <span className="font-medium uppercase tracking-wide text-slate-600">{ATTR_LABEL[colorBy]}</span>
+                {colorCats.slice(0, 14).map((c, i) => (
+                  <span key={c.name} className="flex items-center gap-1.5">
+                    <span className="h-2 w-2 rounded-full" style={{ background: colorOf(colorBy, c.name, i) }} />
+                    {c.name} ({c.count})
+                  </span>
+                ))}
+                {colorCats.length > 14 && <span className="text-slate-600">+{colorCats.length - 14} more</span>}
+              </div>
+            )}
 
             {/* Shape legend */}
             {shapeBy !== 'none' && (
@@ -506,6 +537,12 @@ export default function PcaPanel({
                   <span>
                     {pickedRow.lat.toFixed(5)}, {pickedRow.lng.toFixed(5)}
                   </span>
+                  {typeof pickedRow.properties?.mix_fraction === 'number' && (
+                    <span className="col-span-2 text-slate-300">
+                      mixing: {(pickedRow.properties.mix_fraction * 100).toFixed(0)}% own field ·{' '}
+                      {((1 - pickedRow.properties.mix_fraction) * 100).toFixed(0)}% {pickedRow.properties.mix_partner}
+                    </span>
+                  )}
                   <span className="col-span-2">
                     scores: {pickedRow.scores.map((s, i) => `PC${i + 1} ${s.toFixed(3)}`).join(' · ')}
                   </span>

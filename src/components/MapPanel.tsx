@@ -7,6 +7,7 @@ import { ZoneExtraction } from '../lib/zones';
 import { polygonLabel } from '../lib/polygon-source';
 import { NdviPixel } from '../lib/ndvi-series';
 import { CLUSTER_COLORS, fieldKeyOf } from '../lib/species-clusters';
+import { mixHexColors, MIX_LOW, MIX_HIGH } from '../lib/unmix';
 import { RasterLayer } from '../types';
 import SceneTimeline from './SceneTimeline';
 import { Activity, Eye, EyeOff, Square } from 'lucide-react';
@@ -218,6 +219,10 @@ export const speciesColor = (crpLbl: string | undefined): string => {
 export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones, clusterAssignment, clusterVersion, preview, clusterPreviews, scenes, previewSceneId, onPreviewScene, onDeleteScene, onInspectPolygon, inspectPixels, highlightPixel, onPickPixel, fitRequest }: MapPanelProps) {
   const [basemap, setBasemap] = useState<BasemapKey>('dark');
   const [showZoneDots, setShowZoneDots] = useState(true);
+  // Colour edge_other_species pixels by their mixing fraction instead of a
+  // flat class colour: own species at α=1 ↔ partner species at α=0.
+  const [showMixing, setShowMixing] = useState(false);
+  const hasMixing = (zones?.unmixing?.count ?? 0) > 0;
   const [probeMode, setProbeMode] = useState(false);
   // Polygon click handlers are bound when the GeoJSON layer mounts (the
   // layer only remounts when polygons/selection change); read the mode and
@@ -269,14 +274,22 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
 
   // interactive: false — the dots must not swallow clicks meant for the
   // polygons underneath (selection and the NDVI inspector).
-  const pixelToMarker = (feature: any, latlng: L.LatLng) =>
-    L.circleMarker(latlng, {
+  const pixelToMarker = (feature: any, latlng: L.LatLng) => {
+    const props = feature.properties || {};
+    let fill = ZONE_COLORS[props.zone] || '#94a3b8';
+    // Mixing view: a sequential scale on the own-field fraction —
+    // all-neighbour (0) → all-own (1).
+    if (showMixing && props.zone === 'edge_other_species' && typeof props.mix_fraction === 'number') {
+      fill = mixHexColors(MIX_LOW, MIX_HIGH, props.mix_fraction);
+    }
+    return L.circleMarker(latlng, {
       radius: 3,
       stroke: false,
-      fillColor: ZONE_COLORS[feature.properties?.zone] || '#94a3b8',
+      fillColor: fill,
       fillOpacity: 0.85,
       interactive: false,
     });
+  };
 
   const boundaryStyle = {
     color: '#f8fafc',
@@ -343,7 +356,7 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
           <>
             {showZoneDots && (
               <>
-                <GeoJSON key={`zone-edge-${zonesKey}`} data={zones.edge} pointToLayer={pixelToMarker} />
+                <GeoJSON key={`zone-edge-${zonesKey}-${showMixing ? 'mix' : 'cls'}`} data={zones.edge} pointToLayer={pixelToMarker} />
                 <GeoJSON key={`zone-interior-${zonesKey}`} data={zones.interior} pointToLayer={pixelToMarker} />
               </>
             )}
@@ -457,6 +470,31 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
               </div>
             );
           })}
+
+          {hasMixing && (
+            <div className="mt-2 border-t border-white/10 pt-2">
+              <label className="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={showMixing}
+                  onChange={e => setShowMixing(e.target.checked)}
+                  className="accent-sky-500"
+                />
+                <span className="font-medium text-slate-200">Mixing fraction</span>
+                <span className="text-slate-500">({zones.unmixing!.count} px)</span>
+              </label>
+              {showMixing && (
+                <div className="mt-1.5">
+                  <div className="h-2 w-full rounded" style={{ background: `linear-gradient(to right, ${MIX_LOW}, ${MIX_HIGH})` }} />
+                  <div className="mt-0.5 flex justify-between text-[10px] text-slate-500">
+                    <span>0 · neighbour</span>
+                    <span>mean {(zones.unmixing!.meanFraction * 100).toFixed(0)}%</span>
+                    <span>own · 1</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

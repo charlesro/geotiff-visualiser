@@ -56,6 +56,8 @@ export interface ZoneExtraction {
   neighbourGap: number;
   /** Sorted acquisition dates covered by the extracted series. */
   dates: string[];
+  /** Mixing-fraction summary (set by computeUnmixing after extraction). */
+  unmixing?: import('./unmix').UnmixingSummary;
 }
 
 const speciesOf = (f: any): string | null => f?.properties?.crp_lbl ?? f?.properties?.species ?? null;

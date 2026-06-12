@@ -15,6 +15,7 @@ import { clusterFeatureBboxes } from './lib/cluster';
 import { renderAnalysisGridPreview } from './lib/mosaic';
 import { DEFAULT_OPTIONS } from './lib/layer-factory';
 import { extractZones, featureKey, PixelZone, ZoneExtraction, ZoneProgress } from './lib/zones';
+import { computeUnmixing } from './lib/unmix';
 import { clusterBySpecies, SpeciesClustering, fieldKeyOf } from './lib/species-clusters';
 import { runPixelPca, pcaScoresToCsv, PcaRunResult, ALL_PIXEL_ZONES } from './lib/pca';
 import { isCancelledError } from './lib/cancel';
@@ -420,6 +421,9 @@ export default function App() {
           polygons?.features || [],
           neighbourGap
         );
+        // Estimate the mixing fraction of every edge_other_species pixel and
+        // attach it to the pixel features (used by the map, PCA and CSV).
+        result.unmixing = computeUnmixing(result);
         setZones(result);
         // Scenarios and PCA were computed from the previous extraction.
         clearFromClustering();

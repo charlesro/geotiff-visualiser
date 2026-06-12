@@ -132,6 +132,14 @@ export default function ZonesStep(props: ZonesStepProps) {
             <Stat label="Edge · isolated" value={props.zones.edgeCounts.isolated} accent="#94a3b8" />
             <Stat label="Dates" value={props.zones.dates.length} />
           </div>
+          {props.zones.unmixing && props.zones.unmixing.count > 0 && (
+            <p className="text-[11px] leading-relaxed text-slate-500">
+              Mixing fraction estimated for {props.zones.unmixing.count} edge-other pixels — mean{' '}
+              <span className="text-slate-300">{(props.zones.unmixing.meanFraction * 100).toFixed(0)}% own field</span>.
+              Colour them on the map (legend toggle) or in the PCA scatter (Colour → mixing fraction); the fraction is
+              in the CSV export.
+            </p>
+          )}
           <div className="max-h-36 overflow-y-auto rounded-md border border-white/10">
             <table className="w-full text-left text-[11px]">
               <thead className="sticky top-0 bg-[#11151a] text-slate-500">

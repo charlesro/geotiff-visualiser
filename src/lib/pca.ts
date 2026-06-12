@@ -185,9 +185,20 @@ export function runPixelPca(pixelFeatures: any[], metric: string, options: PcaFi
 
 /** Serialize PCA scores to CSV for downstream analysis (R, Python…). */
 export function pcaScoresToCsv(result: PcaRunResult): string {
-  const header = ['pixel_id', 'polygon_id', 'zone', 'lng', 'lat', ...result.explained.map((_, i) => `PC${i + 1}`)];
+  const header = [
+    'pixel_id',
+    'polygon_id',
+    'zone',
+    'lng',
+    'lat',
+    'mix_fraction_own',
+    'mix_partner',
+    'mix_residual',
+    ...result.explained.map((_, i) => `PC${i + 1}`),
+  ];
   const lines = [header.join(',')];
   for (const row of result.rows) {
+    const mf = row.properties?.mix_fraction;
     lines.push(
       [
         row.pixelId,
@@ -195,6 +206,9 @@ export function pcaScoresToCsv(result: PcaRunResult): string {
         row.zone,
         row.lng.toFixed(6),
         row.lat.toFixed(6),
+        typeof mf === 'number' ? mf.toFixed(4) : '',
+        row.properties?.mix_partner ?? '',
+        typeof row.properties?.mix_residual === 'number' ? row.properties.mix_residual.toFixed(4) : '',
         ...row.scores.map(s => s.toFixed(6)),
       ].join(',')
     );
