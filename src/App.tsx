@@ -49,6 +49,8 @@ export default function App() {
   const [scenes, setScenes] = useState<RasterLayer[]>([]);
   const [failedDates, setFailedDates] = useState<string[]>([]);
   const [partialDates, setPartialDates] = useState(0);
+  /** Selection the series was fetched for — the 10 m windows cover only it. */
+  const [fetchedSelectionKey, setFetchedSelectionKey] = useState<string | null>(null);
   const [seriesBusy, setSeriesBusy] = useState(false);
   const [seriesProgress, setSeriesProgress] = useState<SeriesProgress | null>(null);
   const [seriesError, setSeriesError] = useState<string | null>(null);
@@ -116,6 +118,7 @@ export default function App() {
     setScenes([]);
     setFailedDates([]);
     setPartialDates(0);
+    setFetchedSelectionKey(null);
     setSeriesError(null);
     setPreviewSceneId(null);
     clusterPreviewCache.current.clear();
@@ -214,6 +217,7 @@ export default function App() {
         setScenes(result.layers);
         setFailedDates(result.failedDates);
         setPartialDates(result.partialDates);
+        setFetchedSelectionKey(Array.from(selectedIds).sort((a, b) => a - b).join('.'));
         setPreviewSceneId(result.layers[result.layers.length - 1]?.id ?? null);
         requestFit(bbox);
       } catch (e) {
@@ -224,7 +228,7 @@ export default function App() {
         setSeriesProgress(null);
       }
     },
-    [selectedFeatures, clearFromZones, requestFit]
+    [selectedFeatures, selectedIds, clearFromZones, requestFit]
   );
 
   const deleteScene = useCallback(
@@ -244,6 +248,12 @@ export default function App() {
     },
     [scenes, clearFromZones]
   );
+
+  /** True when polygons were (de)selected after the series was fetched. */
+  const selectionChangedSinceFetch = useMemo(() => {
+    if (scenes.length === 0 || fetchedSelectionKey === null) return false;
+    return Array.from(selectedIds).sort((a, b) => a - b).join('.') !== fetchedSelectionKey;
+  }, [scenes, fetchedSelectionKey, selectedIds]);
 
   /** Ground pixel size the analysis runs at (m). The 10 m cluster grids win over the preview mosaic. */
   const pixelSize = useMemo(() => {
@@ -476,6 +486,7 @@ export default function App() {
           error={seriesError}
           failedDates={failedDates}
           partialDates={partialDates}
+          selectionChanged={selectionChangedSinceFetch}
           onFetch={fetchSeries}
           onCancel={cancelOp}
           datasetRange={datasetRange}

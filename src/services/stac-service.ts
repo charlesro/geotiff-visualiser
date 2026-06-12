@@ -263,6 +263,13 @@ export async function signUrl(url: string, token?: string): Promise<string> {
   throw new Error(`All signing methods failed after 3 attempts for ${baseUrl}`);
 }
 
+/**
+ * The bulk /sign endpoint started returning 404 for every item; once that
+ * is seen, skip it for the whole session instead of burning three retries
+ * (with backoff) per tile before the working per-container fallback.
+ */
+let bulkSigningBroken = false;
+
 export async function signSTACItem(item: STACItem, token?: string): Promise<STACItem> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -272,7 +279,7 @@ export async function signSTACItem(item: STACItem, token?: string): Promise<STAC
   }
 
   let attempts = 0;
-  while (attempts < 3) {
+  while (!bulkSigningBroken && attempts < 3) {
     try {
       console.log(`Attempting bulk signing for item: ${item.id} (Attempt ${attempts + 1})`);
       const response = await fetch('https://planetarycomputer.microsoft.com/api/sas/v1/sign', {
@@ -280,6 +287,12 @@ export async function signSTACItem(item: STACItem, token?: string): Promise<STAC
         headers,
         body: JSON.stringify(item),
       });
+
+      if (response.status === 404) {
+        console.warn('Bulk signing endpoint returned 404 — disabling it for this session.');
+        bulkSigningBroken = true;
+        break;
+      }
 
       if (response.ok) {
         const signedItem = await response.json();

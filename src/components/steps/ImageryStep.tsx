@@ -18,6 +18,8 @@ interface ImageryStepProps {
   error: string | null;
   failedDates: string[];
   partialDates: number;
+  /** Polygons were (de)selected after the fetch — the 10 m windows are stale. */
+  selectionChanged: boolean;
   onFetch: (params: SeriesFetchParams) => void;
   onCancel: () => void;
   /** Acquisition span of the connected dataset — the default fetch period. */
@@ -146,6 +148,9 @@ export default function ImageryStep(props: ImageryStepProps) {
         </p>
       )}
 
+      {props.scenes.length > 0 && props.selectionChanged && (
+        <PrereqNote message="The polygon selection changed since this series was fetched — the native-10 m windows only cover the polygons selected back then. Fetch again to match the current selection." />
+      )}
       {props.scenes.length > 0 && (
         <div className="space-y-2">
           <div className="text-xs text-slate-400">
