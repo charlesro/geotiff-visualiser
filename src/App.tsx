@@ -6,7 +6,10 @@ import { Bbox, getGeoJsonBounds, bufferBboxMeters } from './lib/geo';
 import {
   loadPolygonsFromDatabase,
   loadPolygonsFromFile,
+  polygonLabel,
 } from './lib/polygon-source';
+import { summarizeExtraction, NdviInspection } from './lib/ndvi-series';
+import NdviPanel from './components/NdviPanel';
 import { fetchSentinelSeries, SeriesFetchParams, SeriesProgress } from './lib/fetch-series';
 import { clusterFeatureBboxes } from './lib/cluster';
 import { renderAnalysisGridPreview } from './lib/mosaic';
@@ -300,6 +303,51 @@ export default function App() {
     [selectedFeatures, scenes, polygons]
   );
 
+  // ----- NDVI inspector -------------------------------------------------------
+
+  const [ndviInspection, setNdviInspection] = useState<NdviInspection | null>(null);
+  const [ndviBusy, setNdviBusy] = useState(false);
+  const [ndviError, setNdviError] = useState<string | null>(null);
+
+  const inspectNdvi = useCallback(
+    async (feature: any) => {
+      setNdviInspection(null);
+      if (scenes.length === 0) {
+        setNdviError('Fetch a Sentinel-2 time series in step 2 first — the chart reads those scenes.');
+        return;
+      }
+      setNdviBusy(true);
+      setNdviError(null);
+      try {
+        // Same pipeline as step 3, for this one polygon, so the chart shows
+        // exactly the pixels and zone classes the analysis uses.
+        const distance = zones?.distance ?? 10;
+        const extraction = await extractZones(
+          [feature],
+          scenes,
+          distance,
+          'NDVI',
+          false,
+          () => {},
+          undefined,
+          polygons?.features || []
+        );
+        setNdviInspection(summarizeExtraction(extraction, polygonLabel(feature)));
+      } catch (e) {
+        setNdviError(errorMessage(e));
+      } finally {
+        setNdviBusy(false);
+      }
+    },
+    [scenes, zones, polygons]
+  );
+
+  const closeNdvi = useCallback(() => {
+    setNdviInspection(null);
+    setNdviError(null);
+    setNdviBusy(false);
+  }, []);
+
   // ----- Step 4 handlers -----------------------------------------------------
 
   const runPca = useCallback(async () => {
@@ -469,8 +517,10 @@ export default function App() {
             previewSceneId={previewSceneId}
             onPreviewScene={setPreviewSceneId}
             onDeleteScene={deleteScene}
+            onInspectPolygon={inspectNdvi}
             fitRequest={fitRequest}
           />
+          <NdviPanel inspection={ndviInspection} busy={ndviBusy} error={ndviError} onClose={closeNdvi} />
           {showPcaPanel && pcaResult && (
             <PcaPanel result={pcaResult} onClose={() => setShowPcaPanel(false)} onExportCsv={exportCsv} />
           )}

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { MapContainer, TileLayer, GeoJSON, ImageOverlay, ScaleControl, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -7,7 +7,7 @@ import { ZoneExtraction } from '../lib/zones';
 import { polygonLabel } from '../lib/polygon-source';
 import { RasterLayer } from '../types';
 import SceneTimeline from './SceneTimeline';
-import { Eye, EyeOff, Square } from 'lucide-react';
+import { Activity, Eye, EyeOff, Square } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 /**
@@ -33,6 +33,8 @@ interface MapPanelProps {
   previewSceneId: string | null;
   onPreviewScene: (id: string | null) => void;
   onDeleteScene: (id: string) => void;
+  /** Called with the clicked polygon while "Inspect NDVI" mode is active. */
+  onInspectPolygon: (feature: any) => void;
   /** Changes to this object trigger a fitBounds. */
   fitRequest: { bounds: Bbox; token: number } | null;
 }
@@ -198,9 +200,14 @@ const speciesColor = (crpLbl: string | undefined): string => {
   return SPECIES_COLORS[Math.abs(hash) % SPECIES_COLORS.length];
 };
 
-export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones, preview, clusterPreviews, scenes, previewSceneId, onPreviewScene, onDeleteScene, fitRequest }: MapPanelProps) {
+export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones, preview, clusterPreviews, scenes, previewSceneId, onPreviewScene, onDeleteScene, onInspectPolygon, fitRequest }: MapPanelProps) {
   const [basemap, setBasemap] = useState<BasemapKey>('dark');
   const [showZoneDots, setShowZoneDots] = useState(true);
+  const [probeMode, setProbeMode] = useState(false);
+  // Polygon click handlers are bound when the GeoJSON layer mounts; read the
+  // mode through a ref so toggling it doesn't need a layer remount.
+  const probeRef = useRef(probeMode);
+  probeRef.current = probeMode;
 
   // GeoJSON layers only restyle when remounted, so key them on their inputs.
   const polygonsKey = useMemo(
@@ -225,7 +232,10 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
     const path = layer as L.Path;
     layer.bindTooltip(polygonLabel(feature), { sticky: true, direction: 'top', opacity: 0.9 });
     layer.on({
-      click: () => onTogglePolygon(feature.properties.__pid),
+      click: () => {
+        if (probeRef.current) onInspectPolygon(feature);
+        else onTogglePolygon(feature.properties.__pid);
+      },
       mouseover: () => path.setStyle({ weight: 3.5 }),
       mouseout: () => path.setStyle(polygonStyle(feature)),
     });
@@ -261,6 +271,19 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
         <ScaleControl position="bottomleft" />
         <FitController fitRequest={fitRequest} />
         <BboxSelector polygons={polygons} onSelect={onTogglePolygon} />
+        <button
+          onClick={() => setProbeMode(p => !p)}
+          className={cn(
+            'absolute left-3 top-[5.5rem] z-[1000] flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors',
+            probeMode
+              ? 'border-emerald-400 bg-emerald-500/20 text-emerald-200'
+              : 'border-white/10 bg-[#11151acc] text-slate-300 hover:text-slate-200'
+          )}
+          title="When active, clicking a polygon shows its NDVI time series instead of selecting it"
+        >
+          <Activity className="h-3.5 w-3.5" />
+          {probeMode ? 'Click a polygon…' : 'Inspect NDVI'}
+        </button>
 
         {preview && (
           <ImageOverlay url={preview.url} bounds={preview.bounds} opacity={preview.opacity} className="pixel-perfect" />
