@@ -51,43 +51,63 @@ const speciesOf = (f: any): string | null => f?.properties?.crp_lbl ?? f?.proper
 type EdgeClass = 'edge_other_species' | 'edge_same_species' | 'edge_isolated';
 
 /**
- * Neighbour-aware classifier for edge pixels. Context polygons are indexed
- * by their bbox padded by `distance`; the +distance buffered geometry is
- * computed lazily only for polygons that pixels actually come near.
+ * A polygon's identity: the same field can be loaded several times (the
+ * neighbour-pairs query returns one row per field per pair), and a field
+ * must never count as its own neighbour.
+ */
+const featureKey = (f: any): string => String(f?.properties?.NewID ?? `pid:${f?.properties?.__pid}`);
+
+/**
+ * Edge pixels sit up to `distance` inside their own boundary, and paired
+ * fields have a boundary-to-boundary gap of ~10 m, so the neighbour search
+ * has to reach further than `distance` from the pixel.
+ */
+const NEIGHBOUR_GAP_M = 15;
+
+/**
+ * Neighbour-aware classifier for edge pixels. Context polygons are
+ * deduplicated by field identity and indexed by their padded bbox; the
+ * buffered geometry is computed lazily only for polygons that pixels
+ * actually come near.
  */
 function buildEdgeClassifier(contextFeatures: any[], distance: number) {
   const M_PER_DEG = 111_320;
+  const reach = distance + NEIGHBOUR_GAP_M;
   interface Entry {
     bbox: Bbox;
     feature: any;
-    pid: number | undefined;
+    key: string;
     species: string | null;
     buffered: any; // undefined = not yet computed, null = failed
   }
   const entries: Entry[] = [];
+  const seen = new Set<string>();
   for (const f of contextFeatures) {
+    const key = featureKey(f);
+    if (seen.has(key)) continue;
     const b = getGeoJsonBounds(f);
     if (!b) continue;
+    seen.add(key);
     const midLat = (b[1] + b[3]) / 2;
-    const dLat = distance / M_PER_DEG;
-    const dLng = distance / (M_PER_DEG * Math.max(0.2, Math.cos((midLat * Math.PI) / 180)));
+    const dLat = reach / M_PER_DEG;
+    const dLng = reach / (M_PER_DEG * Math.max(0.2, Math.cos((midLat * Math.PI) / 180)));
     entries.push({
       bbox: [b[0] - dLng, b[1] - dLat, b[2] + dLng, b[3] + dLat],
       feature: f,
-      pid: f.properties?.__pid,
+      key,
       species: speciesOf(f),
       buffered: undefined,
     });
   }
 
-  return (lng: number, lat: number, ownPid: number | undefined, ownSpecies: string | null): EdgeClass => {
+  return (lng: number, lat: number, ownKey: string, ownSpecies: string | null): EdgeClass => {
     let foundSame = false;
     for (const e of entries) {
-      if (e.pid !== undefined && e.pid === ownPid) continue;
+      if (e.key === ownKey) continue;
       if (lng < e.bbox[0] || lng > e.bbox[2] || lat < e.bbox[1] || lat > e.bbox[3]) continue;
       if (e.buffered === undefined) {
         try {
-          e.buffered = buffer(e.feature, distance, { units: 'meters' }) || null;
+          e.buffered = buffer(e.feature, reach, { units: 'meters' }) || null;
         } catch {
           e.buffered = null;
         }
@@ -124,6 +144,16 @@ export async function extractZones(
   if (features.length === 0) throw new Error('No polygons selected.');
   if (layers.length === 0) throw new Error('No imagery fetched.');
   if (distance <= 0) throw new Error('Buffer distance must be positive.');
+
+  // The pairs query loads a field once per pair it belongs to; extract each
+  // field once or its pixels would be duplicated into the PCA.
+  const seenFields = new Set<string>();
+  features = features.filter(f => {
+    const key = featureKey(f);
+    if (seenFields.has(key)) return false;
+    seenFields.add(key);
+    return true;
+  });
 
   const classifyEdge = buildEdgeClassifier(
     contextFeatures.length > 0 ? contextFeatures : features,
@@ -165,12 +195,12 @@ export async function extractZones(
       edge.push(...(outer.excludedPixelPoints?.features || []).filter(notBoundary));
     }
 
-    const pid = feature.properties?.__pid;
+    const ownKey = featureKey(feature);
     const ownSpecies = speciesOf(feature);
     for (const p of interior) p.properties.zone = 'interior';
     for (const p of edge) {
       const [lng, lat] = p.geometry.coordinates;
-      const cls = classifyEdge(lng, lat, pid, ownSpecies);
+      const cls = classifyEdge(lng, lat, ownKey, ownSpecies);
       p.properties.zone = cls;
       if (cls === 'edge_other_species') edgeCounts.other++;
       else if (cls === 'edge_same_species') edgeCounts.same++;

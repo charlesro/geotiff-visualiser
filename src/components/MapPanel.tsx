@@ -204,10 +204,13 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
   const [basemap, setBasemap] = useState<BasemapKey>('dark');
   const [showZoneDots, setShowZoneDots] = useState(true);
   const [probeMode, setProbeMode] = useState(false);
-  // Polygon click handlers are bound when the GeoJSON layer mounts; read the
-  // mode through a ref so toggling it doesn't need a layer remount.
+  // Polygon click handlers are bound when the GeoJSON layer mounts (the
+  // layer only remounts when polygons/selection change); read the mode and
+  // the callbacks through refs so the bound handlers never go stale.
   const probeRef = useRef(probeMode);
   probeRef.current = probeMode;
+  const handlersRef = useRef({ onTogglePolygon, onInspectPolygon });
+  handlersRef.current = { onTogglePolygon, onInspectPolygon };
 
   // GeoJSON layers only restyle when remounted, so key them on their inputs.
   const polygonsKey = useMemo(
@@ -233,20 +236,23 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
     layer.bindTooltip(polygonLabel(feature), { sticky: true, direction: 'top', opacity: 0.9 });
     layer.on({
       click: () => {
-        if (probeRef.current) onInspectPolygon(feature);
-        else onTogglePolygon(feature.properties.__pid);
+        if (probeRef.current) handlersRef.current.onInspectPolygon(feature);
+        else handlersRef.current.onTogglePolygon(feature.properties.__pid);
       },
       mouseover: () => path.setStyle({ weight: 3.5 }),
       mouseout: () => path.setStyle(polygonStyle(feature)),
     });
   };
 
+  // interactive: false — the dots must not swallow clicks meant for the
+  // polygons underneath (selection and the NDVI inspector).
   const pixelToMarker = (feature: any, latlng: L.LatLng) =>
     L.circleMarker(latlng, {
       radius: 3,
       stroke: false,
       fillColor: ZONE_COLORS[feature.properties?.zone] || '#94a3b8',
       fillOpacity: 0.85,
+      interactive: false,
     });
 
   const boundaryStyle = {
@@ -304,7 +310,12 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
                 <GeoJSON key={`zone-interior-${zonesKey}`} data={zones.interior} pointToLayer={pixelToMarker} />
               </>
             )}
-            <GeoJSON key={`zone-boundaries-${zonesKey}`} data={zones.boundaries} style={boundaryStyle} />
+            <GeoJSON
+              key={`zone-boundaries-${zonesKey}`}
+              data={zones.boundaries}
+              style={boundaryStyle}
+              interactive={false}
+            />
           </>
         )}
       </MapContainer>
