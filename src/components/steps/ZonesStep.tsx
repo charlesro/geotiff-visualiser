@@ -134,10 +134,13 @@ export default function ZonesStep(props: ZonesStepProps) {
           </div>
           {props.zones.unmixing && props.zones.unmixing.count > 0 && (
             <p className="text-[11px] leading-relaxed text-slate-500">
-              Mixing fraction estimated for {props.zones.unmixing.count} edge-other pixels — mean{' '}
-              <span className="text-slate-300">{(props.zones.unmixing.meanFraction * 100).toFixed(0)}% own field</span>.
-              Colour them on the map (legend toggle) or in the PCA scatter (Colour → mixing fraction); the fraction is
-              in the CSV export.
+              Species mix estimated for {props.zones.unmixing.count} edge-other pixels — mean{' '}
+              <span className="text-slate-300">
+                {(props.zones.unmixing.meanFractionA * 100).toFixed(0)}% {props.zones.unmixing.speciesA}
+              </span>{' '}
+              / {(100 - props.zones.unmixing.meanFractionA * 100).toFixed(0)}% {props.zones.unmixing.speciesB}. Colour
+              them on the map (legend toggle) or in the PCA scatter (Colour → species mix); the proportions are in the
+              CSV export.
             </p>
           )}
           <div className="max-h-36 overflow-y-auto rounded-md border border-white/10">

@@ -19,7 +19,7 @@ import {
 import { PcaRunResult } from '../lib/pca';
 import { PixelZone } from '../lib/zones';
 import { CLUSTER_COLORS, fieldKeyOf } from '../lib/species-clusters';
-import { mixHexColors, MIX_LOW, MIX_HIGH } from '../lib/unmix';
+import { mixHexColors } from '../lib/unmix';
 import { speciesColor } from './MapPanel';
 import { cn } from '../lib/utils';
 
@@ -54,7 +54,7 @@ const ATTR_LABEL: Record<Attr, string> = {
   scenario: 'scenario',
   field: 'field',
   pair: 'pair',
-  mixing: 'mixing fraction',
+  mixing: 'species mix',
 };
 
 /** Keep the scatter responsive — evenly sampled above this. */
@@ -105,7 +105,12 @@ export default function PcaPanel({
   const [shapeBy, setShapeBy] = useState<Attr | 'none'>('species');
 
   const hasPairs = useMemo(() => result.rows.some(r => r.properties?.pair_id != null), [result]);
-  const hasMixing = useMemo(() => result.rows.some(r => typeof r.properties?.mix_fraction === 'number'), [result]);
+  const hasMixing = useMemo(() => result.rows.some(r => typeof r.properties?.mix_frac_a === 'number'), [result]);
+  // The two species defining the mix axis (from any unmixed pixel).
+  const mixAxis = useMemo(() => {
+    const r = result.rows.find(r => typeof r.properties?.mix_frac_a === 'number');
+    return r ? { a: String(r.properties.mix_a_species), b: String(r.properties.mix_b_species) } : null;
+  }, [result]);
   const attrOptions = useMemo(() => {
     const opts: Attr[] = ['zone', 'species'];
     if (clusterAssignment) opts.push('scenario');
@@ -184,8 +189,11 @@ export default function PcaPanel({
       // fraction (interior, isolated…) stay muted so the mixed ones stand out.
       let color: string;
       if (colorBy === 'mixing') {
-        const frac = row.properties?.mix_fraction;
-        color = typeof frac === 'number' ? mixHexColors(MIX_LOW, MIX_HIGH, frac) : '#334155';
+        const frac = row.properties?.mix_frac_a;
+        color =
+          typeof frac === 'number' && mixAxis
+            ? mixHexColors(speciesColor(mixAxis.b), speciesColor(mixAxis.a), frac)
+            : '#334155';
       } else {
         color = colorOf(colorBy, cv, colorIdx.get(cv) ?? 0);
       }
@@ -198,7 +206,7 @@ export default function PcaPanel({
         row,
       };
     });
-  }, [result, pcX, pcY, colorBy, shapeBy, colorCats, shapeCats, attrValue]);
+  }, [result, pcX, pcY, colorBy, shapeBy, colorCats, shapeCats, attrValue, mixAxis]);
 
   const pick = (p: (typeof points)[number]) => {
     if (highlightPixelId === p.pixelId) onPickPixel(null);
@@ -471,11 +479,18 @@ export default function PcaPanel({
             {/* Colour legend */}
             {colorBy === 'mixing' ? (
               <div className="mt-2 text-[11px] text-slate-400">
-                <span className="mr-2 font-medium uppercase tracking-wide text-slate-600">mixing fraction</span>
+                <span className="mr-2 font-medium uppercase tracking-wide text-slate-600">species mix</span>
                 <div className="mt-1 flex items-center gap-2">
-                  <span className="text-[10px]">neighbour</span>
-                  <div className="h-2 flex-1 rounded" style={{ background: `linear-gradient(to right, ${MIX_LOW}, ${MIX_HIGH})` }} />
-                  <span className="text-[10px]">own field</span>
+                  <span className="text-[10px]">{mixAxis?.b}</span>
+                  <div
+                    className="h-2 flex-1 rounded"
+                    style={{
+                      background: mixAxis
+                        ? `linear-gradient(to right, ${speciesColor(mixAxis.b)}, ${speciesColor(mixAxis.a)})`
+                        : undefined,
+                    }}
+                  />
+                  <span className="text-[10px]">{mixAxis?.a}</span>
                 </div>
                 <div className="mt-0.5 text-[10px] text-slate-600">
                   edge-other pixels only; interior / isolated / same-species shown muted
@@ -537,10 +552,10 @@ export default function PcaPanel({
                   <span>
                     {pickedRow.lat.toFixed(5)}, {pickedRow.lng.toFixed(5)}
                   </span>
-                  {typeof pickedRow.properties?.mix_fraction === 'number' && (
+                  {typeof pickedRow.properties?.mix_frac_a === 'number' && (
                     <span className="col-span-2 text-slate-300">
-                      mixing: {(pickedRow.properties.mix_fraction * 100).toFixed(0)}% own field ·{' '}
-                      {((1 - pickedRow.properties.mix_fraction) * 100).toFixed(0)}% {pickedRow.properties.mix_partner}
+                      mix: {(pickedRow.properties.mix_frac_a * 100).toFixed(0)}% {pickedRow.properties.mix_a_species} ·{' '}
+                      {((1 - pickedRow.properties.mix_frac_a) * 100).toFixed(0)}% {pickedRow.properties.mix_b_species}
                     </span>
                   )}
                   <span className="col-span-2">

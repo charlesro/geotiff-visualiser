@@ -185,20 +185,24 @@ export function runPixelPca(pixelFeatures: any[], metric: string, options: PcaFi
 
 /** Serialize PCA scores to CSV for downstream analysis (R, Python…). */
 export function pcaScoresToCsv(result: PcaRunResult): string {
+  // Species-mix columns: name the axis species from the first unmixed pixel.
+  const axisRow = result.rows.find(r => typeof r.properties?.mix_frac_a === 'number');
+  const spA = axisRow?.properties?.mix_a_species ?? 'A';
+  const spB = axisRow?.properties?.mix_b_species ?? 'B';
   const header = [
     'pixel_id',
     'polygon_id',
     'zone',
     'lng',
     'lat',
-    'mix_fraction_own',
-    'mix_partner',
+    `frac_${spA}`,
+    `frac_${spB}`,
     'mix_residual',
     ...result.explained.map((_, i) => `PC${i + 1}`),
   ];
   const lines = [header.join(',')];
   for (const row of result.rows) {
-    const mf = row.properties?.mix_fraction;
+    const fa = row.properties?.mix_frac_a;
     lines.push(
       [
         row.pixelId,
@@ -206,8 +210,8 @@ export function pcaScoresToCsv(result: PcaRunResult): string {
         row.zone,
         row.lng.toFixed(6),
         row.lat.toFixed(6),
-        typeof mf === 'number' ? mf.toFixed(4) : '',
-        row.properties?.mix_partner ?? '',
+        typeof fa === 'number' ? fa.toFixed(4) : '',
+        typeof fa === 'number' ? (1 - fa).toFixed(4) : '',
         typeof row.properties?.mix_residual === 'number' ? row.properties.mix_residual.toFixed(4) : '',
         ...row.scores.map(s => s.toFixed(6)),
       ].join(',')

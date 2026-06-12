@@ -1,26 +1,28 @@
 import { PixelZone, ZoneExtraction, featureKey } from './zones';
 
 /**
- * Linear spectral unmixing of the mixed boundary pixels.
+ * Linear spectral unmixing of the mixed boundary pixels, in species terms.
  *
  * A pixel straddling the boundary between two crops is a spatial mixture of
  * the two surfaces. Modelled linearly over the time series:
  *
  *   pixel ≈ α · ownEndmember + (1 − α) · partnerEndmember
  *
- * where α ∈ [0, 1] is the fraction of the pixel's own field. The endmembers
- * are the "pure" signatures from the interior pixels:
+ * solved by constrained least squares (closed form, α ∈ [0, 1]). The
+ * endmembers are the "pure" signatures from the interior pixels:
  *   - own:     the pixel's own field interior mean (falls back to the own
  *              species' global interior mean when the field has too little
  *              interior — e.g. narrow fields)
  *   - partner: a neighbouring species' global interior mean; with more than
  *              two species the partner is the one giving the best fit
  *
- * α is solved by constrained least squares (closed form, clamped to [0, 1])
- * and written onto the pixel feature as `mix_fraction` (own), `mix_partner`
- * (species) and `mix_residual` (normalised goodness of fit). Only
- * edge_other_species pixels are unmixed — the only class that is genuinely a
- * mixture of two different signals.
+ * The result is expressed as a SPECIES proportion on a fixed global axis
+ * (species A vs species B, the two most abundant species), so the same
+ * boundary reads the same whichever field's pixel you look at — unlike an
+ * own/neighbour fraction, which flips between the two fields of a pair. Each
+ * pixel gets `mix_frac_a` (proportion of species A), `mix_a_species`,
+ * `mix_b_species` and `mix_residual`. Only edge_other_species pixels are
+ * unmixed — the only class that is genuinely a two-species mixture.
  */
 
 /** A field needs at least this many interior pixels to be its own endmember. */
@@ -31,11 +33,14 @@ const speciesOfProps = (p: any): string => String(p?.crp_lbl ?? p?.species ?? 'u
 export interface UnmixingSummary {
   /** Edge_other_species pixels that were successfully unmixed. */
   count: number;
-  /** Mean own-field fraction across them. */
-  meanFraction: number;
-  /** 10-bin histogram of the own fraction (0–0.1 … 0.9–1.0). */
+  /** The two species defining the proportion axis (A = high end). */
+  speciesA: string;
+  speciesB: string;
+  /** Mean proportion of species A across the unmixed pixels. */
+  meanFractionA: number;
+  /** 10-bin histogram of the species-A proportion (0–0.1 … 0.9–1.0). */
   histogram: number[];
-  /** Pixels skipped (incomplete series or no usable endmember pair). */
+  /** Pixels skipped (incomplete series, no usable endmember, off-axis species). */
   skipped: number;
 }
 
@@ -79,18 +84,23 @@ export function computeUnmixing(zones: ZoneExtraction): UnmixingSummary {
   const speciesMean = new Map<string, number[]>();
   for (const [k, rows] of speciesRows) speciesMean.set(k, meanRows(rows));
 
+  // Fixed proportion axis: the two most abundant species (by interior pixels).
+  const ranked = Array.from(speciesRows.entries()).sort((a, b) => b[1].length - a[1].length).map(e => e[0]);
+  const speciesA = ranked[0] ?? 'A';
+  const speciesB = ranked[1] ?? ranked[0] ?? 'B';
+
   const histogram = new Array(10).fill(0);
   let count = 0;
   let skipped = 0;
-  let fracSum = 0;
+  let fracSumA = 0;
 
   for (const f of zones.edge.features) {
     const props = f.properties;
     if (props?.zone !== 'edge_other_species') {
-      // Not a two-species mixture — clear any stale value.
       if (props) {
-        delete props.mix_fraction;
-        delete props.mix_partner;
+        delete props.mix_frac_a;
+        delete props.mix_a_species;
+        delete props.mix_b_species;
         delete props.mix_residual;
       }
       continue;
@@ -115,15 +125,26 @@ export function computeUnmixing(zones: ZoneExtraction): UnmixingSummary {
       continue;
     }
 
-    props.mix_fraction = best.alpha;
-    props.mix_partner = best.partner;
+    // Convert the own-fraction to the proportion of species A. Defined only
+    // when the pixel's two species are exactly the axis pair.
+    let fracA: number | null = null;
+    if (ownSp === speciesA) fracA = best.alpha;
+    else if (best.partner === speciesA) fracA = 1 - best.alpha;
+    if (fracA === null) {
+      skipped++;
+      continue;
+    }
+
+    props.mix_frac_a = fracA;
+    props.mix_a_species = speciesA;
+    props.mix_b_species = speciesB;
     props.mix_residual = best.resid;
-    fracSum += best.alpha;
-    histogram[Math.min(9, Math.floor(best.alpha * 10))]++;
+    fracSumA += fracA;
+    histogram[Math.min(9, Math.floor(fracA * 10))]++;
     count++;
   }
 
-  return { count, meanFraction: count > 0 ? fracSum / count : 0, histogram, skipped };
+  return { count, speciesA, speciesB, meanFractionA: count > 0 ? fracSumA / count : 0, histogram, skipped };
 }
 
 /** Closed-form constrained least squares for p ≈ α·A + (1−α)·B, α∈[0,1]. */
@@ -160,7 +181,3 @@ export function mixHexColors(c0: string, c1: string, t: number): string {
 }
 
 export const UNMIXED_ZONES: PixelZone[] = ['edge_other_species'];
-
-/** Sequential colour scale for the own-field fraction: 0 (neighbour) → 1 (own). */
-export const MIX_LOW = '#a855f7';
-export const MIX_HIGH = '#facc15';

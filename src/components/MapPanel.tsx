@@ -7,7 +7,7 @@ import { ZoneExtraction } from '../lib/zones';
 import { polygonLabel } from '../lib/polygon-source';
 import { NdviPixel } from '../lib/ndvi-series';
 import { CLUSTER_COLORS, fieldKeyOf } from '../lib/species-clusters';
-import { mixHexColors, MIX_LOW, MIX_HIGH } from '../lib/unmix';
+import { mixHexColors } from '../lib/unmix';
 import { RasterLayer } from '../types';
 import SceneTimeline from './SceneTimeline';
 import { Activity, Eye, EyeOff, Square } from 'lucide-react';
@@ -277,10 +277,10 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
   const pixelToMarker = (feature: any, latlng: L.LatLng) => {
     const props = feature.properties || {};
     let fill = ZONE_COLORS[props.zone] || '#94a3b8';
-    // Mixing view: a sequential scale on the own-field fraction —
-    // all-neighbour (0) → all-own (1).
-    if (showMixing && props.zone === 'edge_other_species' && typeof props.mix_fraction === 'number') {
-      fill = mixHexColors(MIX_LOW, MIX_HIGH, props.mix_fraction);
+    // Mixing view: blend the two species' own colours by the species-A
+    // proportion (B at 0 → A at 1).
+    if (showMixing && props.zone === 'edge_other_species' && typeof props.mix_frac_a === 'number') {
+      fill = mixHexColors(speciesColor(props.mix_b_species), speciesColor(props.mix_a_species), props.mix_frac_a);
     }
     return L.circleMarker(latlng, {
       radius: 3,
@@ -480,16 +480,20 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
                   onChange={e => setShowMixing(e.target.checked)}
                   className="accent-sky-500"
                 />
-                <span className="font-medium text-slate-200">Mixing fraction</span>
+                <span className="font-medium text-slate-200">Species mix</span>
                 <span className="text-slate-500">({zones.unmixing!.count} px)</span>
               </label>
               {showMixing && (
                 <div className="mt-1.5">
-                  <div className="h-2 w-full rounded" style={{ background: `linear-gradient(to right, ${MIX_LOW}, ${MIX_HIGH})` }} />
+                  <div
+                    className="h-2 w-full rounded"
+                    style={{
+                      background: `linear-gradient(to right, ${speciesColor(zones.unmixing!.speciesB)}, ${speciesColor(zones.unmixing!.speciesA)})`,
+                    }}
+                  />
                   <div className="mt-0.5 flex justify-between text-[10px] text-slate-500">
-                    <span>0 · neighbour</span>
-                    <span>mean {(zones.unmixing!.meanFraction * 100).toFixed(0)}%</span>
-                    <span>own · 1</span>
+                    <span>{zones.unmixing!.speciesB}</span>
+                    <span>{zones.unmixing!.speciesA}</span>
                   </div>
                 </div>
               )}
