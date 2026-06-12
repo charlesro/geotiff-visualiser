@@ -301,8 +301,13 @@ export async function extractZones(
       const id = p.properties?.id;
       if (id && seenGapIds.has(id)) continue;
       const [lng, lat] = p.geometry.coordinates;
-      const reach = distToBoundaryM(lng, lat, ownRings) + neighbourGap;
-      const cls = classifyGap(lng, lat, ownKey, ownSpecies, reach);
+      // Same corridor rule as the inside-edge classes: the pixel is kept
+      // only when the strip it sits in — own boundary distance + distance
+      // to the facing field — is narrower than the neighbour gap. Anything
+      // wider (wedges at corners, open land) is not a between-fields gap.
+      const budget = neighbourGap - distToBoundaryM(lng, lat, ownRings);
+      if (budget <= 0) continue;
+      const cls = classifyGap(lng, lat, ownKey, ownSpecies, budget);
       if (!cls) continue; // not a gap pixel: inside a field, or nothing across
       if (id) seenGapIds.add(id);
       p.properties.zone = cls;

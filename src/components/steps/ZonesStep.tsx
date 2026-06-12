@@ -87,7 +87,8 @@ export default function ZonesStep(props: ZonesStepProps) {
         An edge pixel takes a neighbour's class only when that field lies directly across the boundary: closer to the
         pixel than its own boundary distance + {neighbourGap} m. Fields across wider gaps (a road…) leave the pixel{' '}
         <span className="text-slate-400">isolated</span>. Pixels in the open gap <em>between</em> two facing fields
-        (inside neither polygon) are included as edge pixels too, classified by the field across.
+        (inside neither polygon) are included as edge pixels too, classified by the field across — but only where the
+        corridor is narrower than {neighbourGap} m, so wedges at corners and open land stay out.
       </p>
 
       <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-400">
