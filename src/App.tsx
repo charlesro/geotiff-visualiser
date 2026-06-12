@@ -378,6 +378,11 @@ export default function App() {
     [scenes]
   );
 
+  /** Map pixel-marker click → toggle that pixel's curve highlight. */
+  const pickPixel = useCallback((pixel: NdviPixel) => {
+    setHighlightPixel(prev => (prev?.id === pixel.id ? null : pixel));
+  }, []);
+
   // ----- Step 4 handlers -----------------------------------------------------
 
   const runPca = useCallback(async () => {
@@ -548,7 +553,9 @@ export default function App() {
             onPreviewScene={setPreviewSceneId}
             onDeleteScene={deleteScene}
             onInspectPolygon={inspectNdvi}
+            inspectPixels={ndviInspection?.pixels ?? null}
             highlightPixel={highlightPixel}
+            onPickPixel={pickPixel}
             fitRequest={fitRequest}
           />
           <NdviPanel
@@ -557,6 +564,7 @@ export default function App() {
             error={ndviError}
             onClose={closeNdvi}
             onSelectDate={previewDate}
+            highlightPixel={highlightPixel}
             onHighlightPixel={setHighlightPixel}
           />
           {showPcaPanel && pcaResult && (

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { X, Loader2 } from 'lucide-react';
 import {
   LineChart,
@@ -16,8 +16,8 @@ import { cn } from '../lib/utils';
 /**
  * Floating panel showing the NDVI time series of one inspected polygon —
  * either the mean per pixel zone or one curve per pixel. Clicking a date
- * previews that scene on the map; clicking a pixel curve highlights the
- * pixel on the map.
+ * previews that scene on the map; pixel curves and the map's pixel markers
+ * select each other; the zone chips highlight a whole category.
  */
 
 const ZONE_STYLE: { key: string; label: string; color: string }[] = [
@@ -39,21 +39,42 @@ interface NdviPanelProps {
   onClose: () => void;
   /** Clicking a date on the chart previews that scene on the map. */
   onSelectDate: (date: string) => void;
-  /** Clicking a pixel curve highlights that pixel on the map (null clears). */
+  /** The pixel selected in the chart or on the map (shared with the map). */
+  highlightPixel: NdviPixel | null;
   onHighlightPixel: (pixel: NdviPixel | null) => void;
 }
 
-export default function NdviPanel({ inspection, busy, error, onClose, onSelectDate, onHighlightPixel }: NdviPanelProps) {
+export default function NdviPanel({
+  inspection,
+  busy,
+  error,
+  onClose,
+  onSelectDate,
+  highlightPixel,
+  onHighlightPixel,
+}: NdviPanelProps) {
   const [mode, setMode] = useState<'mean' | 'pixels'>('mean');
-  const [selectedPixelId, setSelectedPixelId] = useState<string | null>(null);
+  const [selectedZone, setSelectedZone] = useState<string | null>(null);
+  const selectedPixelId = highlightPixel?.id ?? null;
 
-  // Evenly sampled subset when there are too many pixels to draw.
+  // A pixel picked on the map should be visible: jump to the pixels chart.
+  useEffect(() => {
+    if (highlightPixel) setMode('pixels');
+  }, [highlightPixel]);
+
+  // Evenly sampled subset when there are too many pixels to draw. The
+  // selected pixel is always included.
   const shownPixels = useMemo(() => {
     const all = inspection?.pixels || [];
     if (all.length <= MAX_PIXEL_LINES) return all;
     const step = all.length / MAX_PIXEL_LINES;
-    return Array.from({ length: MAX_PIXEL_LINES }, (_, i) => all[Math.floor(i * step)]);
-  }, [inspection]);
+    const sampled = Array.from({ length: MAX_PIXEL_LINES }, (_, i) => all[Math.floor(i * step)]);
+    if (selectedPixelId && !sampled.some(p => p.id === selectedPixelId)) {
+      const sel = all.find(p => p.id === selectedPixelId);
+      if (sel) sampled.push(sel);
+    }
+    return sampled;
+  }, [inspection, selectedPixelId]);
 
   const pixelData = useMemo(() => {
     if (!inspection) return [];
@@ -69,19 +90,33 @@ export default function NdviPanel({ inspection, busy, error, onClose, onSelectDa
   if (!inspection && !busy && !error) return null;
 
   const pickPixel = (p: NdviPixel) => {
-    const next = selectedPixelId === p.id ? null : p.id;
-    setSelectedPixelId(next);
-    onHighlightPixel(next ? p : null);
+    setSelectedZone(null);
+    onHighlightPixel(selectedPixelId === p.id ? null : p);
+  };
+
+  const pickZone = (zone: string) => {
+    onHighlightPixel(null);
+    setSelectedZone(prev => (prev === zone ? null : zone));
   };
 
   const close = () => {
-    setSelectedPixelId(null);
+    setSelectedZone(null);
     onHighlightPixel(null);
     onClose();
   };
 
   const chartClick = (state: any) => {
     if (state?.activeLabel) onSelectDate(String(state.activeLabel));
+  };
+
+  const lineStyle = (p: NdviPixel): { width: number; opacity: number } => {
+    if (selectedPixelId) {
+      return p.id === selectedPixelId ? { width: 2.5, opacity: 1 } : { width: 1, opacity: 0.08 };
+    }
+    if (selectedZone) {
+      return p.zone === selectedZone ? { width: 1.6, opacity: 0.9 } : { width: 1, opacity: 0.06 };
+    }
+    return { width: 1, opacity: 0.35 };
   };
 
   const axisProps = {
@@ -99,7 +134,7 @@ export default function NdviPanel({ inspection, busy, error, onClose, onSelectDa
           {inspection && !busy && (
             <div className="text-[11px] text-slate-500">
               {inspection.metric} · {inspection.distance} m split · {inspection.pixels.length} px · click a date to
-              preview it{mode === 'pixels' && ' · click a curve to locate the pixel'}
+              preview it{mode === 'pixels' && ' · click a curve or a map point to match them'}
             </div>
           )}
         </div>
@@ -172,40 +207,65 @@ export default function NdviPanel({ inspection, busy, error, onClose, onSelectDa
                 <CartesianGrid stroke="#ffffff14" strokeDasharray="3 3" />
                 <XAxis dataKey="date" tickFormatter={(d: string) => d.slice(5)} {...axisProps} />
                 <YAxis domain={[-0.2, 1]} {...axisProps} />
-                <Tooltip
-                  content={() => null}
-                  cursor={{ stroke: '#ffffff33' }}
-                />
+                <Tooltip content={() => null} cursor={{ stroke: '#ffffff33' }} />
                 {shownPixels.map(p => {
-                  const selected = selectedPixelId === p.id;
-                  const dimmed = selectedPixelId !== null && !selected;
+                  const s = lineStyle(p);
                   return (
                     <Line
                       key={p.id}
                       type="monotone"
                       dataKey={p.id}
                       stroke={ZONE_COLOR[p.zone]}
-                      strokeWidth={selected ? 2.5 : 1}
-                      strokeOpacity={selected ? 1 : dimmed ? 0.08 : 0.35}
+                      strokeWidth={s.width}
+                      strokeOpacity={s.opacity}
                       dot={false}
                       activeDot={false}
                       connectNulls
                       isAnimationActive={false}
-                      onClick={() => pickPixel(p)}
-                      style={{ cursor: 'pointer' }}
                     />
                   );
                 })}
+                {/* Invisible wide strokes on top: the actual click targets —
+                    a 1 px line is impossible to hit. */}
+                {shownPixels.map(p => (
+                  <Line
+                    key={`${p.id}__hit`}
+                    type="monotone"
+                    dataKey={p.id}
+                    stroke={ZONE_COLOR[p.zone]}
+                    strokeWidth={14}
+                    strokeOpacity={0}
+                    dot={false}
+                    activeDot={false}
+                    connectNulls
+                    isAnimationActive={false}
+                    onClick={() => pickPixel(p)}
+                    style={{ cursor: 'pointer' }}
+                  />
+                ))}
               </LineChart>
             </ResponsiveContainer>
           </div>
-          <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-slate-500">
-            {ZONE_STYLE.map(z => (
-              <span key={z.key} className="flex items-center gap-1">
-                <span className="h-1.5 w-3 rounded-full" style={{ background: z.color }} />
-                {z.label}
-              </span>
-            ))}
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px]">
+            {ZONE_STYLE.map(z => {
+              const active = selectedZone === z.key;
+              return (
+                <button
+                  key={z.key}
+                  onClick={() => pickZone(z.key)}
+                  className={cn(
+                    'flex items-center gap-1 rounded-full border px-1.5 py-0.5 transition-colors',
+                    active
+                      ? 'border-white/40 bg-white/10 text-slate-200'
+                      : 'border-transparent text-slate-500 hover:text-slate-300'
+                  )}
+                  title="Highlight all curves of this category"
+                >
+                  <span className="h-1.5 w-3 rounded-full" style={{ background: z.color }} />
+                  {z.label}
+                </button>
+              );
+            })}
             {inspection.pixels.length > MAX_PIXEL_LINES && (
               <span className="text-slate-600">showing {MAX_PIXEL_LINES} of {inspection.pixels.length} px</span>
             )}

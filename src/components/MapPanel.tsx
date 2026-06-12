@@ -5,6 +5,7 @@ import 'leaflet/dist/leaflet.css';
 import { Bbox } from '../lib/geo';
 import { ZoneExtraction } from '../lib/zones';
 import { polygonLabel } from '../lib/polygon-source';
+import { NdviPixel } from '../lib/ndvi-series';
 import { RasterLayer } from '../types';
 import SceneTimeline from './SceneTimeline';
 import { Activity, Eye, EyeOff, Square } from 'lucide-react';
@@ -35,8 +36,11 @@ interface MapPanelProps {
   onDeleteScene: (id: string) => void;
   /** Called with the clicked polygon while "Inspect NDVI" mode is active. */
   onInspectPolygon: (feature: any) => void;
-  /** Pixel picked in the NDVI panel, marked with a white ring. */
-  highlightPixel: { lng: number; lat: number } | null;
+  /** Pixels of the polygon open in the NDVI inspector — clickable markers. */
+  inspectPixels: NdviPixel[] | null;
+  /** Pixel picked in the NDVI panel or on the map, marked with a white ring. */
+  highlightPixel: { id?: string; lng: number; lat: number } | null;
+  onPickPixel: (pixel: NdviPixel) => void;
   /** Changes to this object trigger a fitBounds. */
   fitRequest: { bounds: Bbox; token: number } | null;
 }
@@ -202,7 +206,7 @@ const speciesColor = (crpLbl: string | undefined): string => {
   return SPECIES_COLORS[Math.abs(hash) % SPECIES_COLORS.length];
 };
 
-export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones, preview, clusterPreviews, scenes, previewSceneId, onPreviewScene, onDeleteScene, onInspectPolygon, highlightPixel, fitRequest }: MapPanelProps) {
+export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones, preview, clusterPreviews, scenes, previewSceneId, onPreviewScene, onDeleteScene, onInspectPolygon, inspectPixels, highlightPixel, onPickPixel, fitRequest }: MapPanelProps) {
   const [basemap, setBasemap] = useState<BasemapKey>('dark');
   const [showZoneDots, setShowZoneDots] = useState(true);
   const [probeMode, setProbeMode] = useState(false);
@@ -335,10 +339,28 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, zones
           </>
         )}
 
+        {/* Pixels of the inspected polygon: click one to highlight its curve. */}
+        {inspectPixels?.map(p => {
+          const selected = highlightPixel?.id === p.id;
+          return (
+            <CircleMarker
+              key={p.id}
+              center={[p.lat, p.lng]}
+              radius={selected ? 6.5 : 4.5}
+              pathOptions={{
+                color: selected ? '#ffffff' : '#0b0e11',
+                weight: selected ? 2.5 : 1,
+                fillColor: ZONE_COLORS[p.zone] || '#94a3b8',
+                fillOpacity: 0.95,
+              }}
+              eventHandlers={{ click: () => onPickPixel(p) }}
+            />
+          );
+        })}
         {highlightPixel && (
           <CircleMarker
             center={[highlightPixel.lat, highlightPixel.lng]}
-            radius={9}
+            radius={10}
             pathOptions={{ color: '#ffffff', weight: 2.5, fill: false }}
             interactive={false}
           />
