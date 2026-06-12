@@ -8,7 +8,27 @@ import { PixelZone } from './zones';
  * acquisition date (properties following the `<metric>_<date>` convention,
  * see lib/timeseries.ts). Pixels missing values on the retained dates are
  * dropped so the matrix is complete.
+ *
+ * Fitting and projection are decoupled: the axes are computed from the
+ * pixels of the `fitZones` classes only, and the pixels of the
+ * `projectZones` classes are then placed in that space (using the fit's
+ * centering). E.g. fit on interior pixels and project the edge pixels to see
+ * how the edges deviate from the pure within-field signal.
  */
+
+export const ALL_PIXEL_ZONES: PixelZone[] = [
+  'interior',
+  'edge_other_species',
+  'edge_same_species',
+  'edge_isolated',
+];
+
+export interface PcaFitOptions {
+  /** Classes whose pixels define the principal axes. Default: all. */
+  fitZones?: PixelZone[];
+  /** Classes projected (displayed) in the fitted space. Default: all. */
+  projectZones?: PixelZone[];
+}
 
 export interface PcaPixelScore {
   pixelId: string;
@@ -32,21 +52,39 @@ export interface PcaRunResult {
   metric: string;
   components: number;
   droppedPixels: number;
+  /** Classes the axes were fit on, and how many pixels entered the fit. */
+  fitZones: PixelZone[];
+  projectZones: PixelZone[];
+  fitCount: number;
 }
 
 /** Keep dates observed on at least this fraction of pixels. */
 const DATE_COVERAGE_THRESHOLD = 0.8;
 
-export function runPixelPca(pixelFeatures: any[], metric: string): PcaRunResult {
+const zoneOf = (p: any): PixelZone => (p.properties?.zone as PixelZone) || 'interior';
+
+export function runPixelPca(pixelFeatures: any[], metric: string, options: PcaFitOptions = {}): PcaRunResult {
+  const fitZones = options.fitZones?.length ? options.fitZones : ALL_PIXEL_ZONES;
+  const projectZones = options.projectZones?.length ? options.projectZones : ALL_PIXEL_ZONES;
+  const fitSet = new Set<PixelZone>(fitZones);
+  const projectSet = new Set<PixelZone>(projectZones);
+
   const pixels = pixelFeatures.filter(f => f.geometry?.type === 'Point' && f.properties?.id);
-  if (pixels.length < 10) {
-    throw new Error(`Only ${pixels.length} pixels available — too few for a meaningful PCA.`);
+  const fitPixels = pixels.filter(p => fitSet.has(zoneOf(p)));
+  const projectPixels = pixels.filter(p => projectSet.has(zoneOf(p)));
+  if (fitPixels.length < 10) {
+    throw new Error(
+      `Only ${fitPixels.length} pixels in the fit classes — too few to fit the axes. Add classes or fields.`
+    );
+  }
+  if (projectPixels.length === 0) {
+    throw new Error('No pixels in the projected classes — tick at least one class to place in the space.');
   }
 
-  // Collect candidate dates and their coverage across pixels.
+  // Candidate dates and their coverage across the fit pixels (the model).
   const prefix = `${metric}_`;
   const dateCounts = new Map<string, number>();
-  for (const p of pixels) {
+  for (const p of fitPixels) {
     for (const key of Object.keys(p.properties)) {
       if (key.startsWith(prefix)) {
         const value = p.properties[key];
@@ -59,45 +97,56 @@ export function runPixelPca(pixelFeatures: any[], metric: string): PcaRunResult 
   }
 
   const dates = Array.from(dateCounts.entries())
-    .filter(([, count]) => count >= pixels.length * DATE_COVERAGE_THRESHOLD)
+    .filter(([, count]) => count >= fitPixels.length * DATE_COVERAGE_THRESHOLD)
     .map(([date]) => date)
     .sort();
 
   if (dates.length < 3) {
     throw new Error(
-      `Only ${dates.length} usable acquisition date(s) across the pixel set — at least 3 are needed. Fetch more scenes or relax the cloud-cover limit.`
+      `Only ${dates.length} usable acquisition date(s) across the fit pixels — at least 3 are needed. Fetch more scenes or relax the cloud-cover limit.`
     );
   }
 
-  // Complete-case matrix: drop pixels missing any retained date.
-  const matrix: number[][] = [];
-  const kept: any[] = [];
-  for (const p of pixels) {
+  // Complete-case rows over the retained dates.
+  const completeRow = (p: any): number[] | null => {
     const row: number[] = [];
-    let complete = true;
     for (const date of dates) {
       const value = p.properties[prefix + date];
-      if (typeof value !== 'number' || !isFinite(value)) {
-        complete = false;
-        break;
-      }
+      if (typeof value !== 'number' || !isFinite(value)) return null;
       row.push(value);
     }
-    if (complete) {
-      matrix.push(row);
+    return row;
+  };
+
+  const fitMatrix: number[][] = [];
+  for (const p of fitPixels) {
+    const row = completeRow(p);
+    if (row) fitMatrix.push(row);
+  }
+  if (fitMatrix.length < 10) {
+    throw new Error(
+      `Only ${fitMatrix.length} fit pixels have complete time series over the ${dates.length} retained dates. Fetch less cloudy scenes.`
+    );
+  }
+
+  const projMatrix: number[][] = [];
+  const kept: any[] = [];
+  for (const p of projectPixels) {
+    const row = completeRow(p);
+    if (row) {
+      projMatrix.push(row);
       kept.push(p);
     }
   }
-
-  if (matrix.length < 10) {
-    throw new Error(
-      `Only ${matrix.length} pixels have complete time series over the ${dates.length} retained dates. Fetch less cloudy scenes.`
-    );
+  if (kept.length === 0) {
+    throw new Error('No pixel of the projected classes has a complete series over the retained dates.');
   }
 
   const components = Math.min(3, dates.length);
-  const pca = new PCA(matrix, { center: true, scale: false });
-  const projected = pca.predict(matrix, { nComponents: components }).to2DArray();
+  // Fit on the fit classes only; predict() centers new data with the fit's
+  // means, so projected pixels land in the same space.
+  const pca = new PCA(fitMatrix, { center: true, scale: false });
+  const projected = pca.predict(projMatrix, { nComponents: components }).to2DArray();
   const explainedFractions = pca.getExplainedVariance().slice(0, components);
   const explained = explainedFractions.map(v => v * 100);
   const cumulative = explained.reduce<number[]>((acc, v) => {
@@ -111,7 +160,7 @@ export function runPixelPca(pixelFeatures: any[], metric: string): PcaRunResult 
 
   const rows: PcaPixelScore[] = kept.map((p, i) => ({
     pixelId: p.properties.id,
-    zone: (p.properties.zone as PixelZone) || 'interior',
+    zone: zoneOf(p),
     polygonId: p.properties.polygon_id ?? p.properties.__pid,
     lng: p.geometry.coordinates[0],
     lat: p.geometry.coordinates[1],
@@ -127,7 +176,10 @@ export function runPixelPca(pixelFeatures: any[], metric: string): PcaRunResult 
     loadings,
     metric,
     components,
-    droppedPixels: pixels.length - kept.length,
+    droppedPixels: projectPixels.length - kept.length,
+    fitZones: Array.from(fitSet),
+    projectZones: Array.from(projectSet),
+    fitCount: fitMatrix.length,
   };
 }
 

@@ -14,9 +14,9 @@ import { fetchSentinelSeries, SeriesFetchParams, SeriesProgress } from './lib/fe
 import { clusterFeatureBboxes } from './lib/cluster';
 import { renderAnalysisGridPreview } from './lib/mosaic';
 import { DEFAULT_OPTIONS } from './lib/layer-factory';
-import { extractZones, ZoneExtraction, ZoneProgress } from './lib/zones';
+import { extractZones, PixelZone, ZoneExtraction, ZoneProgress } from './lib/zones';
 import { clusterBySpecies, SpeciesClustering, fieldKeyOf } from './lib/species-clusters';
-import { runPixelPca, pcaScoresToCsv, PcaRunResult } from './lib/pca';
+import { runPixelPca, pcaScoresToCsv, PcaRunResult, ALL_PIXEL_ZONES } from './lib/pca';
 import { isCancelledError } from './lib/cancel';
 import { DatasetDateRange } from './lib/neighbor-query';
 import MapPanel, { ScenePreview } from './components/MapPanel';
@@ -73,6 +73,10 @@ export default function App() {
 
   // Step 5 — PCA
   const [pcaScope, setPcaScope] = useState<string>(PCA_SCOPE_ALL);
+  /** Subset of extracted fields (pids) the PCA runs on; null = all. */
+  const [pcaFields, setPcaFields] = useState<Set<number> | null>(null);
+  const [pcaFitZones, setPcaFitZones] = useState<PixelZone[]>(ALL_PIXEL_ZONES);
+  const [pcaProjectZones, setPcaProjectZones] = useState<PixelZone[]>(ALL_PIXEL_ZONES);
   const [pcaResult, setPcaResult] = useState<PcaRunResult | null>(null);
   const [pcaBusy, setPcaBusy] = useState(false);
   const [pcaError, setPcaError] = useState<string | null>(null);
@@ -118,6 +122,9 @@ export default function App() {
     setClustering(null);
     setClusteringError(null);
     setPcaScope(PCA_SCOPE_ALL);
+    setPcaFields(null);
+    setPcaFitZones(ALL_PIXEL_ZONES);
+    setPcaProjectZones(ALL_PIXEL_ZONES);
     setPcaResult(null);
     setPcaError(null);
     setShowPcaPanel(false);
@@ -496,7 +503,14 @@ export default function App() {
         );
         pixels = pixels.filter(p => keys.has(fieldKeyOf(p.properties)));
       }
-      const result = runPixelPca(pixels, zones.metric);
+      // Restrict to the fields ticked in the step's field list.
+      if (pcaFields !== null) {
+        pixels = pixels.filter(p => pcaFields.has(p.properties?.__pid));
+      }
+      const result = runPixelPca(pixels, zones.metric, {
+        fitZones: pcaFitZones,
+        projectZones: pcaProjectZones,
+      });
       setPcaResult(result);
       setShowPcaPanel(true);
     } catch (e) {
@@ -505,7 +519,7 @@ export default function App() {
     } finally {
       setPcaBusy(false);
     }
-  }, [zones, clustering, pcaScope]);
+  }, [zones, clustering, pcaScope, pcaFields, pcaFitZones, pcaProjectZones]);
 
   const exportCsv = useCallback(() => {
     if (!pcaResult) return;
@@ -636,6 +650,12 @@ export default function App() {
           clustering={clustering}
           scope={pcaScope}
           onScopeChange={setPcaScope}
+          fields={pcaFields}
+          onFieldsChange={setPcaFields}
+          fitZones={pcaFitZones}
+          onFitZonesChange={setPcaFitZones}
+          projectZones={pcaProjectZones}
+          onProjectZonesChange={setPcaProjectZones}
           result={pcaResult}
           busy={pcaBusy}
           error={pcaError}
