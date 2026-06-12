@@ -100,7 +100,7 @@ export default function PcaPanel({
   const [pcX, setPcX] = useState(0);
   const [pcY, setPcY] = useState(1);
   const [colorBy, setColorBy] = useState<Attr>('zone');
-  const [shapeBy, setShapeBy] = useState<Attr | 'none'>('none');
+  const [shapeBy, setShapeBy] = useState<Attr | 'none'>('species');
 
   const hasPairs = useMemo(() => result.rows.some(r => r.properties?.pair_id != null), [result]);
   const attrOptions = useMemo(() => {
