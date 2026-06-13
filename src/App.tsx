@@ -69,6 +69,8 @@ export default function App() {
   const [zonesBusy, setZonesBusy] = useState(false);
   const [zonesProgress, setZonesProgress] = useState<ZoneProgress | null>(null);
   const [zonesError, setZonesError] = useState<string | null>(null);
+  /** Selection the zones were extracted from — to flag (not wipe) staleness. */
+  const [zonesSelectionKey, setZonesSelectionKey] = useState<string | null>(null);
 
   // Step 4 — species clustering (growth scenarios)
   const [clustering, setClustering] = useState<SpeciesClustering | null>(null);
@@ -226,6 +228,7 @@ export default function App() {
   const clearFromZones = useCallback(() => {
     setZones(null);
     setZonesError(null);
+    setZonesSelectionKey(null);
     clearFromClustering();
   }, [clearFromClustering]);
 
@@ -289,36 +292,29 @@ export default function App() {
     [onPolygonsLoaded]
   );
 
-  const togglePolygon = useCallback(
-    (pid: number) => {
-      setSelectedIds(prev => {
-        const next = new Set(prev);
-        if (next.has(pid)) next.delete(pid);
-        else next.add(pid);
-        return next;
-      });
-      clearFromZones();
-    },
-    [clearFromZones]
-  );
+  // Changing the selection does NOT wipe the extracted zones — they're an
+  // expensive snapshot. The Zones step flags them as stale instead.
+  const togglePolygon = useCallback((pid: number) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(pid)) next.delete(pid);
+      else next.add(pid);
+      return next;
+    });
+  }, []);
 
   /** Box draw: add a batch of polygons to the selection (never deselects). */
-  const selectByBox = useCallback(
-    (pids: number[]) => {
-      setSelectedIds(prev => {
-        const next = new Set(prev);
-        for (const pid of pids) next.add(pid);
-        return next;
-      });
-      clearFromZones();
-    },
-    [clearFromZones]
-  );
+  const selectByBox = useCallback((pids: number[]) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      for (const pid of pids) next.add(pid);
+      return next;
+    });
+  }, []);
 
   const clearSelection = useCallback(() => {
     setSelectedIds(new Set());
-    clearFromZones();
-  }, [clearFromZones]);
+  }, []);
 
   /** Zoom the map to a single field by pid (boundary-profile inspection). */
   const focusField = useCallback(
@@ -398,6 +394,12 @@ export default function App() {
     return Array.from(selectedIds).sort((a, b) => a - b).join('.') !== fetchedSelectionKey;
   }, [scenes, fetchedSelectionKey, selectedIds]);
 
+  /** Zones were extracted from a different selection than is now active. */
+  const zonesStale = useMemo(() => {
+    if (!zones || zonesSelectionKey === null) return false;
+    return Array.from(selectedIds).sort((a, b) => a - b).join('.') !== zonesSelectionKey;
+  }, [zones, zonesSelectionKey, selectedIds]);
+
   /** Ground pixel size the analysis runs at (m). The 10 m cluster grids win over the preview mosaic. */
   const pixelSize = useMemo(() => {
     const first = scenes[0];
@@ -456,6 +458,7 @@ export default function App() {
         // attach it to the pixel features (used by the map, PCA and CSV).
         result.unmixing = computeUnmixing(result);
         setZones(result);
+        setZonesSelectionKey(Array.from(selectedIds).sort((a, b) => a - b).join('.'));
         // Scenarios and PCA were computed from the previous extraction.
         clearFromClustering();
       } catch (e) {
@@ -466,7 +469,7 @@ export default function App() {
         setZonesProgress(null);
       }
     },
-    [selectedFeatures, scenes, polygons, clearFromClustering]
+    [selectedFeatures, selectedIds, scenes, polygons, clearFromClustering]
   );
 
   // ----- NDVI inspector -------------------------------------------------------
@@ -746,14 +749,8 @@ export default function App() {
           onCancel={cancelOp}
           onDatasetRange={onDatasetRange}
           onToggle={togglePolygon}
-          onSelectAll={() => {
-            setSelectedIds(new Set((polygons?.features || []).map((f: any) => f.properties.__pid)));
-            clearFromZones();
-          }}
-          onClearSelection={() => {
-            setSelectedIds(new Set());
-            clearFromZones();
-          }}
+          onSelectAll={() => setSelectedIds(new Set((polygons?.features || []).map((f: any) => f.properties.__pid)))}
+          onClearSelection={clearSelection}
           onZoomTo={f => requestFit(getGeoJsonBounds(f))}
         />
       ),
@@ -800,6 +797,7 @@ export default function App() {
           sceneCount={scenes.length}
           selectedCount={selectedIds.size}
           pixelSize={pixelSize}
+          stale={zonesStale}
           onRun={runZones}
           onCancel={cancelOp}
         />

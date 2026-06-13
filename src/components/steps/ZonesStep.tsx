@@ -25,6 +25,8 @@ interface ZonesStepProps {
   selectedCount: number;
   /** Ground pixel size of the fetched scenes in metres (null before fetch). */
   pixelSize: number | null;
+  /** The selection changed since these zones were extracted. */
+  stale: boolean;
   onRun: (distance: number, metric: string, includeOutside: boolean, neighbourGap: number) => void;
   onCancel: () => void;
 }
@@ -42,6 +44,9 @@ export default function ZonesStep(props: ZonesStepProps) {
       ) : props.sceneCount === 0 ? (
         <PrereqNote message="Fetch a Sentinel-2 time series in step 2 first — the zones are extracted from those scenes." />
       ) : null}
+      {props.stale && (
+        <PrereqNote message="The polygon selection changed since these zones were extracted — the pixels still shown are from the earlier selection. Re-extract to match the current selection." />
+      )}
       {props.pixelSize !== null && props.pixelSize > distance && (
         <PrereqNote
           message={`The fetched scenes have ${props.pixelSize} m pixels — coarser than the ${distance} m buffer, so the interior/edge split will be meaningless. Large selections are downsampled to fit in memory: select a smaller area (≲ 20 km across keeps the native 10 m) and re-fetch the series.`}
