@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { saveAs } from 'file-saver';
 import { Layers, RotateCcw } from 'lucide-react';
 import { RasterLayer } from './types';
-import { Bbox, getGeoJsonBounds, bufferBboxMeters } from './lib/geo';
+import { Bbox, getGeoJsonBounds, bufferBboxMeters, getBboxIntersectionArea } from './lib/geo';
 import {
   loadPolygonsFromDatabase,
   loadPolygonsFromFile,
@@ -331,6 +331,30 @@ export default function App() {
     [polygons, selectedIds]
   );
 
+  // Lat/lng footprints of the fetched imagery at usable resolution — the 10 m
+  // analysis windows when present, else the preview mosaic.
+  const imageryBboxes = useMemo<Bbox[]>(() => {
+    const scene = scenes[0];
+    if (!scene) return [];
+    const toBbox = (b: any): Bbox | null =>
+      b ? [b[0][1], b[0][0], b[1][1], b[1][0]] : null; // [[lat,lng],[lat,lng]] → [minLng,minLat,maxLng,maxLat]
+    if (scene.analysisGrids?.length) {
+      return scene.analysisGrids.map(g => toBbox(g.bounds)).filter((b): b is Bbox => b !== null);
+    }
+    const mosaic = toBbox(scene.data?.bounds);
+    return mosaic ? [mosaic] : scene.remoteBbox ? [scene.remoteBbox] : [];
+  }, [scenes]);
+
+  // Every loaded field whose footprint falls under that imagery, selected or
+  // not — the candidate set when extracting "all fields covered by imagery".
+  const coveredFeatures = useMemo(() => {
+    if (!polygons || imageryBboxes.length === 0) return [];
+    return polygons.features.filter((f: any) => {
+      const fb = getGeoJsonBounds(f);
+      return fb && imageryBboxes.some(ib => getBboxIntersectionArea(fb, ib) > 0);
+    });
+  }, [polygons, imageryBboxes]);
+
   // ----- Step 2 handlers -----------------------------------------------------
 
   const fetchSeries = useCallback(
@@ -435,15 +459,18 @@ export default function App() {
   // ----- Step 3 handlers -----------------------------------------------------
 
   const runZones = useCallback(
-    async (distance: number, metric: string, includeOutside: boolean, neighbourGap: number) => {
+    async (distance: number, metric: string, includeOutside: boolean, neighbourGap: number, allCovered: boolean) => {
       const op = beginOp();
       setZonesBusy(true);
       setZonesError(null);
       setPcaResult(null);
       setShowPcaPanel(false);
       try {
+        // "All covered" extracts every field under the imagery; otherwise just
+        // the selected ones.
+        const features = allCovered ? coveredFeatures : selectedFeatures;
         const result = await extractZones(
-          selectedFeatures,
+          features,
           scenes,
           distance,
           metric,
@@ -458,7 +485,9 @@ export default function App() {
         // attach it to the pixel features (used by the map, PCA and CSV).
         result.unmixing = computeUnmixing(result);
         setZones(result);
-        setZonesSelectionKey(Array.from(selectedIds).sort((a, b) => a - b).join('.'));
+        // Staleness only tracks the selection in selected-mode; covered-mode
+        // follows the imagery, so a selection change doesn't invalidate it.
+        setZonesSelectionKey(allCovered ? null : Array.from(selectedIds).sort((a, b) => a - b).join('.'));
         // Scenarios and PCA were computed from the previous extraction.
         clearFromClustering();
       } catch (e) {
@@ -469,7 +498,7 @@ export default function App() {
         setZonesProgress(null);
       }
     },
-    [selectedFeatures, selectedIds, scenes, polygons, clearFromClustering]
+    [selectedFeatures, coveredFeatures, selectedIds, scenes, polygons, clearFromClustering]
   );
 
   // ----- NDVI inspector -------------------------------------------------------
@@ -796,6 +825,7 @@ export default function App() {
           error={zonesError}
           sceneCount={scenes.length}
           selectedCount={selectedIds.size}
+          coveredCount={coveredFeatures.length}
           pixelSize={pixelSize}
           stale={zonesStale}
           onRun={runZones}

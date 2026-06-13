@@ -23,11 +23,13 @@ interface ZonesStepProps {
   error: string | null;
   sceneCount: number;
   selectedCount: number;
+  /** Fields whose footprint falls under the fetched imagery. */
+  coveredCount: number;
   /** Ground pixel size of the fetched scenes in metres (null before fetch). */
   pixelSize: number | null;
   /** The selection changed since these zones were extracted. */
   stale: boolean;
-  onRun: (distance: number, metric: string, includeOutside: boolean, neighbourGap: number) => void;
+  onRun: (distance: number, metric: string, includeOutside: boolean, neighbourGap: number, allCovered: boolean) => void;
   onCancel: () => void;
 }
 
@@ -36,13 +38,17 @@ export default function ZonesStep(props: ZonesStepProps) {
   const [metric, setMetric] = useState('NDVI');
   const [includeOutside, setIncludeOutside] = useState(false);
   const [neighbourGap, setNeighbourGap] = useState(12);
+  const [allCovered, setAllCovered] = useState(true);
+
+  const needsSelection = !allCovered && props.selectedCount === 0;
+  const canRun = props.sceneCount > 0 && !needsSelection;
 
   return (
     <>
-      {props.selectedCount === 0 ? (
-        <PrereqNote message="Select at least one polygon in step 1 first." />
-      ) : props.sceneCount === 0 ? (
+      {props.sceneCount === 0 ? (
         <PrereqNote message="Fetch a Sentinel-2 time series in step 2 first — the zones are extracted from those scenes." />
+      ) : needsSelection ? (
+        <PrereqNote message="Select at least one polygon in step 1, or tick “all fields under the imagery” below." />
       ) : null}
       {props.stale && (
         <PrereqNote message="The polygon selection changed since these zones were extracted — the pixels still shown are from the earlier selection. Re-extract to match the current selection." />
@@ -100,11 +106,25 @@ export default function ZonesStep(props: ZonesStepProps) {
         Also include pixels up to {distance} m <em>outside</em> the boundary in the edge set
       </label>
 
+      <label className="flex cursor-pointer items-start gap-2 text-xs text-slate-400">
+        <input
+          type="checkbox"
+          checked={allCovered}
+          onChange={e => setAllCovered(e.target.checked)}
+          className="mt-0.5 accent-sky-500"
+        />
+        <span>
+          Extract <em>all fields under the imagery</em>
+          {props.sceneCount > 0 && <span className="text-slate-500"> ({props.coveredCount.toLocaleString()} fields)</span>}, not
+          only the {props.selectedCount.toLocaleString()} selected.
+        </span>
+      </label>
+
       <div className="flex gap-2">
         <Button
-          onClick={() => props.onRun(distance, metric, includeOutside, neighbourGap)}
+          onClick={() => props.onRun(distance, metric, includeOutside, neighbourGap, allCovered)}
           busy={props.busy}
-          disabled={props.sceneCount === 0 || props.selectedCount === 0}
+          disabled={!canRun}
           className="flex-1"
         >
           <Scissors className="h-3.5 w-3.5" />
