@@ -38,10 +38,11 @@ export default function BoundaryPredictStep(props: Props) {
         <PrereqNote message="Fetch at least two dates of imagery in step 2 — boundary prediction reads the multitemporal signal." />
       )}
       <p className="text-xs leading-relaxed text-slate-500">
-        Pure fields cluster in PCA space; a pixel midway between two pure clusters is a 50/50 mixture — a boundary.
-        The <em>PCA</em> score is its distance to the nearest pure cluster (needs the NDVI zones from step 3);{' '}
-        <em>impurity</em> is the same in raw NDVI space; <em>gradient</em> is a plain spatial edge detector. Only pixels{' '}
-        <em>inside the fields</em> are scored, and all three are checked against the loaded polygon outlines.
+        Fields cluster by species in PCA space. The <em>PCA</em> score is high for pixels on the bridge between two
+        <em> different-species</em> clusters — so it finds only boundaries between different crops, ignoring same-crop
+        edges and field variation (needs the NDVI zones from step 3). <em>Impurity</em> and <em>gradient</em> are the
+        earlier, less targeted scores. Only pixels <em>inside the fields</em> are scored, all checked against the
+        polygon outlines.
       </p>
 
       <Button onClick={props.onRun} busy={props.busy} disabled={props.sceneCount < 2} className="w-full">
@@ -60,10 +61,10 @@ export default function BoundaryPredictStep(props: Props) {
           </div>
           <p className="text-[11px] leading-relaxed text-slate-500">
             AUC = chance a true-boundary pixel scores above an interior one (0.5 = random, 1 = perfect), against{' '}
-            {props.prediction.truePositivePixels.toLocaleString()} boundary px in{' '}
+            {props.prediction.truePositivePixels.toLocaleString()} {pcaAvailable ? 'different-species' : 'boundary'} px in{' '}
             {props.prediction.evaluatedPixels.toLocaleString()} evaluated.{' '}
             {pcaAvailable
-              ? `PCA uses ${props.prediction.pcaClusters} pure clusters.`
+              ? `Ground truth is the edge-other-species pixels; PCA uses ${props.prediction.pcaClusters} pure clusters.`
               : 'Extract NDVI zones in step 3 to enable the PCA and impurity scores.'}
           </p>
 

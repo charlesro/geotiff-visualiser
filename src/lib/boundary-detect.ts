@@ -12,10 +12,11 @@ import { getGeoJsonBounds, Bbox } from './geo';
  * per-pixel scores turn that into a boundary-likelihood raster, scored only
  * inside the fields:
  *
- *   - pca: the pure interior pixels form clusters in PCA space; a pixel's
- *     distance to the nearest pure cluster is small at the cluster (pure) and
- *     largest midway between clusters (a 50/50 mixture) — i.e. a boundary.
- *     Uses what the PCA already shows; the recommended method.
+ *   - pca: the pure interior pixels form per-species clusters in PCA space; a
+ *     pixel scores high when it sits on the bridge between a cluster of one
+ *     species and a cluster of *another* — a different-species mixture. Pure
+ *     pixels and same-crop field variation score ~0. The recommended method;
+ *     it only finds boundaries between different crops, by design.
  *   - impurity: the same idea in the raw NDVI space against the species means.
  *   - gradient: the multitemporal spatial gradient magnitude (Sobel on every
  *     date's NDVI). Peaks ON the transition line. Unsupervised, no clusters.
@@ -150,8 +151,12 @@ export function computeBoundaryPrediction(
     for (let i = 0; i < n; i++)
       if (!valid[i] || !inside[i]) { gradient[i] = NaN; if (impurity) impurity[i] = NaN; if (pca) pca[i] = NaN; }
 
-    // Ground-truth boundary band from the polygon outlines.
-    const truth = rasterizeBoundary(ref, polygonFeatures, W, H);
+    // Ground truth. When zones exist the target is the *different-species*
+    // boundaries — the edge_other_species pixels — which is what the user
+    // wants; otherwise fall back to every polygon outline.
+    const truth = hasPure
+      ? rasterizeOtherSpeciesEdges(ref, zones!, W, H)
+      : rasterizeBoundary(ref, polygonFeatures, W, H);
 
     for (let i = 0; i < n; i++) {
       if (!valid[i] || !inside[i]) continue;
@@ -284,41 +289,74 @@ function buildEndmembers(zones: ZoneExtraction, dates: string[]): Float32Array[]
 
 // ----- PCA-cluster score -------------------------------------------------------
 
+interface SpeciesCluster {
+  c: number[]; // centroid in component space
+  sp: string; // species label
+}
 interface PcaModel {
   pca: PCA;
   k: number; // components kept
-  centroids: number[][]; // pure-cluster centres in component space
+  centroids: SpeciesCluster[]; // pure clusters, tagged by species
 }
 
 const MAX_FIT = 50000; // sub-sample for PCA fit / k-means
-const KMEANS_K = 8;
+const K_PER_SPECIES = 4; // pure sub-clusters per species (covers field variation)
 
-/** Fit PCA on the interior (pure) pixels and find their clusters. */
+/** Fit PCA on the interior (pure) pixels and cluster them per species. */
 function buildPcaModel(zones: ZoneExtraction, dates: string[]): PcaModel | null {
-  const rows: number[][] = [];
+  const rows: { vec: number[]; sp: string }[] = [];
   for (const f of zones.interior.features) {
     const props = f.properties;
-    const row: number[] = [];
+    const sp = String(props?.crp_lbl ?? props?.species ?? 'unknown');
+    const vec: number[] = [];
     let ok = true;
     for (const d of dates) {
       const v = props[`NDVI_${d}`];
       if (typeof v !== 'number' || !isFinite(v)) { ok = false; break; }
-      row.push(v);
+      vec.push(v);
     }
-    if (ok) rows.push(row);
+    if (ok) rows.push({ vec, sp });
   }
-  if (rows.length < 20 || dates.length < 2) return null;
+  // Needs at least two species — the method targets different-species edges.
+  if (rows.length < 20 || dates.length < 2 || new Set(rows.map(r => r.sp)).size < 2) return null;
+
   const fit = subsample(rows, MAX_FIT);
-  const pca = new PCA(fit, { center: true, scale: false });
+  const pca = new PCA(fit.map(r => r.vec), { center: true, scale: false });
   const k = Math.min(3, dates.length);
-  const scores = pca.predict(fit).to2DArray().map(r => r.slice(0, k));
-  const centroids = kmeans(scores, Math.min(KMEANS_K, scores.length), k);
+  const proj = pca.predict(fit.map(r => r.vec)).to2DArray().map(r => r.slice(0, k));
+
+  // Sub-cluster each species separately so within-species field variation is
+  // covered by several pure centroids (not mistaken for a boundary).
+  const bySpecies = new Map<string, number[][]>();
+  fit.forEach((r, i) => {
+    const a = bySpecies.get(r.sp) ?? [];
+    a.push(proj[i]);
+    bySpecies.set(r.sp, a);
+  });
+  const centroids: SpeciesCluster[] = [];
+  for (const [sp, pts] of bySpecies) {
+    for (const c of kmeans(pts, Math.min(K_PER_SPECIES, pts.length), k)) centroids.push({ c, sp });
+  }
   return { pca, k, centroids };
 }
 
-/** Per-pixel distance (component space) to the nearest pure cluster centroid. */
+const dist2 = (a: number[], b: number[], k: number): number => {
+  let s = 0;
+  for (let d = 0; d < k; d++) { const e = a[d] - b[d]; s += e * e; }
+  return s;
+};
+
+/**
+ * Per-pixel "different-species mixture" score. Each pixel is projected into
+ * PCA space; we find its nearest pure cluster (species A) and the nearest
+ * pure cluster of a *different* species (B), then measure how much it sits on
+ * the bridge between A and B: high midway along the segment and on the line,
+ * zero at either cluster or off the line. Pure pixels and same-species field
+ * variation therefore score ~0; only genuine A↔B mixtures score high.
+ */
 function computePcaScore(cube: Float32Array[], n: number, model: PcaModel): Float32Array {
   const T = cube.length;
+  const K = model.k;
   const M: number[][] = new Array(n);
   for (let i = 0; i < n; i++) {
     const row = new Array(T);
@@ -326,18 +364,52 @@ function computePcaScore(cube: Float32Array[], n: number, model: PcaModel): Floa
     M[i] = row;
   }
   const proj = model.pca.predict(M).to2DArray();
+  const cents = model.centroids;
   const out = new Float32Array(n);
+
   for (let i = 0; i < n; i++) {
-    let best = Infinity;
-    for (const c of model.centroids) {
-      let s = 0;
-      for (let d = 0; d < model.k; d++) {
-        const e = proj[i][d] - c[d];
-        s += e * e;
-      }
-      if (s < best) best = s;
+    const p = proj[i];
+    // nearest cluster overall (the pixel's own species A)
+    let aIdx = -1;
+    let aDist = Infinity;
+    for (let j = 0; j < cents.length; j++) {
+      const d = dist2(p, cents[j].c, K);
+      if (d < aDist) { aDist = d; aIdx = j; }
     }
-    out[i] = Math.sqrt(best);
+    if (aIdx < 0) { out[i] = 0; continue; }
+    const sA = cents[aIdx].sp;
+    // nearest cluster of a different species B
+    let bIdx = -1;
+    let bDist = Infinity;
+    for (let j = 0; j < cents.length; j++) {
+      if (cents[j].sp === sA) continue;
+      const d = dist2(p, cents[j].c, K);
+      if (d < bDist) { bDist = d; bIdx = j; }
+    }
+    if (bIdx < 0) { out[i] = 0; continue; }
+
+    const cA = cents[aIdx].c;
+    const cB = cents[bIdx].c;
+    let len2 = 0;
+    let dot = 0;
+    for (let d = 0; d < K; d++) {
+      const dv = cB[d] - cA[d];
+      len2 += dv * dv;
+      dot += (p[d] - cA[d]) * dv;
+    }
+    if (len2 <= 0) { out[i] = 0; continue; }
+    let alpha = dot / len2;
+    alpha = alpha < 0 ? 0 : alpha > 1 ? 1 : alpha;
+    let resid = 0;
+    for (let d = 0; d < K; d++) {
+      const e = p[d] - (cA[d] + alpha * (cB[d] - cA[d]));
+      resid += e * e;
+    }
+    resid = Math.sqrt(resid);
+    const len = Math.sqrt(len2);
+    const betweenness = 1 - Math.abs(2 * alpha - 1); // 0 at ends, 1 at midpoint
+    const lineFit = len / (len + 2 * resid); // 1 on the line → 0 far off it
+    out[i] = betweenness * lineFit;
   }
   return out;
 }
@@ -420,6 +492,34 @@ function rasterizeBoundary(grid: GeoTIFFData, polygons: any[], W: number, H: num
         }
       }
     }
+  }
+  return truth;
+}
+
+/** Ground truth for different-species edges: mark the grid cells holding an
+ *  edge_other_species pixel (+ a 1-px band). These are exactly the
+ *  boundaries between two different crops. */
+function rasterizeOtherSpeciesEdges(grid: GeoTIFFData, zones: ZoneExtraction, W: number, H: number): Uint8Array {
+  const truth = new Uint8Array(W * H);
+  const bb = grid.metadata.imageBbox;
+  if (!bb) return truth;
+  const [minLng, minLat, maxLng, maxLat] = bb;
+  const mark = (x: number, y: number) => {
+    if (x < 0 || x >= W || y < 0 || y >= H) return;
+    truth[y * W + x] = 1;
+    if (x + 1 < W) truth[y * W + x + 1] = 1;
+    if (x - 1 >= 0) truth[y * W + x - 1] = 1;
+    if (y + 1 < H) truth[(y + 1) * W + x] = 1;
+    if (y - 1 >= 0) truth[(y - 1) * W + x] = 1;
+  };
+  for (const f of zones.edge.features) {
+    if (f.properties?.zone !== 'edge_other_species') continue;
+    const c = f.geometry?.coordinates;
+    if (!c) continue;
+    const lng = c[0];
+    const lat = c[1];
+    if (lng < minLng || lng > maxLng || lat < minLat || lat > maxLat) continue;
+    mark(Math.round(((lng - minLng) / (maxLng - minLng)) * W - 0.5), Math.round(((maxLat - lat) / (maxLat - minLat)) * H - 0.5));
   }
   return truth;
 }
