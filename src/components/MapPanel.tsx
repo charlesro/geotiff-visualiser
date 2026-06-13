@@ -38,6 +38,8 @@ interface MapPanelProps {
   preview: ScenePreview | null;
   /** Native-10 m windows of the previewed scene, drawn over the coarse mosaic. */
   clusterPreviews: ScenePreview[];
+  /** Boundary-prediction heatmap overlays (step 7); empty when off. */
+  predictionOverlays: ScenePreview[];
   scenes: RasterLayer[];
   previewSceneId: string | null;
   onPreviewScene: (id: string | null) => void;
@@ -190,7 +192,7 @@ function BboxSelector({ polygons, onSelectBox }: { polygons: any | null; onSelec
   );
 }
 
-export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBoxSelect, onClearSelection, zones, clusterAssignment, clusterVersion, preview, clusterPreviews, scenes, previewSceneId, onPreviewScene, onDeleteScene, onInspectPolygon, inspectPixels, highlightPixel, onPickPixel, fitRequest }: MapPanelProps) {
+export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBoxSelect, onClearSelection, zones, clusterAssignment, clusterVersion, preview, clusterPreviews, predictionOverlays, scenes, previewSceneId, onPreviewScene, onDeleteScene, onInspectPolygon, inspectPixels, highlightPixel, onPickPixel, fitRequest }: MapPanelProps) {
   const [basemap, setBasemap] = useState<BasemapKey>('dark');
   const [showZoneDots, setShowZoneDots] = useState(true);
   // Colour edge_other_species pixels by their mixing fraction instead of a
@@ -368,6 +370,9 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
             className="pixel-perfect"
           />
         ))}
+        {predictionOverlays.map((c, i) => (
+          <ImageOverlay key={`predict-${i}`} url={c.url} bounds={c.bounds} opacity={c.opacity} className="pixel-perfect" />
+        ))}
 
         {polygons && (
           <GeoJSON key={polygonsKey} data={polygons} style={polygonStyle} onEachFeature={onEachPolygon} />
@@ -446,6 +451,21 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
           </button>
         ))}
       </div>
+
+      {/* Boundary-prediction heatmap legend */}
+      {predictionOverlays.length > 0 && (
+        <div className="absolute left-3 top-3 z-[1000] rounded-md border border-white/10 bg-[#11151acc] px-3 py-2 backdrop-blur">
+          <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-slate-500">Predicted boundary</div>
+          <div
+            className="h-2 w-40 rounded"
+            style={{ background: 'linear-gradient(to right, #140b34, #88226a, #de4940, #fcdc8c)' }}
+          />
+          <div className="mt-0.5 flex justify-between text-[10px] text-slate-500">
+            <span>low</span>
+            <span>high likelihood</span>
+          </div>
+        </div>
+      )}
 
       {/* Scene timeline */}
       <SceneTimeline

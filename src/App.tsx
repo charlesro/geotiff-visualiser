@@ -29,6 +29,8 @@ import ZonesStep from './components/steps/ZonesStep';
 import ClusterStep from './components/steps/ClusterStep';
 import PcaStep, { PCA_SCOPE_ALL, parsePcaScope } from './components/steps/PcaStep';
 import BoundaryStep from './components/steps/BoundaryStep';
+import BoundaryPredictStep from './components/steps/BoundaryPredictStep';
+import { computeBoundaryPrediction, renderPredictionOverlay, BoundaryPrediction, PredictMethod } from './lib/boundary-detect';
 import PcaPanel from './components/PcaPanel';
 import BoundaryProfilePanel from './components/BoundaryProfilePanel';
 
@@ -88,6 +90,13 @@ export default function App() {
   const [pcaError, setPcaError] = useState<string | null>(null);
   const [showPcaPanel, setShowPcaPanel] = useState(false);
   const [showBoundaryPanel, setShowBoundaryPanel] = useState(false);
+
+  // Step 7 — boundary prediction
+  const [prediction, setPrediction] = useState<BoundaryPrediction | null>(null);
+  const [predictBusy, setPredictBusy] = useState(false);
+  const [predictError, setPredictError] = useState<string | null>(null);
+  const [predictMethod, setPredictMethod] = useState<PredictMethod | 'off'>('gradient');
+  const [predictThreshold, setPredictThreshold] = useState(0.3);
   /** Width of the results drawer (drag its left edge to resize). */
   const [pcaPanelWidth, setPcaPanelWidth] = useState(() => {
     const saved = Number(localStorage.getItem('ppca_panel_w'));
@@ -240,6 +249,8 @@ export default function App() {
     setSeriesError(null);
     setPreviewSceneId(null);
     clusterPreviewCache.current.clear();
+    setPrediction(null);
+    setPredictError(null);
     clearFromZones();
   }, [clearFromZones]);
 
@@ -315,6 +326,32 @@ export default function App() {
   const clearSelection = useCallback(() => {
     setSelectedIds(new Set());
   }, []);
+
+  /** Predict field boundaries from the imagery and score against the polygons. */
+  const runPrediction = useCallback(async () => {
+    setPredictBusy(true);
+    setPredictError(null);
+    try {
+      await new Promise(r => setTimeout(r, 30)); // let the spinner paint
+      setPrediction(computeBoundaryPrediction(scenes, polygons?.features || [], zones));
+    } catch (e) {
+      setPrediction(null);
+      setPredictError(errorMessage(e));
+    } finally {
+      setPredictBusy(false);
+    }
+  }, [scenes, polygons, zones]);
+
+  /** Heatmap overlays of the prediction for the chosen method/threshold. */
+  const predictionOverlays = useMemo<ScenePreview[]>(() => {
+    if (!prediction || predictMethod === 'off') return [];
+    const out: ScenePreview[] = [];
+    for (const grid of prediction.grids) {
+      const url = renderPredictionOverlay(grid, predictMethod, predictThreshold);
+      if (url) out.push({ url, bounds: grid.bounds, opacity: 1 });
+    }
+    return out;
+  }, [prediction, predictMethod, predictThreshold]);
 
   /** Zoom the map to a single field by pid (boundary-profile inspection). */
   const focusField = useCallback(
@@ -889,6 +926,29 @@ export default function App() {
       done: false,
       content: <BoundaryStep zones={zones} onOpen={() => setShowBoundaryPanel(true)} />,
     },
+    {
+      id: 7,
+      title: 'Boundary prediction',
+      summary: prediction
+        ? `gradient AUC ${prediction.metrics.gradient.auc.toFixed(2)}`
+        : 'Predict field boundaries from the mixing',
+      enabled: scenes.length >= 2,
+      done: prediction !== null,
+      content: (
+        <BoundaryPredictStep
+          zones={zones}
+          sceneCount={scenes.length}
+          prediction={prediction}
+          busy={predictBusy}
+          error={predictError}
+          method={predictMethod}
+          onMethod={setPredictMethod}
+          threshold={predictThreshold}
+          onThreshold={setPredictThreshold}
+          onRun={runPrediction}
+        />
+      ),
+    },
   ];
 
   return (
@@ -921,6 +981,7 @@ export default function App() {
             clusterVersion={clustering?.createdAt ?? 0}
             preview={preview}
             clusterPreviews={clusterPreviews}
+            predictionOverlays={predictionOverlays}
             scenes={scenes}
             previewSceneId={previewSceneId}
             onPreviewScene={setPreviewSceneId}
