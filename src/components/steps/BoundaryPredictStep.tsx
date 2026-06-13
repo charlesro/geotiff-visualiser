@@ -23,11 +23,13 @@ interface Props {
 }
 
 const METHOD_LABEL: Record<PredictMethod, string> = {
-  gradient: 'Spectral gradient',
-  impurity: 'Impurity vs pure crops',
+  pca: 'PCA',
+  gradient: 'Gradient',
+  impurity: 'Impurity',
 };
 
 export default function BoundaryPredictStep(props: Props) {
+  const pcaAvailable = props.prediction?.metrics.pca.available ?? false;
   const impurityAvailable = props.prediction?.metrics.impurity.available ?? false;
 
   return (
@@ -36,10 +38,10 @@ export default function BoundaryPredictStep(props: Props) {
         <PrereqNote message="Fetch at least two dates of imagery in step 2 — boundary prediction reads the multitemporal signal." />
       )}
       <p className="text-xs leading-relaxed text-slate-500">
-        Pure fields → mixed pixels mark boundaries. Two scores per pixel: the multitemporal <em>spectral gradient</em>{' '}
-        (peaks on the transition), and <em>impurity</em> — distance to the nearest pure-crop signature (needs the NDVI
-        zones from step 3). Only pixels <em>inside the fields</em> are scored, so roads and field margins are ignored.
-        Both are checked against the loaded polygon outlines.
+        Pure fields cluster in PCA space; a pixel midway between two pure clusters is a 50/50 mixture — a boundary.
+        The <em>PCA</em> score is its distance to the nearest pure cluster (needs the NDVI zones from step 3);{' '}
+        <em>impurity</em> is the same in raw NDVI space; <em>gradient</em> is a plain spatial edge detector. Only pixels{' '}
+        <em>inside the fields</em> are scored, and all three are checked against the loaded polygon outlines.
       </p>
 
       <Button onClick={props.onRun} busy={props.busy} disabled={props.sceneCount < 2} className="w-full">
@@ -51,42 +53,37 @@ export default function BoundaryPredictStep(props: Props) {
       {props.prediction && (
         <div className="space-y-3">
           {/* agreement with the ground-truth polygons */}
-          <div className="grid grid-cols-2 gap-2">
-            <Stat
-              label="Gradient · AUC"
-              value={fmt(props.prediction.metrics.gradient.auc)}
-              accent="#de4940"
-            />
-            <Stat
-              label="Impurity · AUC"
-              value={impurityAvailable ? fmt(props.prediction.metrics.impurity.auc) : 'n/a'}
-              accent={impurityAvailable ? '#de4940' : undefined}
-            />
+          <div className="grid grid-cols-3 gap-2">
+            <Stat label="PCA · AUC" value={pcaAvailable ? fmt(props.prediction.metrics.pca.auc) : 'n/a'} accent={pcaAvailable ? '#de4940' : undefined} />
+            <Stat label="Gradient · AUC" value={fmt(props.prediction.metrics.gradient.auc)} accent="#de4940" />
+            <Stat label="Impurity · AUC" value={impurityAvailable ? fmt(props.prediction.metrics.impurity.auc) : 'n/a'} accent={impurityAvailable ? '#de4940' : undefined} />
           </div>
           <p className="text-[11px] leading-relaxed text-slate-500">
             AUC = chance a true-boundary pixel scores above an interior one (0.5 = random, 1 = perfect), against{' '}
             {props.prediction.truePositivePixels.toLocaleString()} boundary px in{' '}
-            {props.prediction.evaluatedPixels.toLocaleString()} evaluated.
-            {!impurityAvailable && ' Extract NDVI zones in step 3 to enable the impurity score.'}
+            {props.prediction.evaluatedPixels.toLocaleString()} evaluated.{' '}
+            {pcaAvailable
+              ? `PCA uses ${props.prediction.pcaClusters} pure clusters.`
+              : 'Extract NDVI zones in step 3 to enable the PCA and impurity scores.'}
           </p>
 
           {/* what to draw on the map */}
           <Field label="Show on map">
             <div className="flex overflow-hidden rounded-md border border-white/10 text-[11px]">
-              {(['gradient', 'impurity', 'off'] as const).map(m => {
-                const disabled = m === 'impurity' && !impurityAvailable;
+              {(['pca', 'gradient', 'impurity', 'off'] as const).map(m => {
+                const disabled = (m === 'impurity' && !impurityAvailable) || (m === 'pca' && !pcaAvailable);
                 return (
                   <button
                     key={m}
                     disabled={disabled}
                     onClick={() => props.onMethod(m)}
                     className={cn(
-                      'flex-1 px-2 py-1 capitalize transition-colors',
+                      'flex-1 px-2 py-1 transition-colors',
                       props.method === m ? 'bg-sky-500/20 text-sky-300' : 'text-slate-500 hover:text-slate-300',
                       disabled && 'cursor-not-allowed opacity-40'
                     )}
                   >
-                    {m === 'off' ? 'off' : METHOD_LABEL[m].split(' ')[0].toLowerCase()}
+                    {m === 'off' ? 'off' : METHOD_LABEL[m]}
                   </button>
                 );
               })}

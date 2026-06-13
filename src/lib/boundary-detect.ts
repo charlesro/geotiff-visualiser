@@ -1,3 +1,4 @@
+import { PCA } from 'ml-pca';
 import { RasterLayer } from '../types';
 import { GeoTIFFData } from './geotiff-utils';
 import { ZoneExtraction } from './zones';
@@ -7,22 +8,24 @@ import { getGeoJsonBounds, Bbox } from './geo';
  * Field-boundary prediction from the Sentinel-2 time series.
  *
  * Premise: each field is a single pure crop, so an interior pixel carries one
- * clean signature while a pixel straddling a boundary is a mixture. Two
- * per-pixel scores turn that into a boundary-likelihood raster over the
- * imagery, independent of the polygon database:
+ * clean signature while a pixel straddling a boundary is a mixture. Three
+ * per-pixel scores turn that into a boundary-likelihood raster, scored only
+ * inside the fields:
  *
+ *   - pca: the pure interior pixels form clusters in PCA space; a pixel's
+ *     distance to the nearest pure cluster is small at the cluster (pure) and
+ *     largest midway between clusters (a 50/50 mixture) — i.e. a boundary.
+ *     Uses what the PCA already shows; the recommended method.
+ *   - impurity: the same idea in the raw NDVI space against the species means.
  *   - gradient: the multitemporal spatial gradient magnitude (Sobel on every
- *     date's NDVI, combined). Peaks ON the transition line. Unsupervised.
- *   - impurity: distance from the pixel's NDVI time-series to the nearest pure
- *     crop signature (the species interior means from the zone extraction).
- *     Large where a pixel matches no single crop — i.e. a mixture.
+ *     date's NDVI). Peaks ON the transition line. Unsupervised, no clusters.
  *
  * The loaded polygons are the ground truth: their outlines are rasterised to a
  * boundary band and each score is scored against it with a rank-based ROC AUC,
  * so "pretty heatmap" becomes a number.
  */
 
-export type PredictMethod = 'gradient' | 'impurity';
+export type PredictMethod = 'pca' | 'gradient' | 'impurity';
 
 export interface PredictGrid {
   /** Leaflet bounds [[south,west],[north,east]]. */
@@ -32,6 +35,7 @@ export interface PredictGrid {
   /** Normalised 0..1 scores, row-major; NaN where invalid. */
   gradient: Float32Array;
   impurity: Float32Array | null;
+  pca: Float32Array | null;
 }
 
 export interface PredictMetrics {
@@ -46,6 +50,8 @@ export interface PredictMetrics {
 export interface BoundaryPrediction {
   grids: PredictGrid[];
   metrics: Record<PredictMethod, PredictMetrics>;
+  /** Number of pure clusters PCA used. */
+  pcaClusters: number;
   dates: string[];
   evaluatedPixels: number;
   truePositivePixels: number;
@@ -86,9 +92,12 @@ export function computeBoundaryPrediction(
   const nGrids = Math.min(...usable.map(s => gridsOfScene(s).length));
   const T = usable.length;
 
-  // Species endmembers for the impurity score, from the extracted interior
-  // pixels (only when the zones were extracted as NDVI over these dates).
-  const endmembers = zones && zones.metric === 'NDVI' ? buildEndmembers(zones, dates) : null;
+  // Pure-crop references from the extracted interior pixels — only when the
+  // zones were extracted as NDVI over these dates. The PCA model gives the
+  // pure clusters in component space; the endmembers the raw-space means.
+  const hasPure = !!(zones && zones.metric === 'NDVI');
+  const endmembers = hasPure ? buildEndmembers(zones!, dates) : null;
+  const pcaModel = hasPure ? buildPcaModel(zones!, dates) : null;
 
   const grids: PredictGrid[] = [];
   // (score, isBoundary) samples for the AUC, accumulated across grids.
@@ -96,6 +105,8 @@ export function computeBoundaryPrediction(
   const gradLabel: number[] = [];
   const impEval: number[] = [];
   const impLabel: number[] = [];
+  const pcaEval: number[] = [];
+  const pcaLabel: number[] = [];
   let truePos = 0;
 
   for (let g = 0; g < nGrids; g++) {
@@ -130,12 +141,14 @@ export function computeBoundaryPrediction(
 
     const gradient = computeGradient(cube, W, H, valid);
     const impurity = endmembers ? computeImpurity(cube, n, endmembers) : null;
+    const pca = pcaModel ? computePcaScore(cube, n, pcaModel) : null;
 
     // Restrict to pixels inside a field, so roads / hedges / open land are
     // never scored or drawn. The gradient is still computed from the true
     // outside neighbours, so the field-edge pixels themselves are kept.
     const inside = rasterizeFill(ref, polygonFeatures, W, H);
-    for (let i = 0; i < n; i++) if (!valid[i] || !inside[i]) { gradient[i] = NaN; if (impurity) impurity[i] = NaN; }
+    for (let i = 0; i < n; i++)
+      if (!valid[i] || !inside[i]) { gradient[i] = NaN; if (impurity) impurity[i] = NaN; if (pca) pca[i] = NaN; }
 
     // Ground-truth boundary band from the polygon outlines.
     const truth = rasterizeBoundary(ref, polygonFeatures, W, H);
@@ -150,9 +163,13 @@ export function computeBoundaryPrediction(
         impEval.push(impurity[i]);
         impLabel.push(lbl);
       }
+      if (pca) {
+        pcaEval.push(pca[i]);
+        pcaLabel.push(lbl);
+      }
     }
 
-    grids.push({ bounds: ref.bounds, width: W, height: H, gradient, impurity });
+    grids.push({ bounds: ref.bounds, width: W, height: H, gradient, impurity, pca });
   }
 
   // Normalise each score to 0..1 by its 98th percentile (robust to outliers),
@@ -160,19 +177,24 @@ export function computeBoundaryPrediction(
   // grid rasters AND the AUC sample are scaled with the same denominator.
   const gradDenom = percentile98(gradEval);
   const impDenom = endmembers ? percentile98(impEval) : 1;
+  const pcaDenom = pcaModel ? percentile98(pcaEval) : 1;
   for (const g of grids) {
     scaleArray(g.gradient, gradDenom);
     if (g.impurity) scaleArray(g.impurity, impDenom);
+    if (g.pca) scaleArray(g.pca, pcaDenom);
   }
   scale(gradEval, gradDenom);
   if (endmembers) scale(impEval, impDenom);
+  if (pcaModel) scale(pcaEval, pcaDenom);
 
   return {
     grids,
     metrics: {
+      pca: metricsFor(!!pcaModel, pcaEval, pcaLabel),
       gradient: metricsFor(true, gradEval, gradLabel),
       impurity: metricsFor(!!endmembers, impEval, impLabel),
     },
+    pcaClusters: pcaModel ? pcaModel.centroids.length : 0,
     dates,
     evaluatedPixels: gradLabel.length,
     truePositivePixels: truePos,
@@ -258,6 +280,107 @@ function buildEndmembers(zones: ZoneExtraction, dates: string[]): Float32Array[]
     if (n.every(c => c > 0)) ems.push(sum.map((s, t) => s / n[t]));
   }
   return ems.length > 0 ? ems : null;
+}
+
+// ----- PCA-cluster score -------------------------------------------------------
+
+interface PcaModel {
+  pca: PCA;
+  k: number; // components kept
+  centroids: number[][]; // pure-cluster centres in component space
+}
+
+const MAX_FIT = 50000; // sub-sample for PCA fit / k-means
+const KMEANS_K = 8;
+
+/** Fit PCA on the interior (pure) pixels and find their clusters. */
+function buildPcaModel(zones: ZoneExtraction, dates: string[]): PcaModel | null {
+  const rows: number[][] = [];
+  for (const f of zones.interior.features) {
+    const props = f.properties;
+    const row: number[] = [];
+    let ok = true;
+    for (const d of dates) {
+      const v = props[`NDVI_${d}`];
+      if (typeof v !== 'number' || !isFinite(v)) { ok = false; break; }
+      row.push(v);
+    }
+    if (ok) rows.push(row);
+  }
+  if (rows.length < 20 || dates.length < 2) return null;
+  const fit = subsample(rows, MAX_FIT);
+  const pca = new PCA(fit, { center: true, scale: false });
+  const k = Math.min(3, dates.length);
+  const scores = pca.predict(fit).to2DArray().map(r => r.slice(0, k));
+  const centroids = kmeans(scores, Math.min(KMEANS_K, scores.length), k);
+  return { pca, k, centroids };
+}
+
+/** Per-pixel distance (component space) to the nearest pure cluster centroid. */
+function computePcaScore(cube: Float32Array[], n: number, model: PcaModel): Float32Array {
+  const T = cube.length;
+  const M: number[][] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const row = new Array(T);
+    for (let t = 0; t < T; t++) row[t] = cube[t][i];
+    M[i] = row;
+  }
+  const proj = model.pca.predict(M).to2DArray();
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let best = Infinity;
+    for (const c of model.centroids) {
+      let s = 0;
+      for (let d = 0; d < model.k; d++) {
+        const e = proj[i][d] - c[d];
+        s += e * e;
+      }
+      if (s < best) best = s;
+    }
+    out[i] = Math.sqrt(best);
+  }
+  return out;
+}
+
+function subsample<T>(arr: T[], max: number): T[] {
+  if (arr.length <= max) return arr;
+  const step = arr.length / max;
+  return Array.from({ length: max }, (_, i) => arr[Math.floor(i * step)]);
+}
+
+/** Compact Lloyd's k-means on the first `dim` columns; spread initialisation. */
+function kmeans(data: number[][], k: number, dim: number): number[][] {
+  const n = data.length;
+  k = Math.min(k, n);
+  const cent: number[][] = [];
+  for (let j = 0; j < k; j++) cent.push(data[Math.floor((j * n) / k)].slice(0, dim));
+  const assign = new Int32Array(n);
+  for (let iter = 0; iter < 20; iter++) {
+    let changed = false;
+    for (let i = 0; i < n; i++) {
+      let b = 0;
+      let bd = Infinity;
+      for (let j = 0; j < k; j++) {
+        let s = 0;
+        for (let d = 0; d < dim; d++) {
+          const e = data[i][d] - cent[j][d];
+          s += e * e;
+        }
+        if (s < bd) { bd = s; b = j; }
+      }
+      if (assign[i] !== b) { assign[i] = b; changed = true; }
+    }
+    if (!changed && iter > 0) break;
+    const sum = Array.from({ length: k }, () => new Float64Array(dim));
+    const cnt = new Int32Array(k);
+    for (let i = 0; i < n; i++) {
+      const a = assign[i];
+      cnt[a]++;
+      for (let d = 0; d < dim; d++) sum[a][d] += data[i][d];
+    }
+    for (let j = 0; j < k; j++) if (cnt[j] > 0) for (let d = 0; d < dim; d++) cent[j][d] = sum[j][d] / cnt[j];
+  }
+  return cent;
 }
 
 // ----- ground truth + metrics --------------------------------------------------
@@ -421,7 +544,7 @@ export function renderPredictionOverlay(
   method: PredictMethod,
   threshold: number
 ): string | null {
-  const score = method === 'gradient' ? grid.gradient : grid.impurity;
+  const score = method === 'gradient' ? grid.gradient : method === 'impurity' ? grid.impurity : grid.pca;
   if (!score) return null;
   const { width: W, height: H } = grid;
   const canvas = document.createElement('canvas');

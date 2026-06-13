@@ -95,7 +95,7 @@ export default function App() {
   const [prediction, setPrediction] = useState<BoundaryPrediction | null>(null);
   const [predictBusy, setPredictBusy] = useState(false);
   const [predictError, setPredictError] = useState<string | null>(null);
-  const [predictMethod, setPredictMethod] = useState<PredictMethod | 'off'>('gradient');
+  const [predictMethod, setPredictMethod] = useState<PredictMethod | 'off'>('pca');
   const [predictThreshold, setPredictThreshold] = useState(0.3);
   /** Width of the results drawer (drag its left edge to resize). */
   const [pcaPanelWidth, setPcaPanelWidth] = useState(() => {
@@ -333,7 +333,10 @@ export default function App() {
     setPredictError(null);
     try {
       await new Promise(r => setTimeout(r, 30)); // let the spinner paint
-      setPrediction(computeBoundaryPrediction(scenes, polygons?.features || [], zones));
+      const result = computeBoundaryPrediction(scenes, polygons?.features || [], zones);
+      setPrediction(result);
+      // Show the best available method (PCA preferred, then gradient).
+      setPredictMethod(result.metrics.pca.available ? 'pca' : 'gradient');
     } catch (e) {
       setPrediction(null);
       setPredictError(errorMessage(e));
