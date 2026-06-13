@@ -130,13 +130,18 @@ export function computeBoundaryPrediction(
 
     const gradient = computeGradient(cube, W, H, valid);
     const impurity = endmembers ? computeImpurity(cube, n, endmembers) : null;
-    for (let i = 0; i < n; i++) if (!valid[i]) { gradient[i] = NaN; if (impurity) impurity[i] = NaN; }
+
+    // Restrict to pixels inside a field, so roads / hedges / open land are
+    // never scored or drawn. The gradient is still computed from the true
+    // outside neighbours, so the field-edge pixels themselves are kept.
+    const inside = rasterizeFill(ref, polygonFeatures, W, H);
+    for (let i = 0; i < n; i++) if (!valid[i] || !inside[i]) { gradient[i] = NaN; if (impurity) impurity[i] = NaN; }
 
     // Ground-truth boundary band from the polygon outlines.
     const truth = rasterizeBoundary(ref, polygonFeatures, W, H);
 
     for (let i = 0; i < n; i++) {
-      if (!valid[i]) continue;
+      if (!valid[i] || !inside[i]) continue;
       const lbl = truth[i];
       if (lbl) truePos++;
       gradEval.push(gradient[i]);
@@ -294,6 +299,49 @@ function rasterizeBoundary(grid: GeoTIFFData, polygons: any[], W: number, H: num
     }
   }
   return truth;
+}
+
+/** Mark grid cells whose centre is inside any polygon (scanline even-odd
+ *  fill, each polygon rasterised separately and OR-ed together). */
+function rasterizeFill(grid: GeoTIFFData, polygons: any[], W: number, H: number): Uint8Array {
+  const mask = new Uint8Array(W * H);
+  const bb = grid.metadata.imageBbox;
+  if (!bb) return mask;
+  const [minLng, minLat, maxLng, maxLat] = bb;
+  // Integer pixel coord == pixel centre under this mapping.
+  const px = (lng: number) => ((lng - minLng) / (maxLng - minLng)) * W - 0.5;
+  const py = (lat: number) => ((maxLat - lat) / (maxLat - minLat)) * H - 0.5;
+
+  for (const f of polygons) {
+    const fb = getGeoJsonBounds(f);
+    if (!fb || fb[2] < minLng || fb[0] > maxLng || fb[3] < minLat || fb[1] > maxLat) continue;
+    const rings = ringsOf(f).map(r => r.map(([lng, lat]) => [px(lng), py(lat)] as [number, number]));
+    let yMin = Infinity;
+    let yMax = -Infinity;
+    for (const r of rings) for (const p of r) { if (p[1] < yMin) yMin = p[1]; if (p[1] > yMax) yMax = p[1]; }
+    const y0 = Math.max(0, Math.ceil(yMin));
+    const y1 = Math.min(H - 1, Math.floor(yMax));
+    for (let y = y0; y <= y1; y++) {
+      const xs: number[] = [];
+      for (const r of rings) {
+        for (let s = 0; s < r.length - 1; s++) {
+          const ay = r[s][1];
+          const by = r[s + 1][1];
+          if ((ay <= y) !== (by <= y)) {
+            const t = (y - ay) / (by - ay);
+            xs.push(r[s][0] + t * (r[s + 1][0] - r[s][0]));
+          }
+        }
+      }
+      xs.sort((a, b) => a - b);
+      for (let k = 0; k + 1 < xs.length; k += 2) {
+        const xa = Math.max(0, Math.ceil(xs[k]));
+        const xb = Math.min(W - 1, Math.floor(xs[k + 1]));
+        for (let x = xa; x <= xb; x++) mask[y * W + x] = 1;
+      }
+    }
+  }
+  return mask;
 }
 
 /** 98th percentile of finite values, as the normalisation denominator. */

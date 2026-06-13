@@ -38,7 +38,8 @@ export default function BoundaryPredictStep(props: Props) {
       <p className="text-xs leading-relaxed text-slate-500">
         Pure fields → mixed pixels mark boundaries. Two scores per pixel: the multitemporal <em>spectral gradient</em>{' '}
         (peaks on the transition), and <em>impurity</em> — distance to the nearest pure-crop signature (needs the NDVI
-        zones from step 3). Both are scored against the loaded polygon outlines.
+        zones from step 3). Only pixels <em>inside the fields</em> are scored, so roads and field margins are ignored.
+        Both are checked against the loaded polygon outlines.
       </p>
 
       <Button onClick={props.onRun} busy={props.busy} disabled={props.sceneCount < 2} className="w-full">
