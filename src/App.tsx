@@ -327,6 +327,14 @@ export default function App() {
     setSelectedIds(new Set());
   }, []);
 
+  // The prediction depends on the imagery and (for PCA/impurity) the zones —
+  // invalidate it whenever either changes, so a stale prediction never leaves
+  // the PCA method disabled after the zones are extracted.
+  useEffect(() => {
+    setPrediction(null);
+    setPredictError(null);
+  }, [zones, scenes]);
+
   /** Predict field boundaries from the imagery and score against the polygons. */
   const runPrediction = useCallback(async () => {
     setPredictBusy(true);

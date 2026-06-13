@@ -77,6 +77,7 @@ export default function BoundaryPredictStep(props: Props) {
                     key={m}
                     disabled={disabled}
                     onClick={() => props.onMethod(m)}
+                    title={disabled ? 'Extract NDVI zones in step 3, then re-run the prediction' : ''}
                     className={cn(
                       'flex-1 px-2 py-1 transition-colors',
                       props.method === m ? 'bg-sky-500/20 text-sky-300' : 'text-slate-500 hover:text-slate-300',
