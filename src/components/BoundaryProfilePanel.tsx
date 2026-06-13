@@ -173,7 +173,11 @@ export default function BoundaryProfilePanel({ zones, onClose, onFocusField }: P
                   label={{ value: 'distance to boundary (m) — negative = gap, positive = inside', position: 'insideBottom', offset: -10, fill: '#94a3b8', fontSize: 11 }}
                   {...axisProps}
                 />
-                <YAxis {...axisProps} />
+                <YAxis
+                  width={64}
+                  label={{ value: profile.valueLabel, angle: -90, position: 'insideLeft', fill: '#94a3b8', fontSize: 11, style: { textAnchor: 'middle' } }}
+                  {...axisProps}
+                />
                 <Tooltip
                   contentStyle={{ background: '#11151a', border: '1px solid #ffffff1a', borderRadius: 6, fontSize: 11 }}
                   labelFormatter={(v: any) => `${v} m from boundary`}
