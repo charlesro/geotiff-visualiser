@@ -174,7 +174,14 @@ export function computeBoundaryProfile(zones: ZoneExtraction, opts: ProfileOptio
     else break;
   }
 
-  const ds = pts.map(p => p.d);
+  // Spreading tens of thousands of values into Math.min/max overflows the
+  // call stack — reduce instead.
+  let dMin = Infinity;
+  let dMax = -Infinity;
+  for (const p of pts) {
+    if (p.d < dMin) dMin = p.d;
+    if (p.d > dMax) dMax = p.d;
+  }
   return {
     series,
     binWidth: bw,
@@ -193,7 +200,7 @@ export function computeBoundaryProfile(zones: ZoneExtraction, opts: ProfileOptio
     meanDiff,
     deiMeters,
     totalPixels: pts.length,
-    distanceRange: [Math.min(...ds), Math.max(...ds)],
+    distanceRange: [dMin, dMax],
   };
 }
 
