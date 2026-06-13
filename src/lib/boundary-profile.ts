@@ -1,4 +1,5 @@
 import { ZoneExtraction } from './zones';
+import { fieldKeyOf } from './species-clusters';
 import { zoneColor, NEUTRAL } from './legend';
 
 /**
@@ -28,6 +29,8 @@ export interface ProfileOptions {
   binWidth: number;
   /** One pooled curve, or one per pixel class. */
   groupBy: 'none' | 'class';
+  /** Restrict to a single field (its `fieldKeyOf` key); undefined = all fields. */
+  fieldKey?: string;
 }
 
 export interface ProfileBin {
@@ -111,6 +114,7 @@ export function computeBoundaryProfile(zones: ZoneExtraction, opts: ProfileOptio
   const pts: Pt[] = [];
   for (const f of pixels) {
     const props = f.properties;
+    if (opts.fieldKey && fieldKeyOf(props) !== opts.fieldKey) continue;
     const d = props?.edge_dist_m;
     if (typeof d !== 'number' || !isFinite(d)) continue;
     const v = valueOf(props, opts, metric, dates);
@@ -118,7 +122,11 @@ export function computeBoundaryProfile(zones: ZoneExtraction, opts: ProfileOptio
     pts.push({ d, v, cls: props.zone || 'interior' });
   }
   if (pts.length === 0) {
-    throw new Error('No pixels carry the selected value — re-run the zone extraction, or pick another date/metric.');
+    throw new Error(
+      opts.fieldKey
+        ? 'This field has no pixels with the selected value — pick another date/metric or another field.'
+        : 'No pixels carry the selected value — re-run the zone extraction, or pick another date/metric.'
+    );
   }
 
   const bw = opts.binWidth;

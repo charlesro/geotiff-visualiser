@@ -320,6 +320,16 @@ export default function App() {
     clearFromZones();
   }, [clearFromZones]);
 
+  /** Zoom the map to a single field by pid (boundary-profile inspection). */
+  const focusField = useCallback(
+    (pid: number | null) => {
+      if (pid == null) return;
+      const feature = (polygons?.features || []).find((f: any) => f.properties?.__pid === pid);
+      if (feature) requestFit(getGeoJsonBounds(feature), { padRight: 660, maxZoom: 17 });
+    },
+    [polygons, requestFit]
+  );
+
   const selectedFeatures = useMemo(
     () => (polygons?.features || []).filter((f: any) => selectedIds.has(f.properties.__pid)),
     [polygons, selectedIds]
@@ -918,7 +928,11 @@ export default function App() {
             />
           )}
           {showBoundaryPanel && zones && (
-            <BoundaryProfilePanel zones={zones} onClose={() => setShowBoundaryPanel(false)} />
+            <BoundaryProfilePanel
+              zones={zones}
+              onClose={() => setShowBoundaryPanel(false)}
+              onFocusField={focusField}
+            />
           )}
         </main>
       </div>

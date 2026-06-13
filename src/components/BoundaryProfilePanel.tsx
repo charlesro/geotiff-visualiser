@@ -24,22 +24,37 @@ import { Stat } from './ui';
 interface Props {
   zones: ZoneExtraction;
   onClose: () => void;
+  /** Zoom the map to a field (by pid), or clear when null. */
+  onFocusField: (pid: number | null) => void;
 }
 
-export default function BoundaryProfilePanel({ zones, onClose }: Props) {
+export default function BoundaryProfilePanel({ zones, onClose, onFocusField }: Props) {
   const [value, setValue] = useState<ProfileValue>('mean');
   const [date, setDate] = useState(zones.dates[Math.floor(zones.dates.length / 2)] ?? zones.dates[0]);
   const [groupBy, setGroupBy] = useState<'none' | 'class'>('none');
   const [binWidth, setBinWidth] = useState(5);
+  const [fieldKey, setFieldKey] = useState<string>(''); // '' = all fields pooled
   const hasMixing = (zones.unmixing?.count ?? 0) > 0;
+
+  // Fields that actually have pixels, biggest first.
+  const fieldOptions = useMemo(
+    () => zones.perPolygon.filter(p => p.interior + p.edge > 0).sort((a, b) => b.interior + b.edge - (a.interior + a.edge)),
+    [zones]
+  );
 
   const profile = useMemo(() => {
     try {
-      return computeBoundaryProfile(zones, { value, date, groupBy, binWidth });
+      return computeBoundaryProfile(zones, { value, date, groupBy, binWidth, fieldKey: fieldKey || undefined });
     } catch (e) {
       return e instanceof Error ? e.message : String(e);
     }
-  }, [zones, value, date, groupBy, binWidth]);
+  }, [zones, value, date, groupBy, binWidth, fieldKey]);
+
+  const pickField = (key: string) => {
+    setFieldKey(key);
+    const field = fieldOptions.find(f => f.key === key);
+    onFocusField(field ? field.pid : null);
+  };
 
   // Merge the series onto one distance axis for a multi-band chart.
   const chartData = useMemo(() => {
@@ -73,14 +88,23 @@ export default function BoundaryProfilePanel({ zones, onClose }: Props) {
         <div>
           <h2 className="text-sm font-semibold text-slate-100">Boundary profile</h2>
           <p className="text-[11px] text-slate-500">
-            edge-response curve · {zones.metric} · pooled over every boundary by distance to the field edge
+            edge-response curve · {zones.metric} ·{' '}
+            {fieldKey
+              ? `single field — ${fieldOptions.find(f => f.key === fieldKey)?.label ?? fieldKey}`
+              : 'pooled over every boundary by distance to the field edge'}
           </p>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={exportCsv} className="rounded-md border border-white/10 p-1.5 text-slate-400 hover:text-slate-200" title="Export the binned profile (CSV)">
             <Download className="h-4 w-4" />
           </button>
-          <button onClick={onClose} className="rounded-md border border-white/10 p-1.5 text-slate-400 hover:text-slate-200">
+          <button
+            onClick={() => {
+              onFocusField(null);
+              onClose();
+            }}
+            className="rounded-md border border-white/10 p-1.5 text-slate-400 hover:text-slate-200"
+          >
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -89,6 +113,17 @@ export default function BoundaryProfilePanel({ zones, onClose }: Props) {
       <div className="flex-1 overflow-y-auto p-4">
         {/* controls */}
         <div className="mb-3 flex flex-wrap items-center gap-3 text-xs text-slate-500">
+          <label className="flex items-center gap-1.5">
+            Field
+            <select className={selectClass} value={fieldKey} onChange={e => pickField(e.target.value)}>
+              <option value="">all fields (pooled)</option>
+              {fieldOptions.map(f => (
+                <option key={f.pid} value={f.key}>
+                  {f.label} · {(f.interior + f.edge).toLocaleString()} px
+                </option>
+              ))}
+            </select>
+          </label>
           <label className="flex items-center gap-1.5">
             Value
             <select className={selectClass} value={value} onChange={e => setValue(e.target.value as ProfileValue)}>
