@@ -1,12 +1,3 @@
-export function getSpeciesColor(species: string): string {
-  let hash = 0;
-  for (let i = 0; i < species.length; i++) {
-    hash = species.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  const h = Math.abs(hash) % 360;
-  return `hsl(${h}, 70%, 50%)`;
-}
-
 export function extractSpecies(properties: any): string | undefined {
   if (!properties) return undefined;
   

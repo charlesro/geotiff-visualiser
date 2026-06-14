@@ -4,10 +4,9 @@ import { computeIndexValue } from './spectral';
 /**
  * The single canvas rendering pipeline.
  *
- * Local GeoTIFFs (processGeoTIFF) and remote COGs (processRemoteGeoTIFF) both
- * render through this module. Previously each carried its own ~120-line copy
- * of the stretch + RGB/single/index loops, so fixes applied to one pipeline
- * silently missed the other.
+ * The scene mosaic (mosaic.ts) and the analysis-grid preview both render their
+ * rasters through {@link renderRasterToCanvas} — one place for the stretch and
+ * the RGB / single-band / index loops.
  */
 
 export const COLORMAPS: Record<string, (v: number) => number[]> = {

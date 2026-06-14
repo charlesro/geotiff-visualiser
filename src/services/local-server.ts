@@ -1,9 +1,7 @@
 /**
- * Client for the optional local Python engine.
- *
- * App.tsx and LocalPythonServerModal.tsx previously each had their own URL
- * normalisation and tunnel-bypass headers on every fetch call. All
- * communication with the local server now goes through this module.
+ * Client for the local DuckDB / GeoTIFF engine. All communication with the
+ * server (status ping, SQL queries) goes through this module so URL
+ * normalisation and the tunnel-bypass headers live in one place.
  */
 
 /** Headers required to pass through ngrok/localtunnel style proxies. */
@@ -55,13 +53,6 @@ export async function checkLocalServerStatus(baseUrl: string): Promise<any> {
   return ping.json();
 }
 
-/** GET /files — list GeoTIFF/parquet files served from the server's DATA_DIR. */
-export async function listLocalFiles(baseUrl: string): Promise<string[]> {
-  const response = await fetchLocalServer(baseUrl, '/files');
-  if (!response.ok) throw new Error('Failed to fetch files');
-  return response.json();
-}
-
 /** POST /query — run a DuckDB SQL query. */
 export async function runLocalQuery(baseUrl: string, query: string, signal?: AbortSignal): Promise<any> {
   const response = await fetchLocalServer(baseUrl, '/query', {
@@ -76,7 +67,3 @@ export async function runLocalQuery(baseUrl: string, query: string, signal?: Abo
   }
   return data;
 }
-
-/** Absolute URL for a file served by the local server. */
-export const localFileUrl = (baseUrl: string, filename: string): string =>
-  `${normalizeLocalUrl(baseUrl)}/files/${filename}`;

@@ -143,19 +143,3 @@ export function bufferBboxMeters(bbox: Bbox, bufferMeters: number): Bbox {
     maxLat + latBuffer,
   ];
 }
-
-/** Approximate ground dimensions of a WGS84 bbox (assumes 10 m/px, Sentinel-2). */
-export function getBboxDimensions(bbox: Bbox) {
-  const [west, south, east, north] = bbox;
-  const lat = (south + north) / 2;
-  const lonDiff = Math.abs(east - west);
-  const latDiff = Math.abs(north - south);
-
-  const widthMeters = lonDiff * 111320 * Math.cos(lat * Math.PI / 180);
-  const heightMeters = latDiff * 111320;
-
-  const widthPixels = Math.round(widthMeters / 10);
-  const heightPixels = Math.round(heightMeters / 10);
-
-  return { widthPixels, heightPixels, widthMeters, heightMeters };
-}

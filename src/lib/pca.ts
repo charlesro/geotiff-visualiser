@@ -5,9 +5,9 @@ import { PixelZone } from './zones';
  * PCA on pixel time series.
  *
  * Each pixel is one observation; its features are the index values at every
- * acquisition date (properties following the `<metric>_<date>` convention,
- * see lib/timeseries.ts). Pixels missing values on the retained dates are
- * dropped so the matrix is complete.
+ * acquisition date (stored on the pixel feature as `<metric>_<date>`
+ * properties). Pixels missing values on the retained dates are dropped so the
+ * matrix is complete.
  *
  * Fitting and projection are decoupled: the axes are computed from the
  * pixels of the `fitZones` classes only, and the pixels of the

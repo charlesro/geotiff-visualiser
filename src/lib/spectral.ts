@@ -1,7 +1,6 @@
 /**
- * Vegetation index formulas — the single implementation.
- * Previously NDVI/EVI/GNDVI/SAVI were implemented independently in
- * geotiff-utils.ts (twice), pixel-extraction.ts and pca-utils.ts.
+ * Vegetation index formulas — the single implementation shared by the pixel
+ * extraction (pixel-extraction.ts) and the raster renderer (raster-render.ts).
  */
 
 export type SpectralIndexType = 'ndvi' | 'evi' | 'gndvi' | 'savi';
@@ -55,11 +54,3 @@ export function computeIndexValue(
       return 0;
   }
 }
-
-/** Display strings for the UI — kept next to the formulas they describe. */
-export const INDEX_FORMULAS: Record<SpectralIndexType, string> = {
-  ndvi: '(NIR - Red) / (NIR + Red)',
-  evi: '2.5 * ((NIR - Red) / (NIR + 6 * Red - 7.5 * Blue + 1))',
-  gndvi: '(NIR - Green) / (NIR + Green)',
-  savi: '((NIR - Red) / (NIR + Red + 0.5)) * (1 + 0.5)',
-};

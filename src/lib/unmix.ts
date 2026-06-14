@@ -1,4 +1,4 @@
-import { PixelZone, ZoneExtraction, featureKey } from './zones';
+import { ZoneExtraction, featureKey } from './zones';
 
 /**
  * Linear spectral unmixing of the mixed boundary pixels, in species terms.
@@ -179,5 +179,3 @@ export function mixHexColors(c0: string, c1: string, t: number): string {
   const mix = (a: number, b: number) => Math.round(a + (b - a) * u);
   return `#${[mix(r0, r1), mix(g0, g1), mix(b0, b1)].map(v => v.toString(16).padStart(2, '0')).join('')}`;
 }
-
-export const UNMIXED_ZONES: PixelZone[] = ['edge_other_species'];
