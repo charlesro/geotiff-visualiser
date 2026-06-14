@@ -782,6 +782,14 @@ export default function App() {
     [requestFit, pcaPanelWidth]
   );
 
+  /** Clicking a zone dot on the map → highlight that pixel in the PCA scatter
+   *  (no fly-to: the user already sees it on the map). Click again to clear. */
+  const pickMapPixel = useCallback((p: { id: string; zone: string; lng: number; lat: number }) => {
+    setHighlightPixel(prev =>
+      prev?.id === p.id ? null : { id: p.id, zone: p.zone as PixelZone, lng: p.lng, lat: p.lat, values: {} }
+    );
+  }, []);
+
   const closePcaPanel = useCallback(() => {
     setShowPcaPanel(false);
     setHighlightPixel(null);
@@ -1001,6 +1009,8 @@ export default function App() {
             inspectPixels={ndviInspection?.pixels ?? null}
             highlightPixel={highlightPixel}
             onPickPixel={pickPixel}
+            pcaPickMode={showPcaPanel && pcaResult !== null}
+            onPickMapPixel={pickMapPixel}
             fitRequest={fitRequest}
           />
           <NdviPanel

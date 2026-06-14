@@ -54,6 +54,9 @@ interface MapPanelProps {
   /** Pixel picked in the NDVI panel or on the map, marked with a white ring. */
   highlightPixel: { id?: string; lng: number; lat: number } | null;
   onPickPixel: (pixel: NdviPixel) => void;
+  /** When the PCA panel is open, zone dots become clickable to pick a pixel. */
+  pcaPickMode: boolean;
+  onPickMapPixel: (p: { id: string; zone: string; lng: number; lat: number }) => void;
   /** Changes to this object trigger a fitBounds. `padRight` keeps the target
    *  clear of a drawer covering the right side of the map. */
   fitRequest: { bounds: Bbox; token: number; padRight?: number; maxZoom?: number } | null;
@@ -106,6 +109,45 @@ function FitController({ fitRequest }: { fitRequest: MapPanelProps['fitRequest']
       }
     );
   }, [fitRequest, map]);
+  return null;
+}
+
+/**
+ * While the PCA panel is open, a click on the map picks the nearest zone
+ * pixel (within ~1 pixel) and reports it, so it highlights in the scatter.
+ * One O(n) search per click — cheaper and smoother than making every dot an
+ * interactive layer (which would hit-test on every hover).
+ */
+function PixelPicker({
+  active,
+  zones,
+  onPick,
+}: {
+  active: boolean;
+  zones: ZoneExtraction | null;
+  onPick: (p: { id: string; zone: string; lng: number; lat: number }) => void;
+}) {
+  useMapEvents({
+    click: e => {
+      if (!active || !zones) return;
+      const { lat, lng } = e.latlng;
+      const cosLat = Math.cos((lat * Math.PI) / 180);
+      let best: any = null;
+      let bestD = Infinity;
+      for (const f of [...zones.interior.features, ...zones.edge.features]) {
+        const c = f.geometry?.coordinates;
+        if (!c) continue;
+        const dLat = c[1] - lat;
+        const dLng = (c[0] - lng) * cosLat;
+        const d = dLat * dLat + dLng * dLng;
+        if (d < bestD) { bestD = d; best = f; }
+      }
+      // Accept only if the click landed within ~8 m of a pixel centre.
+      if (best && Math.sqrt(bestD) * 111320 < 8) {
+        onPick({ id: best.properties.id, zone: best.properties.zone, lng: best.geometry.coordinates[0], lat: best.geometry.coordinates[1] });
+      }
+    },
+  });
   return null;
 }
 
@@ -192,7 +234,7 @@ function BboxSelector({ polygons, onSelectBox }: { polygons: any | null; onSelec
   );
 }
 
-export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBoxSelect, onClearSelection, zones, clusterAssignment, clusterVersion, preview, clusterPreviews, predictionOverlays, scenes, previewSceneId, onPreviewScene, onDeleteScene, onInspectPolygon, inspectPixels, highlightPixel, onPickPixel, fitRequest }: MapPanelProps) {
+export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBoxSelect, onClearSelection, zones, clusterAssignment, clusterVersion, preview, clusterPreviews, predictionOverlays, scenes, previewSceneId, onPreviewScene, onDeleteScene, onInspectPolygon, inspectPixels, highlightPixel, onPickPixel, pcaPickMode, onPickMapPixel, fitRequest }: MapPanelProps) {
   const [basemap, setBasemap] = useState<BasemapKey>('dark');
   const [showZoneDots, setShowZoneDots] = useState(true);
   // Colour edge_other_species pixels by their mixing fraction instead of a
@@ -205,6 +247,9 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
   // the callbacks through refs so the bound handlers never go stale.
   const probeRef = useRef(probeMode);
   probeRef.current = probeMode;
+  // While picking PCA pixels, polygon clicks must not also toggle selection.
+  const pcaPickRef = useRef(pcaPickMode);
+  pcaPickRef.current = pcaPickMode;
   const handlersRef = useRef({ onTogglePolygon, onInspectPolygon });
   handlersRef.current = { onTogglePolygon, onInspectPolygon };
 
@@ -283,6 +328,7 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
     layer.bindTooltip(label, { sticky: true, direction: 'top', opacity: 0.9 });
     layer.on({
       click: () => {
+        if (pcaPickRef.current) return; // pixel-pick mode owns clicks
         if (probeRef.current) handlersRef.current.onInspectPolygon(feature);
         else handlersRef.current.onTogglePolygon(feature.properties.__pid);
       },
@@ -291,8 +337,9 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
     });
   };
 
-  // interactive: false — the dots must not swallow clicks meant for the
-  // polygons underneath (selection and the NDVI inspector).
+  // interactive:false — the dots never swallow clicks (picking a pixel for
+  // the PCA scatter is handled by a single map-click nearest-pixel search,
+  // see PixelPicker, which avoids hit-testing every dot on hover).
   const pixelToMarker = (feature: any, latlng: L.LatLng) => {
     const props = feature.properties || {};
     let fill = zoneColor(props.zone);
@@ -303,7 +350,6 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
     }
     return L.circleMarker(latlng, {
       radius: 3,
-      // Thin dark outline so the dots stay legible over bright fields.
       stroke: true,
       color: '#0b0e11',
       weight: 0.8,
@@ -336,6 +382,7 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
         <ScaleControl position="bottomleft" />
         <FitController fitRequest={fitRequest} />
         <BboxSelector polygons={polygons} onSelectBox={onBoxSelect} />
+        <PixelPicker active={pcaPickMode} zones={zones} onPick={onPickMapPixel} />
         <button
           onClick={() => setProbeMode(p => !p)}
           className={cn(

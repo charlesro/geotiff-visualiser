@@ -164,10 +164,16 @@ export default function PcaPanel({
   };
 
   const points = useMemo(() => {
-    const rows =
+    let rows =
       result.rows.length > MAX_POINTS
         ? Array.from({ length: MAX_POINTS }, (_, i) => result.rows[Math.floor((i * result.rows.length) / MAX_POINTS)])
         : result.rows;
+    // Always include the highlighted pixel (e.g. picked on the map) so its
+    // ring shows even when the scatter is sub-sampled.
+    if (highlightPixelId && !rows.some(r => r.pixelId === highlightPixelId)) {
+      const sel = result.rows.find(r => r.pixelId === highlightPixelId);
+      if (sel) rows = [...rows, sel];
+    }
     const colorIdx = new Map(colorCats.map((c, i) => [c.name, i]));
     const shapeIdx = new Map(shapeCats.map((c, i) => [c.name, i]));
     return rows.map(row => {
@@ -194,7 +200,7 @@ export default function PcaPanel({
         row,
       };
     });
-  }, [result, pcX, pcY, colorBy, shapeBy, colorCats, shapeCats, attrValue, mixAxis]);
+  }, [result, pcX, pcY, colorBy, shapeBy, colorCats, shapeCats, attrValue, mixAxis, highlightPixelId]);
 
   const pick = (p: (typeof points)[number]) => {
     if (highlightPixelId === p.pixelId) onPickPixel(null);
