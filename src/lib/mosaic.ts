@@ -136,20 +136,30 @@ export async function fetchSceneMosaic(
   };
 }
 
+/** The three lat/lng corners of a grid, for a rotated image overlay. */
+export interface GridCorners {
+  topLeft: [number, number]; // [lat, lng]
+  topRight: [number, number];
+  bottomLeft: [number, number];
+}
+
+export interface AnalysisPreview {
+  url: string;
+  /** True (unprojected) corners; placing the image rotated at these makes it
+   *  line up with the pixel dots. Null when the grid lacks geo metadata. */
+  corners: GridCorners | null;
+}
+
 /**
- * Render an analysis grid (fetched with skipCanvas) to a data URL for the
- * map. Each window is stretched on its own histogram; nodata (0) is
- * transparent.
- *
- * The grid is a regular raster in the overpass's UTM CRS, which is rotated a
- * degree or two from lat/lng. A plain ImageOverlay stretches it axis-aligned
- * over the unprojected bounding box, so the imagery drifts from the pixel
- * dots (which sit at their true unprojected positions) by up to a few pixels.
- * We instead warp the raster with the affine that maps its UTM corners to
- * their true lat/lng, so the imagery lands exactly under the dots.
+ * Render an analysis grid (fetched with skipCanvas) to a uniform data URL plus
+ * its true lat/lng corners. The raster is a regular grid in the overpass's UTM
+ * CRS, rotated a degree or two from lat/lng; the caller places this image as a
+ * *rotated* overlay at the corners, so its (uniform) pixels land under the
+ * dots. Rendering stays a plain integer-scaled raster — uniform pixels, no
+ * resampling — and only the placement rotates.
  */
-export function renderAnalysisGridPreview(grid: GeoTIFFData, options: RenderingOptions): string {
-  const { width, height, crs, originalBbox, imageBbox } = grid.metadata;
+export function renderAnalysisGridPreview(grid: GeoTIFFData, options: RenderingOptions): AnalysisPreview {
+  const { width, height, crs, originalBbox } = grid.metadata;
   const bands = grid.bandData || {};
   const src = renderRasterToCanvas(
     (bandNum: number) => bands[getAssetKey(bandNum)] || new Float32Array(width * height),
@@ -158,52 +168,33 @@ export function renderAnalysisGridPreview(grid: GeoTIFFData, options: RenderingO
     height
   );
 
-  // Fallback to the old axis-aligned placement if the geo info is missing.
-  if (!crs || !originalBbox || !imageBbox) {
-    const scale = Math.max(1, Math.ceil(Math.max(256 / width, 256 / height)));
-    if (scale === 1) return src.toDataURL();
+  // Integer supersample so the 10 m pixels stay crisp and uniform.
+  const scale = Math.max(1, Math.ceil(Math.max(256 / width, 256 / height)));
+  let canvas = src;
+  if (scale > 1) {
     const big = document.createElement('canvas');
     big.width = width * scale;
     big.height = height * scale;
     const bctx = big.getContext('2d')!;
     bctx.imageSmoothingEnabled = false;
     bctx.drawImage(src, 0, 0, big.width, big.height);
-    return big.toDataURL();
+    canvas = big;
   }
+  const url = canvas.toDataURL();
 
-  const [gMinX, gMinY, gMaxX, gMaxY] = originalBbox; // UTM grid edges
-  const [minLng, minLat, maxLng, maxLat] = imageBbox; // lat/lng AABB (overlay bounds)
-  const midLat = (minLat + maxLat) / 2;
-
-  // Output canvas covers the lat/lng AABB at ~2× the native resolution.
-  const SS = 2;
-  const resM = (gMaxX - gMinX) / width; // ≈ 10 m
-  const Wo = Math.max(1, Math.round(((maxLng - minLng) * 111320 * Math.cos((midLat * Math.PI) / 180)) / resM) * SS);
-  const Ho = Math.max(1, Math.round(((maxLat - minLat) * 110540) / resM) * SS);
-
-  const toOut = (lng: number, lat: number): [number, number] => [
-    ((lng - minLng) / (maxLng - minLng)) * Wo,
-    ((maxLat - lat) / (maxLat - minLat)) * Ho,
-  ];
-  // Source canvas (0,0)=NW, (width,0)=NE, (0,height)=SW → true lat/lng → output.
-  const NW = toOut(...unprojectToWgs84(crs, gMinX, gMaxY));
-  const NE = toOut(...unprojectToWgs84(crs, gMaxX, gMaxY));
-  const SW = toOut(...unprojectToWgs84(crs, gMinX, gMinY));
-  const e = NW[0];
-  const f = NW[1];
-  const a = (NE[0] - e) / width;
-  const b = (NE[1] - f) / width;
-  const c = (SW[0] - e) / height;
-  const d = (SW[1] - f) / height;
-
-  const out = document.createElement('canvas');
-  out.width = Wo;
-  out.height = Ho;
-  const ctx = out.getContext('2d')!;
-  ctx.imageSmoothingEnabled = false;
-  ctx.setTransform(a, b, c, d, e, f);
-  ctx.drawImage(src, 0, 0);
-  return out.toDataURL();
+  let corners: GridCorners | null = null;
+  if (crs && originalBbox) {
+    const [gMinX, gMinY, gMaxX, gMaxY] = originalBbox;
+    const tl = unprojectToWgs84(crs, gMinX, gMaxY);
+    const tr = unprojectToWgs84(crs, gMaxX, gMaxY);
+    const bl = unprojectToWgs84(crs, gMinX, gMinY);
+    corners = {
+      topLeft: [tl[1], tl[0]],
+      topRight: [tr[1], tr[0]],
+      bottomLeft: [bl[1], bl[0]],
+    };
+  }
+  return { url, corners };
 }
 
 /** Read the part of one tile band that overlaps the grid and paste it in. */

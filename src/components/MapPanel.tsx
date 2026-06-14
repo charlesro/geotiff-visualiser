@@ -24,6 +24,9 @@ export interface ScenePreview {
   url: string;
   bounds: [[number, number], [number, number]];
   opacity: number;
+  /** When set, the image is placed rotated at these true corners (UTM grid)
+   *  instead of axis-aligned over `bounds`, so its pixels line up with dots. */
+  corners?: { topLeft: [number, number]; topRight: [number, number]; bottomLeft: [number, number] } | null;
 }
 
 interface MapPanelProps {
@@ -109,6 +112,62 @@ function FitController({ fitRequest }: { fitRequest: MapPanelProps['fitRequest']
       }
     );
   }, [fitRequest, map]);
+  return null;
+}
+
+/**
+ * Image overlay placed *rotated* at three true corners (the UTM grid's
+ * NW/NE/SW), via a CSS affine transform recomputed on every map move. The
+ * image's own pixels stay uniform — only the placement rotates — so a
+ * Sentinel-2 window lines up exactly with the pixel dots (which sit at their
+ * true unprojected positions). Leaflet's ImageOverlay can only place images
+ * axis-aligned, which is why the UTM rotation made the imagery drift.
+ */
+function RotatedImageOverlay({
+  url,
+  corners,
+  opacity,
+}: {
+  url: string;
+  corners: { topLeft: [number, number]; topRight: [number, number]; bottomLeft: [number, number] };
+  opacity: number;
+}) {
+  const map = useMap();
+  useEffect(() => {
+    const img = L.DomUtil.create('img', 'leaflet-image-layer leaflet-zoom-animated pixel-perfect') as HTMLImageElement;
+    img.src = url;
+    img.style.transformOrigin = '0 0';
+    img.style.position = 'absolute';
+    img.style.opacity = String(opacity);
+    img.style.pointerEvents = 'none';
+    map.getPanes().overlayPane!.appendChild(img);
+
+    const tl = L.latLng(corners.topLeft);
+    const tr = L.latLng(corners.topRight);
+    const bl = L.latLng(corners.bottomLeft);
+
+    const reset = () => {
+      const w = img.naturalWidth;
+      const h = img.naturalHeight;
+      if (!w || !h) return;
+      const ptl = map.latLngToLayerPoint(tl);
+      const ptr = map.latLngToLayerPoint(tr);
+      const pbl = map.latLngToLayerPoint(bl);
+      const a = (ptr.x - ptl.x) / w;
+      const b = (ptr.y - ptl.y) / w;
+      const c = (pbl.x - ptl.x) / h;
+      const d = (pbl.y - ptl.y) / h;
+      img.style.transform = `translate(${ptl.x}px, ${ptl.y}px) matrix(${a}, ${b}, ${c}, ${d}, 0, 0)`;
+    };
+
+    img.onload = reset;
+    if (img.complete) reset();
+    map.on('move zoom viewreset zoomend moveend', reset);
+    return () => {
+      map.off('move zoom viewreset zoomend moveend', reset);
+      img.remove();
+    };
+  }, [map, url, opacity, corners.topLeft[0], corners.topLeft[1], corners.topRight[0], corners.topRight[1], corners.bottomLeft[0], corners.bottomLeft[1]]);
   return null;
 }
 
@@ -422,15 +481,19 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
             className="pixel-perfect"
           />
         )}
-        {clusterPreviews.map((c, i) => (
-          <ImageOverlay
-            key={`cluster-${previewSceneId}-${i}`}
-            url={c.url}
-            bounds={c.bounds}
-            opacity={c.opacity}
-            className="pixel-perfect"
-          />
-        ))}
+        {clusterPreviews.map((c, i) =>
+          c.corners ? (
+            <RotatedImageOverlay key={`cluster-${previewSceneId}-${i}`} url={c.url} corners={c.corners} opacity={c.opacity} />
+          ) : (
+            <ImageOverlay
+              key={`cluster-${previewSceneId}-${i}`}
+              url={c.url}
+              bounds={c.bounds}
+              opacity={c.opacity}
+              className="pixel-perfect"
+            />
+          )
+        )}
         {predictionOverlays.map((c, i) => (
           <ImageOverlay key={`predict-${i}`} url={c.url} bounds={c.bounds} opacity={c.opacity} className="pixel-perfect" />
         ))}

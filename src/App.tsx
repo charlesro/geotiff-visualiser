@@ -501,11 +501,10 @@ export default function App() {
     if (!scene?.analysisGrids?.length) return [];
     const cached = clusterPreviewCache.current.get(scene.id);
     if (cached) return cached;
-    const rendered = scene.analysisGrids.map(grid => ({
-      url: renderAnalysisGridPreview(grid, DEFAULT_OPTIONS),
-      bounds: grid.bounds,
-      opacity: 0.95,
-    }));
+    const rendered = scene.analysisGrids.map(grid => {
+      const { url, corners } = renderAnalysisGridPreview(grid, DEFAULT_OPTIONS);
+      return { url, corners, bounds: grid.bounds, opacity: 0.95 };
+    });
     clusterPreviewCache.current.set(scene.id, rendered);
     return rendered;
   }, [previewSceneId, scenes]);
