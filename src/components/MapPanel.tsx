@@ -112,6 +112,14 @@ function FitController({ fitRequest }: { fitRequest: MapPanelProps['fitRequest']
   return null;
 }
 
+/** Report the map's zoom so the coarse mosaic can hide when zoomed in. */
+function ZoomWatcher({ onZoom }: { onZoom: (z: number) => void }) {
+  const map = useMap();
+  useEffect(() => onZoom(map.getZoom()), [map, onZoom]);
+  useMapEvents({ zoomend: () => onZoom(map.getZoom()) });
+  return null;
+}
+
 /**
  * While the PCA panel is open, a click on the map picks the nearest zone
  * pixel (within ~1 pixel) and reports it, so it highlights in the scatter.
@@ -236,7 +244,12 @@ function BboxSelector({ polygons, onSelectBox }: { polygons: any | null; onSelec
 
 export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBoxSelect, onClearSelection, zones, clusterAssignment, clusterVersion, preview, clusterPreviews, predictionOverlays, scenes, previewSceneId, onPreviewScene, onDeleteScene, onInspectPolygon, inspectPixels, highlightPixel, onPickPixel, pcaPickMode, onPickMapPixel, fitRequest }: MapPanelProps) {
   const [basemap, setBasemap] = useState<BasemapKey>('dark');
+  const [mapZoom, setMapZoom] = useState(0);
   const [showZoneDots, setShowZoneDots] = useState(true);
+  // Once zoomed in far enough for the native-10 m windows to resolve, hide the
+  // coarse mosaic so the zone dots sit on their true 10 m pixels, not on the
+  // much coarser preview squares.
+  const hideCoarseMosaic = clusterPreviews.length > 0 && mapZoom >= 15;
   // Colour edge_other_species pixels by their mixing fraction instead of a
   // flat class colour: own species at α=1 ↔ partner species at α=0.
   const [showMixing, setShowMixing] = useState(false);
@@ -383,6 +396,7 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
         <FitController fitRequest={fitRequest} />
         <BboxSelector polygons={polygons} onSelectBox={onBoxSelect} />
         <PixelPicker active={pcaPickMode} zones={zones} onPick={onPickMapPixel} />
+        <ZoomWatcher onZoom={setMapZoom} />
         <button
           onClick={() => setProbeMode(p => !p)}
           className={cn(
@@ -399,7 +413,7 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
 
         {/* react-leaflet's ImageOverlay never updates `url` in place — key the
             overlays on the previewed scene so switching dates swaps the image. */}
-        {preview && (
+        {preview && !hideCoarseMosaic && (
           <ImageOverlay
             key={`preview-${previewSceneId}`}
             url={preview.url}
