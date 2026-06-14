@@ -77,14 +77,19 @@ export async function fetchSentinelSeries(
 
   const byDate = groupItemsByDate(allItems);
 
-  // Keep only the dates whose combined tile footprints cover the selection;
-  // a swath edge crossing the bbox cannot be fixed by mosaicking.
-  const covered = byDate.filter(item => dateCoverage(item, bbox) >= MIN_COVERAGE);
+  // Keep only the dates whose tile footprints cover the fields we analyse.
+  // Coverage is measured over the polygon clusters, not the padded selection
+  // rectangle: a wide selection's empty corners often poke past a swath edge
+  // even when every field sits comfortably inside one overpass, and a swath
+  // edge crossing empty space cannot (and need not) be fixed by mosaicking.
+  const aoi = analysisBboxes.length > 0 ? analysisBboxes : [bbox];
+  const covered = byDate.filter(item => dateCoverage(item, aoi) >= MIN_COVERAGE);
   const partialDates = byDate.length - covered.length;
   if (covered.length === 0) {
     throw new Error(
-      `${byDate.length} date(s) matched but none covers the whole selection (satellite swath edge). ` +
-        'Try a longer period or a smaller selection.'
+      `${byDate.length} date(s) matched but none images every selected field on a single overpass — ` +
+        'the selection straddles a Sentinel-2 swath edge. Try a longer period, or split it into areas that ' +
+        'fall on the same overpass.'
     );
   }
 
@@ -141,35 +146,43 @@ const intersectsBbox = (tile: STACItem, bbox: Bbox): boolean =>
   !!tile.bbox && getBboxIntersectionArea(tile.bbox as Bbox, bbox) > 0;
 
 /**
- * Fraction of the bbox covered by the date's tile footprints, estimated on a
- * point grid. The STAC geometry is the *data* footprint, so swath-edge tiles
- * only count where they really have pixels.
+ * Fraction of the area of interest covered by the date's tile footprints,
+ * estimated on a point grid sampled *inside* the AOI rectangles (the polygon
+ * clusters). The STAC geometry is the *data* footprint, so swath-edge tiles
+ * only count where they really have pixels. Each rectangle is sampled on its
+ * own grid, so a date that misses a whole cluster is correctly penalised, but
+ * empty land between clusters never counts against it.
  */
-function dateCoverage(item: STACItem, bbox: Bbox): number {
+function dateCoverage(item: STACItem, aoiBboxes: Bbox[]): number {
   const geometries = tilesOf(item)
     .map(t => t.geometry)
     .filter(Boolean);
-  if (geometries.length === 0) return 0;
+  if (geometries.length === 0 || aoiBboxes.length === 0) return 0;
 
-  const N = 12;
+  // ~1500 sample points total, spread evenly across the clusters.
+  const N = Math.max(2, Math.min(10, Math.round(Math.sqrt(1500 / aoiBboxes.length))));
   let covered = 0;
-  for (let iy = 0; iy < N; iy++) {
-    const lat = bbox[1] + ((iy + 0.5) / N) * (bbox[3] - bbox[1]);
-    for (let ix = 0; ix < N; ix++) {
-      const lng = bbox[0] + ((ix + 0.5) / N) * (bbox[2] - bbox[0]);
-      for (const geom of geometries) {
-        try {
-          if (booleanPointInPolygon([lng, lat], geom)) {
-            covered++;
-            break;
+  let total = 0;
+  for (const box of aoiBboxes) {
+    for (let iy = 0; iy < N; iy++) {
+      const lat = box[1] + ((iy + 0.5) / N) * (box[3] - box[1]);
+      for (let ix = 0; ix < N; ix++) {
+        const lng = box[0] + ((ix + 0.5) / N) * (box[2] - box[0]);
+        total++;
+        for (const geom of geometries) {
+          try {
+            if (booleanPointInPolygon([lng, lat], geom)) {
+              covered++;
+              break;
+            }
+          } catch {
+            /* malformed footprint — ignore */
           }
-        } catch {
-          /* malformed footprint — ignore */
         }
       }
     }
   }
-  return covered / (N * N);
+  return total > 0 ? covered / total : 0;
 }
 
 async function downloadScene(
