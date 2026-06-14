@@ -17,7 +17,7 @@ import { DEFAULT_OPTIONS } from './lib/layer-factory';
 import { extractZones, featureKey, PixelZone, ZoneExtraction, ZoneProgress } from './lib/zones';
 import { computeUnmixing } from './lib/unmix';
 import { clusterBySpecies, SpeciesClustering, fieldKeyOf } from './lib/species-clusters';
-import { runPixelPca, pcaScoresToCsv, PcaRunResult, ALL_PIXEL_ZONES } from './lib/pca';
+import { runPixelPca, pcaScoresToCsv, PcaRunResult } from './lib/pca';
 import { isCancelledError } from './lib/cancel';
 import { DatasetDateRange } from './lib/neighbor-query';
 import { cacheClear, cacheDelete, cacheGet, cacheSet, reviveScenes, serializeScenes } from './lib/persist';
@@ -44,6 +44,10 @@ import BoundaryProfilePanel from './components/BoundaryProfilePanel';
  */
 
 const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/** PCA defaults: fit on the pure interior, show interior vs different-species edge. */
+const PCA_DEFAULT_FIT: PixelZone[] = ['interior'];
+const PCA_DEFAULT_PROJECT: PixelZone[] = ['interior', 'edge_other_species'];
 
 export default function App() {
   // Step 1 — polygons & selection
@@ -83,8 +87,10 @@ export default function App() {
   const [pcaScope, setPcaScope] = useState<string>(PCA_SCOPE_ALL);
   /** Subset of extracted fields (pids) the PCA runs on; null = all. */
   const [pcaFields, setPcaFields] = useState<Set<number> | null>(null);
-  const [pcaFitZones, setPcaFitZones] = useState<PixelZone[]>(ALL_PIXEL_ZONES);
-  const [pcaProjectZones, setPcaProjectZones] = useState<PixelZone[]>(ALL_PIXEL_ZONES);
+  // Default: fit the axes on the pure interior pixels, and display the
+  // interior vs the edge facing another species (the comparison of interest).
+  const [pcaFitZones, setPcaFitZones] = useState<PixelZone[]>(PCA_DEFAULT_FIT);
+  const [pcaProjectZones, setPcaProjectZones] = useState<PixelZone[]>(PCA_DEFAULT_PROJECT);
   const [pcaResult, setPcaResult] = useState<PcaRunResult | null>(null);
   const [pcaBusy, setPcaBusy] = useState(false);
   const [pcaError, setPcaError] = useState<string | null>(null);
@@ -227,8 +233,8 @@ export default function App() {
     setClusteringError(null);
     setPcaScope(PCA_SCOPE_ALL);
     setPcaFields(null);
-    setPcaFitZones(ALL_PIXEL_ZONES);
-    setPcaProjectZones(ALL_PIXEL_ZONES);
+    setPcaFitZones(PCA_DEFAULT_FIT);
+    setPcaProjectZones(PCA_DEFAULT_PROJECT);
     setPcaResult(null);
     setPcaError(null);
     setShowPcaPanel(false);
