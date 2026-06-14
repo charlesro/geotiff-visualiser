@@ -686,36 +686,64 @@ export default function App() {
   );
 
   /**
-   * Extracted fields grouped by neighbour pair for the PCA field list. Pair
-   * membership is resolved by field identity (NewID), so a field belonging
-   * to several pairs appears under each of them (the pairs query loads one
-   * row per field per pair, but the extraction keeps each field once).
-   * Pairs and fields are ordered by pixel count, largest first.
+   * Extracted fields grouped into neighbour *clusters* for the PCA field
+   * list: the neighbour-pairs are merged by transitive closure (union-find),
+   * so every field reachable through a chain of neighbours lands in one
+   * group — not just the 2-field pairs. Groups and fields are ordered by
+   * pixel count, largest first.
    */
   const pcaFieldGroups = useMemo(() => {
     const per = zones?.perPolygon || [];
     const byKey = new Map(per.map(p => [p.key, p]));
     const px = (p: { interior: number; edge: number }) => p.interior + p.edge;
 
-    const pairs = new Map<string, Map<number, (typeof per)[number]>>();
-    const inPair = new Set<string>();
+    // Union-find over extracted field keys.
+    const parent = new Map<string, string>();
+    const find = (k: string): string => {
+      let r = k;
+      while (parent.get(r) !== r) r = parent.get(r)!;
+      while (parent.get(k) !== r) {
+        const n = parent.get(k)!;
+        parent.set(k, r);
+        k = n;
+      }
+      return r;
+    };
+    const add = (k: string) => parent.has(k) || parent.set(k, k);
+
+    // Collect each pair's extracted members, then union them together.
+    const pairMembers = new Map<string, string[]>();
+    const inGroup = new Set<string>();
     for (const f of polygons?.features || []) {
       const pairId = f.properties?.pair_id;
       if (pairId == null) continue;
       const entry = byKey.get(featureKey(f));
       if (!entry) continue; // field not part of the extraction
-      const group = pairs.get(String(pairId)) ?? new Map();
-      group.set(entry.pid, entry);
-      pairs.set(String(pairId), group);
-      inPair.add(entry.key);
+      add(entry.key);
+      (pairMembers.get(String(pairId)) ?? pairMembers.set(String(pairId), []).get(String(pairId))!).push(entry.key);
+      inGroup.add(entry.key);
+    }
+    for (const members of pairMembers.values()) {
+      for (let i = 1; i < members.length; i++) parent.set(find(members[0]), find(members[i]));
     }
 
-    const groups = Array.from(pairs.entries()).map(([pair, members]) => {
-      const items = Array.from(members.values()).sort((a, b) => px(b) - px(a));
-      return { pair, items, px: items.reduce((s, p) => s + px(p), 0) };
-    });
+    // Gather the connected components.
+    const comps = new Map<string, (typeof per)[number][]>();
+    for (const key of inGroup) {
+      const root = find(key);
+      (comps.get(root) ?? comps.set(root, []).get(root)!).push(byKey.get(key)!);
+    }
+
+    const groups = Array.from(comps.values())
+      .filter(items => items.length >= 2) // a group needs at least two neighbours
+      .map(items => {
+        const sorted = items.sort((a, b) => px(b) - px(a));
+        return { id: sorted.map(p => p.pid).join('.'), items: sorted, px: sorted.reduce((s, p) => s + px(p), 0) };
+      });
     groups.sort((a, b) => b.px - a.px);
-    const solo = per.filter(p => !inPair.has(p.key)).sort((a, b) => px(b) - px(a));
+
+    const grouped = new Set(groups.flatMap(g => g.items.map(i => i.key)));
+    const solo = per.filter(p => !grouped.has(p.key)).sort((a, b) => px(b) - px(a));
     return { groups, solo };
   }, [zones, polygons]);
 

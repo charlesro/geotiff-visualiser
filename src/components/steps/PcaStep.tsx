@@ -85,9 +85,9 @@ interface PcaStepProps {
   /** Subset of extracted fields (pids) the PCA runs on; null = all. */
   fields: Set<number> | null;
   onFieldsChange: (fields: Set<number> | null) => void;
-  /** Extracted fields grouped by neighbour pair, ordered by pixel count. */
+  /** Extracted fields grouped into neighbour clusters, ordered by pixel count. */
   fieldGroups: {
-    groups: { pair: string; items: ZoneExtraction['perPolygon']; px: number }[];
+    groups: { id: string; items: ZoneExtraction['perPolygon']; px: number }[];
     solo: ZoneExtraction['perPolygon'];
   };
   fitZones: PixelZone[];
@@ -117,7 +117,7 @@ export default function PcaStep(props: PcaStepProps) {
     setFields(next);
   };
 
-  const togglePair = (pids: number[], include: boolean) => {
+  const toggleGroup = (pids: number[], include: boolean) => {
     const next = currentFields();
     for (const pid of pids) {
       if (include) next.add(pid);
@@ -182,19 +182,19 @@ export default function PcaStep(props: PcaStepProps) {
             </button>
           </div>
           <div className="mt-1 max-h-48 overflow-y-auto">
-            {fieldGroups.groups.map(({ pair, items, px }) => {
+            {fieldGroups.groups.map(({ id, items, px }) => {
               const pids = items.map(p => p.pid);
               const allIn = pids.every(pid => props.fields === null || props.fields.has(pid));
               return (
-                <div key={pair} className="mb-1 rounded border border-white/5 px-1.5 py-1">
+                <div key={id} className="mb-1 rounded border border-white/5 px-1.5 py-1">
                   <label className="flex cursor-pointer items-center gap-2 text-[11px] font-medium text-slate-300">
                     <input
                       type="checkbox"
                       checked={allIn}
-                      onChange={() => togglePair(pids, !allIn)}
+                      onChange={() => toggleGroup(pids, !allIn)}
                       className="accent-sky-500"
                     />
-                    Pair {pair.replace('_', ' ↔ ')}
+                    Group · {items.length} fields
                     <span className="ml-auto shrink-0 font-normal text-slate-600">{px} px</span>
                   </label>
                   {items.map(p => {
@@ -219,7 +219,7 @@ export default function PcaStep(props: PcaStepProps) {
               );
             })}
             {fieldGroups.solo.length > 0 && fieldGroups.groups.length > 0 && (
-              <div className="mt-1 text-[10px] font-medium uppercase tracking-wide text-slate-600">Unpaired</div>
+              <div className="mt-1 text-[10px] font-medium uppercase tracking-wide text-slate-600">Ungrouped</div>
             )}
             {fieldGroups.solo.map(p => {
               const checked = props.fields === null || props.fields.has(p.pid);
