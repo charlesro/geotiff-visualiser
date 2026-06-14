@@ -34,7 +34,7 @@ interface ZonesStepProps {
 }
 
 export default function ZonesStep(props: ZonesStepProps) {
-  const [distance, setDistance] = useState(10);
+  const [distance, setDistance] = useState(20);
   const [metric, setMetric] = useState('NDVI');
   const [includeOutside, setIncludeOutside] = useState(false);
   const [neighbourGap, setNeighbourGap] = useState(12);
