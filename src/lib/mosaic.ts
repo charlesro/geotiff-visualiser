@@ -1,4 +1,4 @@
-import { GeoTIFFData, RenderingOptions, getCachedTiff } from './geotiff-utils';
+import { GeoTIFFData, RenderingOptions, getCachedTiff, evictTiff } from './geotiff-utils';
 import { renderRasterToCanvas } from './raster-render';
 import { getAssetKey } from './sentinel';
 import { Bbox, projectBboxToCrs, unprojectBboxToWgs84, unprojectToWgs84 } from './geo';
@@ -197,6 +197,22 @@ export function renderAnalysisGridPreview(grid: GeoTIFFData, options: RenderingO
   return { url, corners };
 }
 
+/**
+ * Per-COG read lock. geotiff.js keeps an internal block cache on each GeoTIFF
+ * object; firing several `readRasters` at the same cached instance
+ * concurrently (the analysis grids reuse a scene's COGs across every cluster
+ * window) races that cache and throws "Cannot read properties of undefined".
+ * Serialising the reads of one URL — different URLs still run in parallel —
+ * avoids the race without re-downloading headers.
+ */
+const readLocks = new Map<string, Promise<unknown>>();
+function withReadLock<T>(url: string, fn: () => Promise<T>): Promise<T> {
+  const prev = readLocks.get(url) ?? Promise.resolve();
+  const run = prev.then(fn, fn);
+  readLocks.set(url, run.catch(() => {}));
+  return run;
+}
+
 /** Read the part of one tile band that overlaps the grid and paste it in. */
 async function pasteTileBand(
   target: Float32Array,
@@ -244,12 +260,14 @@ async function pasteTileBand(
       const sBottom = Math.min(tH, Math.ceil((tBbox[3] - isectMinY) / tResY));
       if (sRight - sLeft <= 0 || sBottom - sTop <= 0) return;
 
-      const raster = await tiff.readRasters({
-        window: [sLeft, sTop, sRight, sBottom],
-        width: outW,
-        height: outH,
-        resampleMethod: 'nearest',
-      });
+      const raster = await withReadLock(url, () =>
+        tiff.readRasters({
+          window: [sLeft, sTop, sRight, sBottom],
+          width: outW,
+          height: outH,
+          resampleMethod: 'nearest',
+        })
+      );
       const data = raster[0] as ArrayLike<number>;
 
       for (let y = 0; y < outH; y++) {
@@ -263,7 +281,14 @@ async function pasteTileBand(
       return;
     } catch (e) {
       attempts++;
-      if (attempts >= 3) throw new Error(`Failed to read mosaic tile band: ${e instanceof Error ? e.message : e}`);
+      evictTiff(url); // the cached COG may be in a bad state — refetch it
+      if (attempts >= 3) {
+        // Don't fail the whole scene over one band read: leave these cells as
+        // nodata. Pixels that end up without a value on this date are filled
+        // by interpolation in the PCA, so a flaky tile costs detail, not a date.
+        console.warn(`Mosaic tile band read failed, left as nodata: ${e instanceof Error ? e.message : e}`);
+        return;
+      }
       await new Promise(r => setTimeout(r, 800 * attempts));
     }
   }

@@ -38,6 +38,11 @@ export function clearTiffCache(): void {
   tiffCache.clear();
 }
 
+/** Drop one cached GeoTIFF (by its base URL) so a failed read can refetch it. */
+export function evictTiff(url: string): void {
+  tiffCache.delete(url.split('?')[0]);
+}
+
 export interface RenderingOptions {
   mode: 'rgb' | 'single' | 'index';
   bands: [number, number, number]; // 1-based indices
