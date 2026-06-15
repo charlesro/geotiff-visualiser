@@ -24,8 +24,15 @@ import { GeoTIFFData, clearTiffCache } from './geotiff-utils';
 
 export const SERIES_ASSETS = ['B02', 'B03', 'B04', 'B08'];
 
-/** A date is kept when its tiles cover at least this fraction of the bbox. */
+/** A date gives a clean, all-fields scene when it covers at least this share. */
 const MIN_COVERAGE = 0.98;
+
+/**
+ * Fallback floor when no date covers every field (selection spans several
+ * overpasses): keep dates imaging at least this share, so each scene is still
+ * worthwhile and the heterogeneous series has a well-covered core to settle on.
+ */
+const PARTIAL_COVERAGE = 0.3;
 
 export interface SeriesFetchParams {
   startDate: string;
@@ -50,8 +57,13 @@ export interface SeriesFetchResult {
   failedDates: string[];
   /** Number of distinct acquisition dates available in the period. */
   availableDates: number;
-  /** Dates dropped because their swath does not cover the whole selection. */
+  /** Dates dropped because their swath images too little of the selection. */
   partialDates: number;
+  /**
+   * True when no single date covered every field, so the series was built
+   * heterogeneously — each field carries only the dates that imaged it.
+   */
+  heterogeneous: boolean;
 }
 
 export async function fetchSentinelSeries(
@@ -77,21 +89,30 @@ export async function fetchSentinelSeries(
 
   const byDate = groupItemsByDate(allItems);
 
-  // Keep only the dates whose tile footprints cover the fields we analyse.
-  // Coverage is measured over the polygon clusters, not the padded selection
-  // rectangle: a wide selection's empty corners often poke past a swath edge
-  // even when every field sits comfortably inside one overpass, and a swath
-  // edge crossing empty space cannot (and need not) be fixed by mosaicking.
+  // Coverage of the fields we analyse, per date. Measured over the polygon
+  // clusters, not the padded selection rectangle: a wide selection's empty
+  // corners often poke past a swath edge even when every field sits inside one
+  // overpass, and a swath edge crossing empty space need not be mosaicked.
   const aoi = analysisBboxes.length > 0 ? analysisBboxes : [bbox];
-  const covered = byDate.filter(item => dateCoverage(item, aoi) >= MIN_COVERAGE);
-  const partialDates = byDate.length - covered.length;
-  if (covered.length === 0) {
+  const withCoverage = byDate.map(item => ({ item, cov: dateCoverage(item, aoi) }));
+
+  // Prefer dates that image (essentially) every field — a clean series. If
+  // none does, the selection spans several Sentinel-2 overpasses; rather than
+  // give up, fall back to a heterogeneous series of every date that images a
+  // worthwhile share of the fields. Each field then carries only the dates it
+  // was imaged on, and the PCA settles on the largest consistently-covered
+  // core (see runPixelPca). Empty / near-empty dates are still dropped.
+  const full = withCoverage.filter(d => d.cov >= MIN_COVERAGE);
+  const heterogeneous = full.length === 0;
+  const usable = (heterogeneous ? withCoverage.filter(d => d.cov >= PARTIAL_COVERAGE) : full).map(d => d.item);
+  const partialDates = byDate.length - usable.length;
+  if (usable.length === 0) {
     throw new Error(
-      `${byDate.length} date(s) matched but none images every selected field on a single overpass — ` +
-        'the selection straddles a Sentinel-2 swath edge. Try a longer period, or split it into areas that ' +
-        'fall on the same overpass.'
+      `${byDate.length} date(s) matched but none images a usable share of the selected fields — ` +
+        'check the cloud-cover limit, or that the fields fall within the Sentinel-2 coverage.'
     );
   }
+  const covered = usable;
 
   const picked = (params.fetchAll ? [...covered] : selectEvenlySpaced(covered, params.targetCount)).sort(
     (a, b) => new Date(a.properties.datetime).getTime() - new Date(b.properties.datetime).getTime()
@@ -137,7 +158,7 @@ export async function fetchSentinelSeries(
   if (layers.length === 0) {
     throw new Error('All matching scenes failed to download. Check your network and try again.');
   }
-  return { layers, failedDates, availableDates: byDate.length, partialDates };
+  return { layers, failedDates, availableDates: byDate.length, partialDates, heterogeneous };
 }
 
 const tilesOf = (item: STACItem): STACItem[] => (item.groupItems?.length ? item.groupItems : [item]);

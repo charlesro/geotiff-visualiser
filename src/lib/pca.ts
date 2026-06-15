@@ -58,9 +58,6 @@ export interface PcaRunResult {
   fitCount: number;
 }
 
-/** Keep dates observed on at least this fraction of pixels. */
-const DATE_COVERAGE_THRESHOLD = 0.8;
-
 const zoneOf = (p: any): PixelZone => (p.properties?.zone as PixelZone) || 'interior';
 
 export function runPixelPca(pixelFeatures: any[], metric: string, options: PcaFitOptions = {}): PcaRunResult {
@@ -81,29 +78,52 @@ export function runPixelPca(pixelFeatures: any[], metric: string, options: PcaFi
     throw new Error('No pixels in the projected classes — tick at least one class to place in the space.');
   }
 
-  // Candidate dates and their coverage across the fit pixels (the model).
+  // Acquisition dates seen on the fit pixels, and how many observe each.
   const prefix = `${metric}_`;
-  const dateCounts = new Map<string, number>();
+  const has = (p: any, date: string): boolean => {
+    const v = p.properties[prefix + date];
+    return typeof v === 'number' && isFinite(v);
+  };
+  const obsCount = new Map<string, number>();
   for (const p of fitPixels) {
     for (const key of Object.keys(p.properties)) {
-      if (key.startsWith(prefix)) {
-        const value = p.properties[key];
-        if (typeof value === 'number' && isFinite(value)) {
-          const date = key.slice(prefix.length);
-          dateCounts.set(date, (dateCounts.get(date) || 0) + 1);
-        }
+      if (key.startsWith(prefix) && typeof p.properties[key] === 'number' && isFinite(p.properties[key])) {
+        obsCount.set(key.slice(prefix.length), (obsCount.get(key.slice(prefix.length)) || 0) + 1);
       }
     }
   }
 
-  const dates = Array.from(dateCounts.entries())
-    .filter(([, count]) => count >= fitPixels.length * DATE_COVERAGE_THRESHOLD)
-    .map(([date]) => date)
-    .sort();
+  // Pick the date set that maximises the *complete* block (fit pixels × dates
+  // with no missing values). A normal single-overpass selection observes every
+  // date on every pixel, so this keeps them all. A wide selection spanning
+  // several Sentinel-2 overpasses is imaged heterogeneously — no date covers
+  // every field — and this instead settles on the largest consistent core (the
+  // well-covered overlap), rather than failing outright. Dates are added in
+  // coverage order and the running intersection of their observers is tracked.
+  const candidates = Array.from(obsCount.entries())
+    .filter(([, c]) => c >= Math.max(10, fitPixels.length * 0.05))
+    .sort((a, b) => b[1] - a[1])
+    .map(([d]) => d);
+
+  let block = fitPixels;
+  const acc: string[] = [];
+  let dates: string[] = [];
+  let bestScore = -1;
+  for (const d of candidates) {
+    block = block.filter(p => has(p, d));
+    if (block.length < 10) break; // intersection only shrinks from here
+    acc.push(d);
+    if (acc.length >= 3 && block.length * acc.length > bestScore) {
+      bestScore = block.length * acc.length;
+      dates = [...acc];
+    }
+  }
+  dates.sort();
 
   if (dates.length < 3) {
     throw new Error(
-      `Only ${dates.length} usable acquisition date(s) across the fit pixels — at least 3 are needed. Fetch more scenes or relax the cloud-cover limit.`
+      `Fewer than 3 acquisition dates are shared by a workable block of fit pixels. ` +
+        `The selection may span several Sentinel-2 overpasses with little overlap — fetch more scenes, widen the period, or analyse one region at a time.`
     );
   }
 

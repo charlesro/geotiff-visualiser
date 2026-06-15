@@ -22,10 +22,17 @@ function getPixelValue(bandData: any, offset: number, indexType: string): number
   // Index formulas are shared with the rendering pipelines (see spectral.ts).
   // eviConstant is 10000 here because extraction operates on raw Sentinel-2
   // digital numbers (0-10000) rather than 0-1 reflectance.
+  //
+  // 0 is the Sentinel-2 nodata fill: a pixel reads 0 where the date's swath
+  // did not image it (a wide selection spanning several overpasses), or where
+  // it was masked. Such a pixel has no observation for the date, so return
+  // null — never a fabricated NDVI of 0 — so the gap stays missing downstream.
+  const valid = (v: number | undefined): v is number => typeof v === 'number' && isFinite(v) && v !== 0;
   if (indexType === 'NDVI') {
     const nir = bandData['8'] || bandData['B08'];
     const red = bandData['4'] || bandData['B04'];
     if (nir && red) {
+      if (!valid(nir[offset]) || !valid(red[offset])) return null;
       return computeIndexValue('ndvi', red[offset] as number, undefined, undefined, nir[offset] as number, { nanToZero: false });
     }
   } else if (indexType === 'EVI') {
@@ -33,12 +40,13 @@ function getPixelValue(bandData: any, offset: number, indexType: string): number
     const red = bandData['4'] || bandData['B04'];
     const blue = bandData['2'] || bandData['B02'];
     if (nir && red && blue) {
+      if (!valid(nir[offset]) || !valid(red[offset]) || !valid(blue[offset])) return null;
       return computeIndexValue('evi', red[offset] as number, undefined, blue[offset] as number, nir[offset] as number, { eviConstant: 10000, nanToZero: false });
     }
   } else {
      const bData = bandData[indexType] || bandData[indexType.replace('B', '')] || bandData[indexType.replace('B0', '')];
      if (bData) {
-       return bData[offset] as number;
+       return valid(bData[offset]) ? (bData[offset] as number) : null;
      }
   }
   return null;

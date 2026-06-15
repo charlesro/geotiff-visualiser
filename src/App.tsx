@@ -61,6 +61,8 @@ export default function App() {
   const [scenes, setScenes] = useState<RasterLayer[]>([]);
   const [failedDates, setFailedDates] = useState<string[]>([]);
   const [partialDates, setPartialDates] = useState(0);
+  /** No single date imaged every field — the series is heterogeneous. */
+  const [heterogeneous, setHeterogeneous] = useState(false);
   /** Selection the series was fetched for — the 10 m windows cover only it. */
   const [fetchedSelectionKey, setFetchedSelectionKey] = useState<string | null>(null);
   const [seriesBusy, setSeriesBusy] = useState(false);
@@ -159,6 +161,7 @@ export default function App() {
           setScenes(prev => (prev.length > 0 ? prev : revived));
           setFailedDates(prev => (prev.length > 0 ? prev : series.failedDates || []));
           setPartialDates(prev => prev || series.partialDates || 0);
+          setHeterogeneous(prev => prev || series.heterogeneous || false);
           setFetchedSelectionKey(prev => prev ?? series.fetchedSelectionKey ?? null);
         }
         const preview = await cacheGet<string>('preview');
@@ -197,11 +200,12 @@ export default function App() {
         scenes: serializeScenes(scenes),
         failedDates,
         partialDates,
+        heterogeneous,
         fetchedSelectionKey,
       });
     }, 1500);
     return () => clearTimeout(t);
-  }, [scenes, failedDates, partialDates, fetchedSelectionKey]);
+  }, [scenes, failedDates, partialDates, heterogeneous, fetchedSelectionKey]);
 
   useEffect(() => {
     if (!hydratedRef.current) return;
@@ -251,6 +255,7 @@ export default function App() {
     setScenes([]);
     setFailedDates([]);
     setPartialDates(0);
+    setHeterogeneous(false);
     setFetchedSelectionKey(null);
     setSeriesError(null);
     setPreviewSceneId(null);
@@ -434,6 +439,7 @@ export default function App() {
         setScenes(result.layers);
         setFailedDates(result.failedDates);
         setPartialDates(result.partialDates);
+        setHeterogeneous(result.heterogeneous);
         setFetchedSelectionKey(Array.from(selectedIds).sort((a, b) => a - b).join('.'));
         setPreviewSceneId(result.layers[result.layers.length - 1]?.id ?? null);
         requestFit(bbox);
@@ -888,6 +894,7 @@ export default function App() {
           error={seriesError}
           failedDates={failedDates}
           partialDates={partialDates}
+          heterogeneous={heterogeneous}
           selectionChanged={selectionChangedSinceFetch}
           onFetch={fetchSeries}
           onCancel={cancelOp}
