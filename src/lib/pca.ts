@@ -45,11 +45,12 @@ export interface PcaRunResult {
   /** % of variance explained per component (0–100). */
   explained: number[];
   cumulative: number[];
-  /** Acquisition dates used as features, sorted ascending. */
+  /** Acquisition dates used as the feature axis (union of all dates), sorted. */
   dates: string[];
-  /** Distinct dates any fit pixel was imaged on (≥ dates.length; the rest were
-   *  dropped to keep a complete block, or the fields weren't imaged on them). */
-  availableDates: number;
+  /** Fraction of matrix cells filled by interpolation (a pixel had no image on
+   *  that date — a different overpass, or a cloud). 0 when every pixel was
+   *  imaged on every date. */
+  interpolatedFraction: number;
   /** loadings[component][dateIndex] */
   loadings: number[][];
   metric: string;
@@ -81,91 +82,93 @@ export function runPixelPca(pixelFeatures: any[], metric: string, options: PcaFi
     throw new Error('No pixels in the projected classes — tick at least one class to place in the space.');
   }
 
-  // Acquisition dates seen on the fit pixels, and how many observe each.
+  // Feature axis: the union of real acquisition dates across all pixels, kept
+  // when a meaningful share of pixels actually observed them (drops one-off
+  // noise). Different fields may be imaged on different Sentinel-2 overpasses,
+  // so they need not share dates.
   const prefix = `${metric}_`;
-  const has = (p: any, date: string): boolean => {
-    const v = p.properties[prefix + date];
-    return typeof v === 'number' && isFinite(v);
-  };
   const obsCount = new Map<string, number>();
-  for (const p of fitPixels) {
+  for (const p of pixels) {
+    if (!fitSet.has(zoneOf(p)) && !projectSet.has(zoneOf(p))) continue;
     for (const key of Object.keys(p.properties)) {
       if (key.startsWith(prefix) && typeof p.properties[key] === 'number' && isFinite(p.properties[key])) {
         obsCount.set(key.slice(prefix.length), (obsCount.get(key.slice(prefix.length)) || 0) + 1);
       }
     }
   }
+  const dates = Array.from(obsCount.entries())
+    .filter(([, c]) => c >= Math.max(5, pixels.length * 0.02))
+    .map(([d]) => d)
+    .sort();
 
-  // Keep as many acquisition dates as possible — temporal richness is the
-  // point of a time-series PCA — provided enough fit pixels have a *complete*
-  // record over them (no missing values). A normal selection keeps every date.
-  // Only when the complete block would collapse — a wide selection whose fields
-  // sit on different Sentinel-2 overpasses with disjoint dates — are the
-  // lowest-coverage (most-limiting) dates dropped one at a time until a
-  // workable core remains. Dates a field was never imaged on are simply absent
-  // from its pixels, so they fall out here without polluting the result.
-  const candidateDates = Array.from(obsCount.entries())
-    .filter(([, c]) => c >= Math.max(10, fitPixels.length * 0.05))
-    .sort((a, b) => a[1] - b[1]) // ascending coverage — worst (most limiting) first
-    .map(([d]) => d);
-
-  const minBlock = Math.max(30, Math.round(fitPixels.length * 0.05));
-  const completeOver = (ds: string[]): number => {
-    let n = 0;
-    for (const p of fitPixels) {
-      let ok = true;
-      for (const d of ds) if (!has(p, d)) { ok = false; break; }
-      if (ok) n++;
-    }
-    return n;
-  };
-
-  let keptDates = candidateDates.slice();
-  while (keptDates.length > 3 && completeOver(keptDates) < minBlock) {
-    keptDates.shift(); // drop the lowest-coverage date, the one most limiting the block
-  }
-  const dates = keptDates.slice().sort();
-
-  if (dates.length < 3 || completeOver(dates) < 10) {
+  if (dates.length < 3) {
     throw new Error(
-      `Fewer than 3 acquisition dates are shared by a workable block of fit pixels. ` +
-        `The selection may span several Sentinel-2 overpasses with little overlap — fetch more scenes, widen the period, or analyse one region at a time.`
+      `Only ${dates.length} acquisition date(s) across the selection — at least 3 are needed. Fetch more scenes or widen the period.`
     );
   }
+  const axisT = dates.map(d => Date.parse(d));
+  const axisSpan = axisT[axisT.length - 1] - axisT[0] || 1;
 
-  // Complete-case rows over the retained dates.
-  const completeRow = (p: any): number[] | null => {
-    const row: number[] = [];
-    for (const date of dates) {
-      const value = p.properties[prefix + date];
-      if (typeof value !== 'number' || !isFinite(value)) return null;
-      row.push(value);
+  // Resample one pixel onto the date axis. A date the pixel was imaged on is
+  // used as is; a gap — a date that imaged *other* fields but not this one, or
+  // a cloud — is filled by linearly interpolating the pixel's own NDVI curve
+  // (ends held flat). So a field imaged on one overpass and a field imaged on
+  // another both get a value on every axis date and share one PCA space,
+  // without forcing identical observation dates. Pixels with too few real
+  // observations, or whose observations don't span enough of the period to
+  // interpolate across, are dropped rather than fabricated.
+  const MIN_OBS = 3;
+  const MIN_SPAN = 0.5; // real observations must cover ≥ half the axis time span
+  let interpolatedCells = 0;
+  let totalCells = 0;
+  const resampleRow = (p: any): number[] | null => {
+    const raw: (number | null)[] = dates.map(d => {
+      const v = p.properties[prefix + d];
+      return typeof v === 'number' && isFinite(v) ? v : null;
+    });
+    const obs: number[] = [];
+    for (let i = 0; i < raw.length; i++) if (raw[i] !== null) obs.push(i);
+    if (obs.length < MIN_OBS) return null;
+    const first = obs[0];
+    const last = obs[obs.length - 1];
+    if (axisT[last] - axisT[first] < MIN_SPAN * axisSpan) return null;
+    const row = new Array<number>(dates.length);
+    for (let i = 0; i < dates.length; i++) {
+      totalCells++;
+      if (raw[i] !== null) { row[i] = raw[i] as number; continue; }
+      interpolatedCells++;
+      if (i < first) { row[i] = raw[first] as number; continue; }
+      if (i > last) { row[i] = raw[last] as number; continue; }
+      let a = i - 1; while (raw[a] === null) a--;
+      let b = i + 1; while (raw[b] === null) b++;
+      const f = (axisT[i] - axisT[a]) / (axisT[b] - axisT[a] || 1);
+      row[i] = (raw[a] as number) + f * ((raw[b] as number) - (raw[a] as number));
     }
     return row;
   };
 
   const fitMatrix: number[][] = [];
   for (const p of fitPixels) {
-    const row = completeRow(p);
+    const row = resampleRow(p);
     if (row) fitMatrix.push(row);
   }
   if (fitMatrix.length < 10) {
     throw new Error(
-      `Only ${fitMatrix.length} fit pixels have complete time series over the ${dates.length} retained dates. Fetch less cloudy scenes.`
+      `Only ${fitMatrix.length} fit pixels span enough of the period to build a time series. Fetch more scenes or widen the period.`
     );
   }
 
   const projMatrix: number[][] = [];
   const kept: any[] = [];
   for (const p of projectPixels) {
-    const row = completeRow(p);
+    const row = resampleRow(p);
     if (row) {
       projMatrix.push(row);
       kept.push(p);
     }
   }
   if (kept.length === 0) {
-    throw new Error('No pixel of the projected classes has a complete series over the retained dates.');
+    throw new Error('No projected-class pixel spans enough of the period to place in the space.');
   }
 
   const components = Math.min(3, dates.length);
@@ -199,7 +202,7 @@ export function runPixelPca(pixelFeatures: any[], metric: string, options: PcaFi
     explained,
     cumulative,
     dates,
-    availableDates: obsCount.size,
+    interpolatedFraction: totalCells > 0 ? interpolatedCells / totalCells : 0,
     loadings,
     metric,
     components,

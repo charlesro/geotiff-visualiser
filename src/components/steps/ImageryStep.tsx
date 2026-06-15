@@ -171,8 +171,9 @@ export default function ImageryStep(props: ImageryStepProps) {
           {props.heterogeneous ? (
             <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-200/90">
               The selection spans several Sentinel-2 overpasses, so no single date imaged every field. This is a{' '}
-              <strong>heterogeneous series</strong> — each field carries only the dates that imaged it, and the PCA
-              uses the largest consistently-covered core. For a clean all-fields series, analyse one region at a time.
+              <strong>heterogeneous series</strong> — each field carries only the dates that imaged it. Every field is
+              still analysed: the PCA puts them on one date axis and fills the dates a field was not imaged on by
+              interpolating its own NDVI curve.
             </p>
           ) : (
             props.partialDates > 0 && (
