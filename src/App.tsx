@@ -12,8 +12,7 @@ import { summarizeExtraction, NdviInspection, NdviPixel } from './lib/ndvi-serie
 import NdviPanel from './components/NdviPanel';
 import { fetchSentinelSeries, SeriesFetchParams, SeriesProgress } from './lib/fetch-series';
 import { clusterFeatureBboxes } from './lib/cluster';
-import { renderAnalysisGridPreview } from './lib/mosaic';
-import { DEFAULT_OPTIONS } from './lib/layer-factory';
+import { GeoTIFFData } from './lib/geotiff-utils';
 import { extractZones, featureKey, PixelZone, ZoneExtraction, ZoneProgress } from './lib/zones';
 import { computeUnmixing } from './lib/unmix';
 import { clusterBySpecies, SpeciesClustering, fieldKeyOf } from './lib/species-clusters';
@@ -69,8 +68,6 @@ export default function App() {
   const [seriesProgress, setSeriesProgress] = useState<SeriesProgress | null>(null);
   const [seriesError, setSeriesError] = useState<string | null>(null);
   const [previewSceneId, setPreviewSceneId] = useState<string | null>(null);
-  /** Rendered 10 m overlays of the analysis windows, cached per scene id. */
-  const clusterPreviewCache = useRef(new Map<string, ScenePreview[]>());
 
   // Step 3 — buffer zones
   const [zones, setZones] = useState<ZoneExtraction | null>(null);
@@ -259,7 +256,6 @@ export default function App() {
     setFetchedSelectionKey(null);
     setSeriesError(null);
     setPreviewSceneId(null);
-    clusterPreviewCache.current.clear();
     setPrediction(null);
     setPredictError(null);
     clearFromZones();
@@ -465,7 +461,6 @@ export default function App() {
       const fallback = ordered[idx + 1] ?? ordered[idx - 1] ?? null;
       setScenes(prev => prev.filter(s => s.id !== id));
       setPreviewSceneId(prev => (prev === id ? (fallback?.id ?? null) : prev));
-      clusterPreviewCache.current.delete(id);
       // Zones and PCA were computed from the full series — invalidate them.
       clearFromZones();
     },
@@ -498,21 +493,13 @@ export default function App() {
     return { url: scene.dataUrl, bounds: scene.data.bounds, opacity: 0.85 };
   }, [previewSceneId, scenes]);
 
-  // 10 m overlays for the previewed scene: the analysis windows already hold
-  // the native-resolution pixels, so they are rendered lazily (cached per
-  // scene) and drawn on top of the coarse preview mosaic.
-  const clusterPreviews = useMemo<ScenePreview[]>(() => {
+  // Native-10 m analysis grids of the previewed scene. The map renders them
+  // lazily and only the ones in view — a wide selection has hundreds, and
+  // rendering them all up front stalls the main thread.
+  const clusterGrids = useMemo<GeoTIFFData[]>(() => {
     if (!previewSceneId) return [];
     const scene = scenes.find(s => s.id === previewSceneId);
-    if (!scene?.analysisGrids?.length) return [];
-    const cached = clusterPreviewCache.current.get(scene.id);
-    if (cached) return cached;
-    const rendered = scene.analysisGrids.map(grid => {
-      const { url, corners } = renderAnalysisGridPreview(grid, DEFAULT_OPTIONS);
-      return { url, corners, bounds: grid.bounds, opacity: 0.95 };
-    });
-    clusterPreviewCache.current.set(scene.id, rendered);
-    return rendered;
+    return scene?.analysisGrids ?? [];
   }, [previewSceneId, scenes]);
 
   // ----- Step 3 handlers -----------------------------------------------------
@@ -1039,7 +1026,7 @@ export default function App() {
             clusterAssignment={clusterAssignment}
             clusterVersion={clustering?.createdAt ?? 0}
             preview={preview}
-            clusterPreviews={clusterPreviews}
+            clusterGrids={clusterGrids}
             predictionOverlays={predictionOverlays}
             scenes={scenes}
             previewSceneId={previewSceneId}

@@ -9,6 +9,9 @@ import { NdviPixel } from '../lib/ndvi-series';
 import { CLUSTER_COLORS, fieldKeyOf } from '../lib/species-clusters';
 import { mixHexColors } from '../lib/unmix';
 import { ZONE_CLASSES, zoneColor, speciesColor, NEUTRAL } from '../lib/legend';
+import { renderAnalysisGridPreview } from '../lib/mosaic';
+import { DEFAULT_OPTIONS } from '../lib/layer-factory';
+import { GeoTIFFData } from '../lib/geotiff-utils';
 import { LegendRow, GradientLegend } from './ui';
 import { RasterLayer } from '../types';
 import SceneTimeline from './SceneTimeline';
@@ -39,8 +42,9 @@ interface MapPanelProps {
   onClearSelection: () => void;
   zones: ZoneExtraction | null;
   preview: ScenePreview | null;
-  /** Native-10 m windows of the previewed scene, drawn over the coarse mosaic. */
-  clusterPreviews: ScenePreview[];
+  /** Native-10 m analysis grids of the previewed scene; rendered lazily, only
+   *  those in view, over the coarse mosaic. */
+  clusterGrids: GeoTIFFData[];
   /** Boundary-prediction heatmap overlays (step 7); empty when off. */
   predictionOverlays: ScenePreview[];
   scenes: RasterLayer[];
@@ -169,6 +173,64 @@ function RotatedImageOverlay({
     };
   }, [map, url, opacity, corners.topLeft[0], corners.topLeft[1], corners.topRight[0], corners.topRight[1], corners.bottomLeft[0], corners.bottomLeft[1]]);
   return null;
+}
+
+/**
+ * Native-10 m windows of the previewed scene, drawn over the coarse mosaic.
+ * A wide selection has hundreds of these grids; rendering them all (each is a
+ * canvas → data URL, and each overlay recomputes its transform on every map
+ * move) stalls and flickers. So only the grids inside the current viewport are
+ * rendered, capped, and their image is built lazily and cached per scene.
+ */
+function ClusterPreviewLayer({ grids, sceneId, zoom }: { grids: GeoTIFFData[]; sceneId: string | null; zoom: number }) {
+  const map = useMap();
+  const [, bump] = useState(0);
+  useMapEvents({ moveend: () => bump(n => n + 1), zoomend: () => bump(n => n + 1) });
+
+  // Cache the rendered preview per (scene, grid); drop it when the scene flips.
+  const cacheRef = useRef(new Map<string, ReturnType<typeof renderAnalysisGridPreview>>());
+  const sceneRef = useRef<string | null>(null);
+  if (sceneRef.current !== sceneId) {
+    cacheRef.current.clear();
+    sceneRef.current = sceneId;
+  }
+
+  // Below this zoom the coarse mosaic carries the imagery; the 10 m grids only
+  // matter once individual pixels resolve.
+  if (zoom < 14 || grids.length === 0) return null;
+
+  const view = map.getBounds().pad(0.25);
+  const center = map.getCenter();
+  const mid = (b: [[number, number], [number, number]]) => [(b[0][0] + b[1][0]) / 2, (b[0][1] + b[1][1]) / 2];
+  const visible = grids
+    .map((grid, idx) => ({ idx, grid }))
+    .filter(({ grid }) => grid.bounds && view.intersects(L.latLngBounds(grid.bounds[0], grid.bounds[1])));
+  visible.sort((a, b) => {
+    const ma = mid(a.grid.bounds);
+    const mb = mid(b.grid.bounds);
+    const da = (ma[0] - center.lat) ** 2 + (ma[1] - center.lng) ** 2;
+    const db = (mb[0] - center.lat) ** 2 + (mb[1] - center.lng) ** 2;
+    return da - db;
+  });
+
+  return (
+    <>
+      {visible.slice(0, 30).map(({ idx, grid }) => {
+        const key = `${sceneId}:${idx}`;
+        let p = cacheRef.current.get(key);
+        if (!p) {
+          p = renderAnalysisGridPreview(grid, DEFAULT_OPTIONS);
+          cacheRef.current.set(key, p);
+        }
+        if (!p.url) return null;
+        return p.corners ? (
+          <RotatedImageOverlay key={key} url={p.url} corners={p.corners} opacity={0.95} />
+        ) : (
+          <ImageOverlay key={key} url={p.url} bounds={grid.bounds} opacity={0.95} className="pixel-perfect" />
+        );
+      })}
+    </>
+  );
 }
 
 /** Report the map's zoom so the coarse mosaic can hide when zoomed in. */
@@ -301,14 +363,14 @@ function BboxSelector({ polygons, onSelectBox }: { polygons: any | null; onSelec
   );
 }
 
-export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBoxSelect, onClearSelection, zones, clusterAssignment, clusterVersion, preview, clusterPreviews, predictionOverlays, scenes, previewSceneId, onPreviewScene, onDeleteScene, onInspectPolygon, inspectPixels, highlightPixel, onPickPixel, pcaPickMode, onPickMapPixel, fitRequest }: MapPanelProps) {
+export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBoxSelect, onClearSelection, zones, clusterAssignment, clusterVersion, preview, clusterGrids, predictionOverlays, scenes, previewSceneId, onPreviewScene, onDeleteScene, onInspectPolygon, inspectPixels, highlightPixel, onPickPixel, pcaPickMode, onPickMapPixel, fitRequest }: MapPanelProps) {
   const [basemap, setBasemap] = useState<BasemapKey>('dark');
   const [mapZoom, setMapZoom] = useState(0);
   const [showZoneDots, setShowZoneDots] = useState(true);
   // Once zoomed in far enough for the native-10 m windows to resolve, hide the
   // coarse mosaic so the zone dots sit on their true 10 m pixels, not on the
   // much coarser preview squares.
-  const hideCoarseMosaic = clusterPreviews.length > 0 && mapZoom >= 15;
+  const hideCoarseMosaic = clusterGrids.length > 0 && mapZoom >= 15;
   // Colour edge_other_species pixels by their mixing fraction instead of a
   // flat class colour: own species at α=1 ↔ partner species at α=0.
   const [showMixing, setShowMixing] = useState(false);
@@ -481,19 +543,7 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
             className="pixel-perfect"
           />
         )}
-        {clusterPreviews.map((c, i) =>
-          c.corners ? (
-            <RotatedImageOverlay key={`cluster-${previewSceneId}-${i}`} url={c.url} corners={c.corners} opacity={c.opacity} />
-          ) : (
-            <ImageOverlay
-              key={`cluster-${previewSceneId}-${i}`}
-              url={c.url}
-              bounds={c.bounds}
-              opacity={c.opacity}
-              className="pixel-perfect"
-            />
-          )
-        )}
+        <ClusterPreviewLayer grids={clusterGrids} sceneId={previewSceneId} zoom={mapZoom} />
         {predictionOverlays.map((c, i) => (
           <ImageOverlay key={`predict-${i}`} url={c.url} bounds={c.bounds} opacity={c.opacity} className="pixel-perfect" />
         ))}
