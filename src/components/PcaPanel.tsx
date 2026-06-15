@@ -324,7 +324,13 @@ export default function PcaPanel({
           <p className="text-[11px] text-slate-500">
             axes fit on {result.fitCount} px (
             {result.fitZones.map(z => ZONE_CHIPS.find(c => c.key === z)?.label ?? z).join(', ')}) ·{' '}
-            {result.rows.length} px placed · {result.metric} · {result.dates.length} dates ·{' '}
+            {result.rows.length} px placed · {result.metric} ·{' '}
+            <span title={result.availableDates > result.dates.length
+              ? `${result.availableDates} dates imaged some fit pixels; ${result.availableDates - result.dates.length} were dropped so the kept dates share a complete, gap-free block of pixels (clouds, or fields on a different overpass).`
+              : 'Every date the fit pixels were imaged on is used.'}
+              className={result.availableDates > result.dates.length ? 'text-amber-300/90 underline decoration-dotted' : ''}>
+              {result.dates.length}{result.availableDates > result.dates.length ? ` of ${result.availableDates}` : ''} dates
+            </span> ·{' '}
             {result.cumulative[result.components - 1]?.toFixed(1)}% variance in {result.components} PCs
           </p>
         </div>

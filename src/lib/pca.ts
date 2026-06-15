@@ -47,6 +47,9 @@ export interface PcaRunResult {
   cumulative: number[];
   /** Acquisition dates used as features, sorted ascending. */
   dates: string[];
+  /** Distinct dates any fit pixel was imaged on (≥ dates.length; the rest were
+   *  dropped to keep a complete block, or the fields weren't imaged on them). */
+  availableDates: number;
   /** loadings[component][dateIndex] */
   loadings: number[][];
   metric: string;
@@ -93,34 +96,37 @@ export function runPixelPca(pixelFeatures: any[], metric: string, options: PcaFi
     }
   }
 
-  // Pick the date set that maximises the *complete* block (fit pixels × dates
-  // with no missing values). A normal single-overpass selection observes every
-  // date on every pixel, so this keeps them all. A wide selection spanning
-  // several Sentinel-2 overpasses is imaged heterogeneously — no date covers
-  // every field — and this instead settles on the largest consistent core (the
-  // well-covered overlap), rather than failing outright. Dates are added in
-  // coverage order and the running intersection of their observers is tracked.
-  const candidates = Array.from(obsCount.entries())
+  // Keep as many acquisition dates as possible — temporal richness is the
+  // point of a time-series PCA — provided enough fit pixels have a *complete*
+  // record over them (no missing values). A normal selection keeps every date.
+  // Only when the complete block would collapse — a wide selection whose fields
+  // sit on different Sentinel-2 overpasses with disjoint dates — are the
+  // lowest-coverage (most-limiting) dates dropped one at a time until a
+  // workable core remains. Dates a field was never imaged on are simply absent
+  // from its pixels, so they fall out here without polluting the result.
+  const candidateDates = Array.from(obsCount.entries())
     .filter(([, c]) => c >= Math.max(10, fitPixels.length * 0.05))
-    .sort((a, b) => b[1] - a[1])
+    .sort((a, b) => a[1] - b[1]) // ascending coverage — worst (most limiting) first
     .map(([d]) => d);
 
-  let block = fitPixels;
-  const acc: string[] = [];
-  let dates: string[] = [];
-  let bestScore = -1;
-  for (const d of candidates) {
-    block = block.filter(p => has(p, d));
-    if (block.length < 10) break; // intersection only shrinks from here
-    acc.push(d);
-    if (acc.length >= 3 && block.length * acc.length > bestScore) {
-      bestScore = block.length * acc.length;
-      dates = [...acc];
+  const minBlock = Math.max(30, Math.round(fitPixels.length * 0.05));
+  const completeOver = (ds: string[]): number => {
+    let n = 0;
+    for (const p of fitPixels) {
+      let ok = true;
+      for (const d of ds) if (!has(p, d)) { ok = false; break; }
+      if (ok) n++;
     }
-  }
-  dates.sort();
+    return n;
+  };
 
-  if (dates.length < 3) {
+  let keptDates = candidateDates.slice();
+  while (keptDates.length > 3 && completeOver(keptDates) < minBlock) {
+    keptDates.shift(); // drop the lowest-coverage date, the one most limiting the block
+  }
+  const dates = keptDates.slice().sort();
+
+  if (dates.length < 3 || completeOver(dates) < 10) {
     throw new Error(
       `Fewer than 3 acquisition dates are shared by a workable block of fit pixels. ` +
         `The selection may span several Sentinel-2 overpasses with little overlap — fetch more scenes, widen the period, or analyse one region at a time.`
@@ -193,6 +199,7 @@ export function runPixelPca(pixelFeatures: any[], metric: string, options: PcaFi
     explained,
     cumulative,
     dates,
+    availableDates: obsCount.size,
     loadings,
     metric,
     components,
