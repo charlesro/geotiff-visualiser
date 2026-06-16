@@ -21,8 +21,8 @@ No API key is required. An optional Planetary Computer key (step 2 → advanced)
 The Database tab talks to any local server exposing `GET /api/status` and `POST /query` (`{"query": sql}` → `{"status", "columns", "rows"}`). A minimal one ships with the repo:
 
 ```bash
-pip install duckdb
-npm run engine        # = python3 server/engine.py, listens on :8080
+pip install -r server/requirements.txt   # just duckdb
+npm run engine                            # = python3 server/engine.py, listens on :8080
 ```
 
 Multi-statement SQL is supported; the rows of the last statement are returned.

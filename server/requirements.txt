@@ -1,0 +1,4 @@
+# Local DuckDB engine for the Polygon Time-Series PCA app.
+#   pip install -r server/requirements.txt
+#   npm run engine          # = python3 server/engine.py, listens on :8080
+duckdb>=1.0
