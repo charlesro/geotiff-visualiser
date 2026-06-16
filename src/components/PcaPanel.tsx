@@ -82,7 +82,7 @@ function meanNearest(scores: number[], ref: { scores: number[] }[], dims: number
 /** k-means (over the first `dims` PCs) with deterministic farthest-point
  *  seeding. Returns the centroids and each point's cluster index. Used by the
  *  unsupervised boundary finder to locate the pure clusters without labels. */
-function kmeans(pts: { scores: number[] }[], k: number, dims: number): { cent: number[][]; asn: Int32Array } {
+function kmeans(pts: { scores: number[] }[], k: number, dims: number): number[][] {
   const d2 = (a: number[], b: number[]) => {
     let s = 0;
     for (let i = 0; i < dims; i++) {
@@ -139,22 +139,7 @@ function kmeans(pts: { scores: number[] }[], k: number, dims: number): { cent: n
     }
     if (!moved) break;
   }
-  return { cent, asn };
-}
-
-/** Inverse of a small (n≤3) matrix via Gauss-Jordan elimination. */
-function invMatrix(M: number[][], n: number): number[][] {
-  const A = M.map((row, i) => [...row, ...Array.from({ length: n }, (_, j) => (i === j ? 1 : 0))]);
-  for (let i = 0; i < n; i++) {
-    const piv = A[i][i] || 1e-9;
-    for (let j = 0; j < 2 * n; j++) A[i][j] /= piv;
-    for (let r = 0; r < n; r++) {
-      if (r === i) continue;
-      const f = A[r][i];
-      for (let j = 0; j < 2 * n; j++) A[r][j] -= f * A[i][j];
-    }
-  }
-  return A.map(row => row.slice(n));
+  return cent;
 }
 
 export interface PcaPickedPixel {
@@ -315,55 +300,29 @@ export default function PcaPanel({
       const uni = subsample(rows, 2500);
       const k = Math.min(boundaryK, uni.length);
       if (uni.length < k + 3 || k < 2) return null;
-      const { cent, asn } = kmeans(uni, k, dims);
-      // Each cluster's inverse covariance, so distance is measured in the
-      // cluster's own shape (Mahalanobis): an elongated pure cluster's tips
-      // stay "inside" it and aren't mistaken for in-between pixels. Regularised
-      // on the diagonal for stability when a cluster is thin or tiny.
-      const sInv = cent.map((mu, c) => {
-        const M = Array.from({ length: dims }, () => new Float64Array(dims));
-        let n = 0;
-        for (let p = 0; p < uni.length; p++) {
-          if (asn[p] !== c) continue;
-          n++;
-          for (let i = 0; i < dims; i++) {
-            const di = uni[p].scores[i] - mu[i];
-            for (let j = 0; j < dims; j++) M[i][j] += di * (uni[p].scores[j] - mu[j]);
-          }
-        }
-        let tr = 0;
-        for (let i = 0; i < dims; i++) {
-          for (let j = 0; j < dims; j++) M[i][j] /= Math.max(1, n - 1);
-          tr += M[i][i];
-        }
-        const lam = 1e-3 * (tr / dims) + 1e-9;
-        for (let i = 0; i < dims; i++) M[i][i] += lam;
-        return invMatrix(
-          M.map(row => Array.from(row)),
-          dims
-        );
-      });
-      const maha = (s: number[], mu: number[], Si: number[][]) => {
-        let acc = 0;
-        for (let i = 0; i < dims; i++) {
-          const di = s[i] - mu[i];
-          for (let j = 0; j < dims; j++) acc += di * Si[i][j] * (s[j] - mu[j]);
-        }
-        return Math.sqrt(Math.max(0, acc));
-      };
+      const cent = kmeans(uni, k, dims);
+      // Distance on the *raw* PC scores: a pixel's spread along PCi is √(its
+      // variance), so PC1 (here ~96%) already dominates the distance and the
+      // low-variance PC2/PC3 (the arch artifact, within-field wobble) barely
+      // count — exactly the variance weighting we want. No per-cluster
+      // whitening: that would cancel the variance back out.
       const scoreById = new Map<string, number>();
       let max = 0;
       for (const r of rows) {
         let d1 = Infinity;
         let d2 = Infinity;
-        for (let c = 0; c < cent.length; c++) {
-          const m = maha(r.scores, cent[c], sInv[c]);
-          if (m < d1) {
+        for (const c of cent) {
+          let s = 0;
+          for (let i = 0; i < dims; i++) {
+            const e = r.scores[i] - c[i];
+            s += e * e;
+          }
+          if (s < d1) {
             d2 = d1;
-            d1 = m;
-          } else if (m < d2) d2 = m;
+            d1 = s;
+          } else if (s < d2) d2 = s;
         }
-        const score = d1 / (d2 + 1e-9); // 0 = inside a cluster, →1 = midway between two
+        const score = Math.sqrt(d1) / (Math.sqrt(d2) + 1e-9); // 0 = on a centroid, →1 = midway between two
         scoreById.set(r.pixelId, score);
         if (score > max) max = score;
       }
@@ -757,7 +716,7 @@ export default function PcaPanel({
                         />
                         <p className="text-[10px] leading-relaxed text-slate-600">
                           {boundaryUnsup
-                            ? 'No labels: k-means finds k pure clusters (measured in each cluster’s own shape, so an elongated blob isn’t mistaken for a mix) and each pixel is scored by how “between” two of them it lies. A small isolated cluster gets its own centroid, so it reads ~0 — not flagged. Lower k if pure clusters get split; raise it to separate more crops/scenarios. “% real edges” is how often a flagged pixel is genuinely an edge·other pixel.'
+                            ? 'No labels: k-means finds k pure clusters and each pixel is scored by how “between” two of them it lies. Distances use the raw PC scores, so the high-variance axes (PC1 here) dominate and the low-variance arch/wobble (PC2, PC3) is down-weighted automatically. A small isolated cluster gets its own centroid, so it reads ~0 — not flagged. Lower k if pure clusters get split; raise it to separate more crops/scenarios. “% real edges” is how often a flagged pixel is genuinely an edge·other pixel.'
                             : 'Higher keeps only the pixels most in the middle — farthest from any pure-species signature. Flagged pixels are ringed here and on the map.'}
                         </p>
                       </>
