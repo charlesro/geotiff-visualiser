@@ -15,6 +15,8 @@ import {
   Line,
   CartesianGrid,
   Symbols,
+  useXAxisScale,
+  useYAxisScale,
 } from 'recharts';
 import { PcaRunResult } from '../lib/pca';
 import { PixelZone } from '../lib/zones';
@@ -155,6 +157,58 @@ function invMatrix(M: number[][], n: number): number[][] {
     }
   }
   return A.map(row => row.slice(n));
+}
+
+/**
+ * Draws the k-means pure clusters found by the unsupervised boundary finder:
+ * a cross at each centroid and its 2σ covariance ellipse (the "blob"). Rendered
+ * inside the ScatterChart so it can read the axis scales (recharts v3 hooks).
+ */
+function BlobOverlay({ clusters, pcX, pcY }: { clusters: { c: number[]; cov: number[][] }[]; pcX: number; pcY: number }) {
+  const xScale = useXAxisScale();
+  const yScale = useYAxisScale();
+  if (!xScale || !yScale) return null;
+  // Pixels per data unit (equal-scale axes, so x and y match).
+  const s = Math.abs((xScale(1) as number) - (xScale(0) as number));
+  return (
+    <g style={{ pointerEvents: 'none' }}>
+      {clusters.map((cl, i) => {
+        const cx = xScale(cl.c[pcX]) as number;
+        const cy = yScale(cl.c[pcY]) as number;
+        if (!isFinite(cx) || !isFinite(cy)) return null;
+        // 2×2 marginal covariance over the two shown PCs → ellipse axes/angle.
+        const a = cl.cov[pcX][pcX];
+        const b = cl.cov[pcX][pcY];
+        const d = cl.cov[pcY][pcY];
+        const mid = (a + d) / 2;
+        const rad = Math.sqrt(Math.max(0, ((a - d) / 2) ** 2 + b * b));
+        const rx = 2 * Math.sqrt(Math.max(0, mid + rad)) * s; // 2σ major
+        const ry = 2 * Math.sqrt(Math.max(0, mid - rad)) * s; // 2σ minor
+        const deg = (-0.5 * Math.atan2(2 * b, a - d) * 180) / Math.PI; // pixel y is down → negate
+        return (
+          <g key={i}>
+            <ellipse
+              cx={cx}
+              cy={cy}
+              rx={rx}
+              ry={ry}
+              transform={`rotate(${deg} ${cx} ${cy})`}
+              fill="none"
+              stroke="#38bdf8"
+              strokeWidth={1.5}
+              strokeDasharray="5 3"
+              opacity={0.9}
+            />
+            <line x1={cx - 6} y1={cy} x2={cx + 6} y2={cy} stroke="#38bdf8" strokeWidth={1.5} />
+            <line x1={cx} y1={cy - 6} x2={cx} y2={cy + 6} stroke="#38bdf8" strokeWidth={1.5} />
+            <text x={cx + 8} y={cy - 8} fontSize={11} fontWeight={600} fill="#7dd3fc">
+              blob {i + 1}
+            </text>
+          </g>
+        );
+      })}
+    </g>
+  );
 }
 
 export interface PcaPickedPixel {
@@ -304,44 +358,38 @@ export default function PcaPanel({
       ref = rows.filter(r => r.zone === 'interior');
       candidates = rows.filter(r => r.zone === 'edge_other_species');
     } else {
-      // Unsupervised, "betweenness". A boundary pixel is a mixture of two pure
-      // crops, so in PCA space it lies *between* two pure clusters. Find the
-      // clusters with k-means (no labels), then score each pixel by the ratio
-      // of its distance to its nearest centroid vs its second-nearest: ~0 sits
-      // on a centroid (pure, any cluster size), →1 sits midway between two
-      // (a mix). Unlike a density/distance score this isn't fooled by a small
-      // isolated pure cluster — that cluster gets its own centroid, so its
-      // pixels read ~0, not "far from the mass".
+      // Unsupervised. Find the pure clusters with k-means (no labels), then
+      // score each pixel by its distance to the *nearest* cluster — so a pixel
+      // far from every blob at once (deep in the gap) scores high, exactly the
+      // "in the middle of all the blobs" idea. Distance is measured in each
+      // cluster's own shape (Mahalanobis), so an elongated blob's tips stay
+      // inside it; and because every blob (big or small) has its own centroid,
+      // a small isolated cluster sits on its centroid and scores ~0.
       const uni = subsample(rows, 2500);
       const k = Math.min(boundaryK, uni.length);
       if (uni.length < k + 3 || k < 2) return null;
       const { cent, asn } = kmeans(uni, k, dims);
-      // Each cluster's inverse covariance, so distance is measured in the
-      // cluster's own shape (Mahalanobis): an elongated pure cluster's tips
-      // stay "inside" it and aren't mistaken for in-between pixels. Regularised
-      // on the diagonal for stability when a cluster is thin or tiny.
-      const sInv = cent.map((mu, c) => {
-        const M = Array.from({ length: dims }, () => new Float64Array(dims));
+      const clusters = cent.map((mu, c) => {
+        const cov = Array.from({ length: dims }, () => new Array<number>(dims).fill(0));
         let n = 0;
         for (let p = 0; p < uni.length; p++) {
           if (asn[p] !== c) continue;
           n++;
           for (let i = 0; i < dims; i++) {
             const di = uni[p].scores[i] - mu[i];
-            for (let j = 0; j < dims; j++) M[i][j] += di * (uni[p].scores[j] - mu[j]);
+            for (let j = 0; j < dims; j++) cov[i][j] += di * (uni[p].scores[j] - mu[j]);
           }
         }
         let tr = 0;
         for (let i = 0; i < dims; i++) {
-          for (let j = 0; j < dims; j++) M[i][j] /= Math.max(1, n - 1);
-          tr += M[i][i];
+          for (let j = 0; j < dims; j++) cov[i][j] /= Math.max(1, n - 1);
+          tr += cov[i][i];
         }
+        // Regularise a copy on the diagonal before inverting (thin/tiny blobs).
+        const reg = cov.map(r => r.slice());
         const lam = 1e-3 * (tr / dims) + 1e-9;
-        for (let i = 0; i < dims; i++) M[i][i] += lam;
-        return invMatrix(
-          M.map(row => Array.from(row)),
-          dims
-        );
+        for (let i = 0; i < dims; i++) reg[i][i] += lam;
+        return { c: mu, cov, sInv: invMatrix(reg, dims) };
       });
       const maha = (s: number[], mu: number[], Si: number[][]) => {
         let acc = 0;
@@ -355,21 +403,22 @@ export default function PcaPanel({
       let max = 0;
       for (const r of rows) {
         let d1 = Infinity;
-        let d2 = Infinity;
-        for (let c = 0; c < cent.length; c++) {
-          const m = maha(r.scores, cent[c], sInv[c]);
-          if (m < d1) {
-            d2 = d1;
-            d1 = m;
-          } else if (m < d2) d2 = m;
+        for (const cl of clusters) {
+          const m = maha(r.scores, cl.c, cl.sInv);
+          if (m < d1) d1 = m;
         }
-        const score = d1 / (d2 + 1e-9); // 0 = inside a cluster, →1 = midway between two
-        scoreById.set(r.pixelId, score);
-        if (score > max) max = score;
+        scoreById.set(r.pixelId, d1); // distance to the nearest blob (its σ units)
+        if (d1 > max) max = d1;
       }
       const sorted = Array.from(scoreById.values()).sort((a, b) => a - b);
-      const defaultT = Math.max(0.55, sorted[Math.floor(sorted.length * 0.9)] || 0.55);
-      return { scoreById, max, defaultT, count: rows.length };
+      const defaultT = Math.max(2.5, sorted[Math.floor(sorted.length * 0.9)] || 2.5);
+      return {
+        scoreById,
+        max,
+        defaultT,
+        count: rows.length,
+        clusters: clusters.map(cl => ({ c: cl.c, cov: cl.cov })) as { c: number[]; cov: number[][] }[] | undefined,
+      };
     }
     if (ref.length < 5 || candidates.length === 0) return null;
     const refSub = subsample(ref, 1500);
@@ -383,7 +432,13 @@ export default function PcaPanel({
     }
     const sorted = Array.from(scoreById.values()).sort((a, b) => a - b);
     const defaultT = sorted[Math.floor(sorted.length * 0.6)] || 0;
-    return { scoreById, max, defaultT, count: candidates.length };
+    return {
+      scoreById,
+      max,
+      defaultT,
+      count: candidates.length,
+      clusters: undefined as { c: number[]; cov: number[][] }[] | undefined,
+    };
   }, [result, boundaryOn, boundaryUnsup, boundaryK]);
 
   const boundaryT_ = boundaryT ?? boundary?.defaultT ?? 0;
@@ -738,7 +793,7 @@ export default function PcaPanel({
                     {boundary && (
                       <>
                         <div className="flex items-center justify-between text-[11px] text-slate-500">
-                          <span>{boundaryUnsup ? 'Betweenness (0 = pure → 1 = midway)' : 'Min distance from a pure blob'}</span>
+                          <span>{boundaryUnsup ? 'Distance from the nearest blob (σ)' : 'Min distance from a pure blob'}</span>
                           <span className="text-fuchsia-300">
                             {boundaryIds.size} / {boundary.count} flagged
                             {boundaryUnsup && boundaryEdgeFrac !== null && (
@@ -757,7 +812,7 @@ export default function PcaPanel({
                         />
                         <p className="text-[10px] leading-relaxed text-slate-600">
                           {boundaryUnsup
-                            ? 'No labels: k-means finds k pure clusters (measured in each cluster’s own shape, so an elongated blob isn’t mistaken for a mix) and each pixel is scored by how “between” two of them it lies. A small isolated cluster gets its own centroid, so it reads ~0 — not flagged. Lower k if pure clusters get split; raise it to separate more crops/scenarios. “% real edges” is how often a flagged pixel is genuinely an edge·other pixel.'
+                            ? 'No labels: k-means finds k pure clusters (drawn as blue blobs) and each pixel is scored by its distance to the nearest one, in that blob’s own shape (σ units), so a pixel far from every blob at once scores high. A small isolated cluster gets its own blob, so its pixels sit on it and read ~0. Lower k if pure clusters get split; raise it to separate more crops/scenarios. “% real edges” is how often a flagged pixel is genuinely an edge·other pixel.'
                             : 'Higher keeps only the pixels most in the middle — farthest from any pure-species signature. Flagged pixels are ringed here and on the map.'}
                         </p>
                       </>
@@ -806,6 +861,9 @@ export default function PcaPanel({
                   }}
                 />
                 <Scatter data={points} shape={renderPoint} isAnimationActive={false} />
+                {boundaryOn && boundaryUnsup && boundary?.clusters && (
+                  <BlobOverlay clusters={boundary.clusters} pcX={pcX} pcY={pcY} />
+                )}
             </ScatterChart>
 
             {/* Colour legend */}
