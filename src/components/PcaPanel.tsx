@@ -146,24 +146,37 @@ function kmeans(pts: { scores: number[] }[], k: number, dims: number): { cent: n
 
 /**
  * Draws the k-means pure clusters found by the unsupervised boundary finder:
- * a cross at each centroid and a circle of radius `r` (the cluster's largest 2σ
- * spread) — the same radius the boundary score uses, so a pixel inside a circle
- * is "part of the blob" and not flagged. Rendered inside the ScatterChart so it
- * can read the axis scales (recharts v3 hooks).
+ * a cross at each centroid and a circle drawn at the *current threshold*
+ * contour (threshold × the blob's radius). Since a pixel is flagged exactly
+ * when its distance exceeds that contour, the circle *is* the flagging
+ * boundary — nothing inside it is flagged. Rendered inside the ScatterChart so
+ * it can read the axis scales (recharts v3 hooks).
  */
-function BlobOverlay({ clusters, pcX, pcY }: { clusters: { c: number[]; r: number }[]; pcX: number; pcY: number }) {
+function BlobOverlay({
+  clusters,
+  pcX,
+  pcY,
+  threshold,
+}: {
+  clusters: { c: number[]; r: number }[];
+  pcX: number;
+  pcY: number;
+  threshold: number;
+}) {
   const xScale = useXAxisScale();
   const yScale = useYAxisScale();
   if (!xScale || !yScale) return null;
-  // Pixels per data unit (equal-scale axes, so x and y match).
-  const s = Math.abs((xScale(1) as number) - (xScale(0) as number));
+  // Pixels per data unit, averaged over the two axes (near equal-scale).
+  const sx = Math.abs((xScale(1) as number) - (xScale(0) as number));
+  const sy = Math.abs((yScale(1) as number) - (yScale(0) as number));
+  const s = (sx + sy) / 2;
   return (
     <g style={{ pointerEvents: 'none' }}>
       {clusters.map((cl, i) => {
         const cx = xScale(cl.c[pcX]) as number;
         const cy = yScale(cl.c[pcY]) as number;
-        if (!isFinite(cx) || !isFinite(cy)) return null;
-        const r = cl.r * s;
+        const r = cl.r * threshold * s;
+        if (!isFinite(cx) || !isFinite(cy) || !isFinite(r) || r <= 0) return null;
         return (
           <g key={i}>
             <circle cx={cx} cy={cy} r={r} fill="none" stroke="#38bdf8" strokeWidth={1.5} strokeDasharray="5 3" opacity={0.9} />
@@ -833,7 +846,7 @@ export default function PcaPanel({
                 />
                 <Scatter data={points} shape={renderPoint} isAnimationActive={false} />
                 {boundaryOn && boundaryUnsup && boundary?.clusters && (
-                  <BlobOverlay clusters={boundary.clusters} pcX={pcX} pcY={pcY} />
+                  <BlobOverlay clusters={boundary.clusters} pcX={pcX} pcY={pcY} threshold={boundaryT_} />
                 )}
             </ScatterChart>
 
