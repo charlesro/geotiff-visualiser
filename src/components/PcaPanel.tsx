@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { X, Download, Loader2 } from 'lucide-react';
 import {
   ScatterChart,
@@ -69,6 +69,8 @@ interface PcaPanelProps {
   /** Point picked in the scatter, mirrored as a ring on the map. */
   highlightPixelId: string | null;
   onPickPixel: (pixel: PcaPickedPixel | null) => void;
+  /** Edge·other pixels flagged as boundaries (PCA-gap finder) → shown on the map. */
+  onBoundaryPixels?: (pixels: { id: string; lng: number; lat: number }[]) => void;
   onClose: () => void;
   onExportCsv: () => void;
 }
@@ -83,6 +85,7 @@ export default function PcaPanel({
   onProjectZonesChange,
   highlightPixelId,
   onPickPixel,
+  onBoundaryPixels,
   onClose,
   onExportCsv,
 }: PcaPanelProps) {
@@ -91,6 +94,10 @@ export default function PcaPanel({
   const [pcY, setPcY] = useState(1);
   const [colorBy, setColorBy] = useState<Attr>('zone');
   const [shapeBy, setShapeBy] = useState<Attr | 'none'>('species');
+  // Experimental boundary finder: flag edge·other pixels sitting deep in the
+  // gap between the pure-interior blobs in PCA space.
+  const [boundaryOn, setBoundaryOn] = useState(false);
+  const [boundaryT, setBoundaryT] = useState<number | null>(null); // null = default
 
   const hasPairs = useMemo(() => result.rows.some(r => r.properties?.pair_id != null), [result]);
   const hasMixing = useMemo(() => result.rows.some(r => typeof r.properties?.mix_frac_a === 'number'), [result]);
@@ -163,6 +170,76 @@ export default function PcaPanel({
     return categoricalColor(index);
   };
 
+  // Boundary finder. In PCA space the pure-interior pixels form the species
+  // blobs; an edge·other pixel that is a genuine mix sits in the gap *between*
+  // them, far from any pure signature. Score each edge·other pixel by its mean
+  // distance to its few nearest interior pixels — the deeper in the gap, the
+  // higher the score. The threshold then keeps only those far enough from
+  // every blob to count as a boundary (the ones "most in the middle").
+  const boundary = useMemo(() => {
+    const dims = result.components;
+    const interior = result.rows.filter(r => r.zone === 'interior');
+    const reds = result.rows.filter(r => r.zone === 'edge_other_species');
+    if (interior.length < 5 || reds.length === 0) return null;
+    // Subsample the pure reference for the nearest-neighbour search on big runs.
+    const ref =
+      interior.length > 1500
+        ? Array.from({ length: 1500 }, (_, i) => interior[Math.floor((i * interior.length) / 1500)])
+        : interior;
+    const K = Math.min(4, ref.length);
+    const scoreById = new Map<string, number>();
+    let max = 0;
+    const kbest = new Float64Array(K);
+    for (const r of reds) {
+      kbest.fill(Infinity);
+      for (const q of ref) {
+        let s = 0;
+        for (let k = 0; k < dims; k++) {
+          const e = r.scores[k] - q.scores[k];
+          s += e * e;
+        }
+        if (s < kbest[K - 1]) {
+          let j = K - 1;
+          while (j > 0 && kbest[j - 1] > s) {
+            kbest[j] = kbest[j - 1];
+            j--;
+          }
+          kbest[j] = s;
+        }
+      }
+      let acc = 0;
+      for (let k = 0; k < K; k++) acc += Math.sqrt(kbest[k]);
+      const score = acc / K;
+      scoreById.set(r.pixelId, score);
+      if (score > max) max = score;
+    }
+    const sorted = Array.from(scoreById.values()).sort((a, b) => a - b);
+    // Default threshold around the upper-middle so something shows immediately.
+    const defaultT = sorted[Math.floor(sorted.length * 0.6)] || 0;
+    return { scoreById, max, defaultT, count: reds.length };
+  }, [result]);
+
+  const boundaryT_ = boundaryT ?? boundary?.defaultT ?? 0;
+  const boundaryIds = useMemo(() => {
+    const set = new Set<string>();
+    if (!boundaryOn || !boundary) return set;
+    for (const [id, sc] of boundary.scoreById) if (sc >= boundaryT_) set.add(id);
+    return set;
+  }, [boundaryOn, boundary, boundaryT_]);
+
+  // Mirror the flagged pixels onto the map.
+  useEffect(() => {
+    if (!onBoundaryPixels) return;
+    const pix =
+      boundaryOn && boundary
+        ? result.rows.filter(r => boundaryIds.has(r.pixelId)).map(r => ({ id: r.pixelId, lng: r.lng, lat: r.lat }))
+        : [];
+    onBoundaryPixels(pix);
+  }, [boundaryIds, boundaryOn, boundary, result, onBoundaryPixels]);
+
+  // Clear the map markers when the panel unmounts.
+  useEffect(() => () => onBoundaryPixels?.([]), [onBoundaryPixels]);
+
   const points = useMemo(() => {
     let rows =
       result.rows.length > MAX_POINTS
@@ -197,10 +274,11 @@ export default function PcaPanel({
         pixelId: row.pixelId,
         color,
         symbol: (sv === null ? 'circle' : SYMBOL_TYPES[(shapeIdx.get(sv) ?? 0) % SYMBOL_TYPES.length]) as SymbolType,
+        isBoundary: boundaryIds.has(row.pixelId),
         row,
       };
     });
-  }, [result, pcX, pcY, colorBy, shapeBy, colorCats, shapeCats, attrValue, mixAxis, highlightPixelId]);
+  }, [result, pcX, pcY, colorBy, shapeBy, colorCats, shapeCats, attrValue, mixAxis, highlightPixelId, boundaryIds]);
 
   const pick = (p: (typeof points)[number]) => {
     if (highlightPixelId === p.pixelId) onPickPixel(null);
@@ -268,6 +346,7 @@ export default function PcaPanel({
     const selected = payload.pixelId === highlightPixelId;
     return (
       <g onClick={() => pick(payload)} style={{ cursor: 'pointer' }}>
+        {payload.isBoundary && <circle cx={cx} cy={cy} r={7} fill="none" stroke="#e879f9" strokeWidth={2} />}
         {selected && <circle cx={cx} cy={cy} r={9} fill="none" stroke="#ffffff" strokeWidth={2} />}
         <Symbols
           cx={cx}
@@ -436,6 +515,44 @@ export default function PcaPanel({
                 </select>
               </label>
             </div>
+
+            {boundary && (
+              <div className="mb-2 rounded-md border border-fuchsia-500/25 bg-fuchsia-500/5 px-2.5 py-2">
+                <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-200">
+                  <input
+                    type="checkbox"
+                    checked={boundaryOn}
+                    onChange={e => setBoundaryOn(e.target.checked)}
+                    className="accent-fuchsia-500"
+                  />
+                  <span className="font-medium">Find boundaries</span>
+                  <span className="text-[11px] text-slate-500">edge·other pixels in the gap between the pure blobs</span>
+                </label>
+                {boundaryOn && (
+                  <div className="mt-2 space-y-1">
+                    <div className="flex items-center justify-between text-[11px] text-slate-500">
+                      <span>Min distance from a pure blob</span>
+                      <span className="text-fuchsia-300">
+                        {boundaryIds.size} / {boundary.count} flagged
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={boundary.max}
+                      step={boundary.max / 100 || 0.001}
+                      value={boundaryT_}
+                      onChange={e => setBoundaryT(Number(e.target.value))}
+                      className="w-full accent-fuchsia-500"
+                    />
+                    <p className="text-[10px] leading-relaxed text-slate-600">
+                      Higher keeps only the pixels most in the middle — farthest from any pure-species signature.
+                      Flagged pixels are ringed here and on the map.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
 
             <ScatterChart width={CHART_W} height={CHART_H} margin={{ top: 10, right: 10, bottom: 10, left: 0 }}>
                 <CartesianGrid stroke="#ffffff14" />

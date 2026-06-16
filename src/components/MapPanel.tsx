@@ -47,6 +47,8 @@ interface MapPanelProps {
   clusterGrids: GeoTIFFData[];
   /** Boundary-prediction heatmap overlays (step 7); empty when off. */
   predictionOverlays: ScenePreview[];
+  /** Edge·other pixels flagged as boundaries by the PCA-gap finder. */
+  boundaryPixels: { id: string; lng: number; lat: number }[];
   scenes: RasterLayer[];
   previewSceneId: string | null;
   onPreviewScene: (id: string | null) => void;
@@ -363,7 +365,7 @@ function BboxSelector({ polygons, onSelectBox }: { polygons: any | null; onSelec
   );
 }
 
-export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBoxSelect, onClearSelection, zones, clusterAssignment, clusterVersion, preview, clusterGrids, predictionOverlays, scenes, previewSceneId, onPreviewScene, onDeleteScene, onInspectPolygon, inspectPixels, highlightPixel, onPickPixel, pcaPickMode, onPickMapPixel, fitRequest }: MapPanelProps) {
+export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBoxSelect, onClearSelection, zones, clusterAssignment, clusterVersion, preview, clusterGrids, boundaryPixels, predictionOverlays, scenes, previewSceneId, onPreviewScene, onDeleteScene, onInspectPolygon, inspectPixels, highlightPixel, onPickPixel, pcaPickMode, onPickMapPixel, fitRequest }: MapPanelProps) {
   const [basemap, setBasemap] = useState<BasemapKey>('dark');
   const [mapZoom, setMapZoom] = useState(0);
   const [showZoneDots, setShowZoneDots] = useState(true);
@@ -587,6 +589,15 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
             />
           );
         })}
+        {boundaryPixels.map(p => (
+          <CircleMarker
+            key={`bnd-${p.id}`}
+            center={[p.lat, p.lng]}
+            radius={5}
+            pathOptions={{ color: '#e879f9', weight: 2, fill: true, fillColor: '#e879f9', fillOpacity: 0.5 }}
+            interactive={false}
+          />
+        ))}
         {highlightPixel && (
           <>
             <CircleMarker
