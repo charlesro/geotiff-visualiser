@@ -79,6 +79,49 @@ function meanNearest(scores: number[], ref: { scores: number[] }[], dims: number
   return acc / K;
 }
 
+/** Like meanNearest but also returns the indices of the K nearest, and can skip
+ *  one index (a point's own slot when measuring within its own set). Used by
+ *  the density-adaptive (LOF-style) boundary finder. */
+function kNearest(
+  scores: number[],
+  set: { scores: number[] }[],
+  dims: number,
+  K: number,
+  skip = -1
+): { mean: number; idx: number[] } {
+  const dist = new Float64Array(K).fill(Infinity);
+  const ix = new Int32Array(K).fill(-1);
+  for (let q = 0; q < set.length; q++) {
+    if (q === skip) continue;
+    const qs = set[q].scores;
+    let s = 0;
+    for (let k = 0; k < dims; k++) {
+      const e = scores[k] - qs[k];
+      s += e * e;
+    }
+    if (s < dist[K - 1]) {
+      let j = K - 1;
+      while (j > 0 && dist[j - 1] > s) {
+        dist[j] = dist[j - 1];
+        ix[j] = ix[j - 1];
+        j--;
+      }
+      dist[j] = s;
+      ix[j] = q;
+    }
+  }
+  let acc = 0;
+  let n = 0;
+  const idx: number[] = [];
+  for (let k = 0; k < K; k++) {
+    if (ix[k] < 0) continue;
+    acc += Math.sqrt(dist[k]);
+    idx.push(ix[k]);
+    n++;
+  }
+  return { mean: n ? acc / n : 0, idx };
+}
+
 export interface PcaPickedPixel {
   id: string;
   zone: PixelZone;
@@ -225,15 +268,34 @@ export default function PcaPanel({
       ref = rows.filter(r => r.zone === 'interior');
       candidates = rows.filter(r => r.zone === 'edge_other_species');
     } else {
-      // Local density of each pixel (mean distance to its nearest neighbours);
-      // the densest half are the blob cores — the label-free "pure" set.
+      // Unsupervised, density-adaptive (a Local Outlier Factor). A single
+      // global density cut fails when the blobs differ in size/density — a
+      // small tight blob looks "sparse" next to a big dense one and gets
+      // wrongly flagged. Instead score each pixel by how sparse its
+      // neighbourhood is *relative to its own neighbours'*: a core pixel
+      // matches its neighbours (~1) whatever the blob's size, while a gap pixel
+      // is far sparser than the blob edges around it (>1).
       const uni = subsample(rows, 2500);
-      if (uni.length < 10) return null;
-      const kD = Math.min(9, uni.length);
-      const dens = uni.map(p => meanNearest(p.scores, uni, dims, kD));
-      const cut = [...dens].sort((a, b) => a - b)[Math.floor(dens.length * 0.5)];
-      ref = uni.filter((_, i) => dens[i] <= cut);
-      candidates = rows;
+      if (uni.length < 15) return null;
+      const K = Math.min(12, uni.length - 1);
+      // Each universe point's local radius = mean distance to its K nearest.
+      const radius = new Float64Array(uni.length);
+      for (let i = 0; i < uni.length; i++) radius[i] = kNearest(uni[i].scores, uni, dims, K, i).mean;
+
+      const scoreById = new Map<string, number>();
+      let max = 0;
+      for (const r of rows) {
+        const { mean: own, idx } = kNearest(r.scores, uni, dims, K);
+        let nb = 0;
+        for (const j of idx) nb += radius[j];
+        nb /= idx.length || 1;
+        const score = own / (nb + 1e-9); // ~1 inside any blob, >1 in the gaps
+        scoreById.set(r.pixelId, score);
+        if (score > max) max = score;
+      }
+      const sorted = Array.from(scoreById.values()).sort((a, b) => a - b);
+      const defaultT = Math.max(1.5, sorted[Math.floor(sorted.length * 0.9)] || 0);
+      return { scoreById, max, defaultT, count: rows.length };
     }
     if (ref.length < 5 || candidates.length === 0) return null;
     const refSub = subsample(ref, 1500);
@@ -246,9 +308,7 @@ export default function PcaPanel({
       if (score > max) max = score;
     }
     const sorted = Array.from(scoreById.values()).sort((a, b) => a - b);
-    // Unsupervised scores most pixels (the pure ones) near zero, so start the
-    // threshold higher to surface only the gap pixels.
-    const defaultT = sorted[Math.floor(sorted.length * (boundaryUnsup ? 0.9 : 0.6))] || 0;
+    const defaultT = sorted[Math.floor(sorted.length * 0.6)] || 0;
     return { scoreById, max, defaultT, count: candidates.length };
   }, [result, boundaryOn, boundaryUnsup]);
 
@@ -588,7 +648,7 @@ export default function PcaPanel({
                     {boundary && (
                       <>
                         <div className="flex items-center justify-between text-[11px] text-slate-500">
-                          <span>Min distance from a pure blob</span>
+                          <span>{boundaryUnsup ? 'Sparsity vs neighbours' : 'Min distance from a pure blob'}</span>
                           <span className="text-fuchsia-300">
                             {boundaryIds.size} / {boundary.count} flagged
                             {boundaryUnsup && boundaryEdgeFrac !== null && (
@@ -607,7 +667,7 @@ export default function PcaPanel({
                         />
                         <p className="text-[10px] leading-relaxed text-slate-600">
                           {boundaryUnsup
-                            ? 'The finder never sees the edge labels — it locates the dense pure blobs itself and flags the pixels sitting between them. “% real edges” is how often a flagged pixel is genuinely an edge·other pixel.'
+                            ? 'No labels: each pixel is scored by how much sparser its neighbourhood is than its neighbours’ own (a local outlier factor), so a small tight blob counts as pure just like a big one. ~1 sits inside a blob, higher means a gap pixel. “% real edges” is how often a flagged pixel is genuinely an edge·other pixel.'
                             : 'Higher keeps only the pixels most in the middle — farthest from any pure-species signature. Flagged pixels are ringed here and on the map.'}
                         </p>
                       </>
