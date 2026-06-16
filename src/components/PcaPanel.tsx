@@ -161,8 +161,9 @@ function invMatrix(M: number[][], n: number): number[][] {
 
 /**
  * Draws the k-means pure clusters found by the unsupervised boundary finder:
- * a cross at each centroid and its 2σ covariance ellipse (the "blob"). Rendered
- * inside the ScatterChart so it can read the axis scales (recharts v3 hooks).
+ * a cross at each centroid and a circle whose radius is the cluster's largest
+ * 2σ spread (the major axis of its covariance ellipse). Rendered inside the
+ * ScatterChart so it can read the axis scales (recharts v3 hooks).
  */
 function BlobOverlay({ clusters, pcX, pcY }: { clusters: { c: number[]; cov: number[][] }[]; pcX: number; pcY: number }) {
   const xScale = useXAxisScale();
@@ -176,29 +177,17 @@ function BlobOverlay({ clusters, pcX, pcY }: { clusters: { c: number[]; cov: num
         const cx = xScale(cl.c[pcX]) as number;
         const cy = yScale(cl.c[pcY]) as number;
         if (!isFinite(cx) || !isFinite(cy)) return null;
-        // 2×2 marginal covariance over the two shown PCs → ellipse axes/angle.
+        // 2×2 marginal covariance over the two shown PCs. Draw a circle whose
+        // radius is the ellipse's *largest* 2σ semi-axis (the major eigenvalue).
         const a = cl.cov[pcX][pcX];
         const b = cl.cov[pcX][pcY];
         const d = cl.cov[pcY][pcY];
         const mid = (a + d) / 2;
         const rad = Math.sqrt(Math.max(0, ((a - d) / 2) ** 2 + b * b));
-        const rx = 2 * Math.sqrt(Math.max(0, mid + rad)) * s; // 2σ major
-        const ry = 2 * Math.sqrt(Math.max(0, mid - rad)) * s; // 2σ minor
-        const deg = (-0.5 * Math.atan2(2 * b, a - d) * 180) / Math.PI; // pixel y is down → negate
+        const r = 2 * Math.sqrt(Math.max(0, mid + rad)) * s; // 2σ along the major axis
         return (
           <g key={i}>
-            <ellipse
-              cx={cx}
-              cy={cy}
-              rx={rx}
-              ry={ry}
-              transform={`rotate(${deg} ${cx} ${cy})`}
-              fill="none"
-              stroke="#38bdf8"
-              strokeWidth={1.5}
-              strokeDasharray="5 3"
-              opacity={0.9}
-            />
+            <circle cx={cx} cy={cy} r={r} fill="none" stroke="#38bdf8" strokeWidth={1.5} strokeDasharray="5 3" opacity={0.9} />
             <line x1={cx - 6} y1={cy} x2={cx + 6} y2={cy} stroke="#38bdf8" strokeWidth={1.5} />
             <line x1={cx} y1={cy - 6} x2={cx} y2={cy + 6} stroke="#38bdf8" strokeWidth={1.5} />
             <text x={cx + 8} y={cy - 8} fontSize={11} fontWeight={600} fill="#7dd3fc">
