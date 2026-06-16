@@ -144,28 +144,14 @@ function kmeans(pts: { scores: number[] }[], k: number, dims: number): { cent: n
   return { cent, asn };
 }
 
-/** Inverse of a small (n≤3) matrix via Gauss-Jordan elimination. */
-function invMatrix(M: number[][], n: number): number[][] {
-  const A = M.map((row, i) => [...row, ...Array.from({ length: n }, (_, j) => (i === j ? 1 : 0))]);
-  for (let i = 0; i < n; i++) {
-    const piv = A[i][i] || 1e-9;
-    for (let j = 0; j < 2 * n; j++) A[i][j] /= piv;
-    for (let r = 0; r < n; r++) {
-      if (r === i) continue;
-      const f = A[r][i];
-      for (let j = 0; j < 2 * n; j++) A[r][j] -= f * A[i][j];
-    }
-  }
-  return A.map(row => row.slice(n));
-}
-
 /**
  * Draws the k-means pure clusters found by the unsupervised boundary finder:
- * a cross at each centroid and a circle whose radius is the cluster's largest
- * 2σ spread (the major axis of its covariance ellipse). Rendered inside the
- * ScatterChart so it can read the axis scales (recharts v3 hooks).
+ * a cross at each centroid and a circle of radius `r` (the cluster's largest 2σ
+ * spread) — the same radius the boundary score uses, so a pixel inside a circle
+ * is "part of the blob" and not flagged. Rendered inside the ScatterChart so it
+ * can read the axis scales (recharts v3 hooks).
  */
-function BlobOverlay({ clusters, pcX, pcY }: { clusters: { c: number[]; cov: number[][] }[]; pcX: number; pcY: number }) {
+function BlobOverlay({ clusters, pcX, pcY }: { clusters: { c: number[]; r: number }[]; pcX: number; pcY: number }) {
   const xScale = useXAxisScale();
   const yScale = useYAxisScale();
   if (!xScale || !yScale) return null;
@@ -177,14 +163,7 @@ function BlobOverlay({ clusters, pcX, pcY }: { clusters: { c: number[]; cov: num
         const cx = xScale(cl.c[pcX]) as number;
         const cy = yScale(cl.c[pcY]) as number;
         if (!isFinite(cx) || !isFinite(cy)) return null;
-        // 2×2 marginal covariance over the two shown PCs. Draw a circle whose
-        // radius is the ellipse's *largest* 2σ semi-axis (the major eigenvalue).
-        const a = cl.cov[pcX][pcX];
-        const b = cl.cov[pcX][pcY];
-        const d = cl.cov[pcY][pcY];
-        const mid = (a + d) / 2;
-        const rad = Math.sqrt(Math.max(0, ((a - d) / 2) ** 2 + b * b));
-        const r = 2 * Math.sqrt(Math.max(0, mid + rad)) * s; // 2σ along the major axis
+        const r = cl.r * s;
         return (
           <g key={i}>
             <circle cx={cx} cy={cy} r={r} fill="none" stroke="#38bdf8" strokeWidth={1.5} strokeDasharray="5 3" opacity={0.9} />
@@ -350,10 +329,11 @@ export default function PcaPanel({
       // Unsupervised. Find the pure clusters with k-means (no labels), then
       // score each pixel by its distance to the *nearest* cluster — so a pixel
       // far from every blob at once (deep in the gap) scores high, exactly the
-      // "in the middle of all the blobs" idea. Distance is measured in each
-      // cluster's own shape (Mahalanobis), so an elongated blob's tips stay
-      // inside it; and because every blob (big or small) has its own centroid,
-      // a small isolated cluster sits on its centroid and scores ~0.
+      // "in the middle of all the blobs" idea. Each blob is a circle centred on
+      // its centroid with radius = its largest 2σ spread (the major axis of its
+      // covariance, via power iteration). A pixel is scored by its distance to
+      // the nearest centroid divided by that blob's radius, so inside any blob
+      // circle reads < 1 (part of the blob, not flagged) and the gap reads > 1.
       const uni = subsample(rows, 2500);
       const k = Math.min(boundaryK, uni.length);
       if (uni.length < k + 3 || k < 2) return null;
@@ -369,44 +349,46 @@ export default function PcaPanel({
             for (let j = 0; j < dims; j++) cov[i][j] += di * (uni[p].scores[j] - mu[j]);
           }
         }
-        let tr = 0;
-        for (let i = 0; i < dims; i++) {
-          for (let j = 0; j < dims; j++) cov[i][j] /= Math.max(1, n - 1);
-          tr += cov[i][i];
+        for (let i = 0; i < dims; i++) for (let j = 0; j < dims; j++) cov[i][j] /= Math.max(1, n - 1);
+        // Largest eigenvalue (power iteration) → major-axis 2σ = the radius.
+        let v = new Array(dims).fill(0);
+        v[0] = 1;
+        for (let it = 0; it < 60; it++) {
+          const w = new Array(dims).fill(0);
+          for (let i = 0; i < dims; i++) for (let j = 0; j < dims; j++) w[i] += cov[i][j] * v[j];
+          const norm = Math.sqrt(w.reduce((s, x) => s + x * x, 0)) || 1;
+          v = w.map(x => x / norm);
         }
-        // Regularise a copy on the diagonal before inverting (thin/tiny blobs).
-        const reg = cov.map(r => r.slice());
-        const lam = 1e-3 * (tr / dims) + 1e-9;
-        for (let i = 0; i < dims; i++) reg[i][i] += lam;
-        return { c: mu, cov, sInv: invMatrix(reg, dims) };
+        let lambda = 0;
+        for (let i = 0; i < dims; i++) for (let j = 0; j < dims; j++) lambda += v[i] * cov[i][j] * v[j];
+        const r = 2 * Math.sqrt(Math.max(1e-9, lambda)); // 2σ along the major axis
+        return { c: mu, r };
       });
-      const maha = (s: number[], mu: number[], Si: number[][]) => {
+      const dist = (s: number[], mu: number[]) => {
         let acc = 0;
         for (let i = 0; i < dims; i++) {
-          const di = s[i] - mu[i];
-          for (let j = 0; j < dims; j++) acc += di * Si[i][j] * (s[j] - mu[j]);
+          const e = s[i] - mu[i];
+          acc += e * e;
         }
-        return Math.sqrt(Math.max(0, acc));
+        return Math.sqrt(acc);
       };
       const scoreById = new Map<string, number>();
       let max = 0;
-      for (const r of rows) {
-        let d1 = Infinity;
+      for (const row of rows) {
+        let best = Infinity;
         for (const cl of clusters) {
-          const m = maha(r.scores, cl.c, cl.sInv);
-          if (m < d1) d1 = m;
+          const ratio = dist(row.scores, cl.c) / cl.r;
+          if (ratio < best) best = ratio;
         }
-        scoreById.set(r.pixelId, d1); // distance to the nearest blob (its σ units)
-        if (d1 > max) max = d1;
+        scoreById.set(row.pixelId, best); // < 1 inside a blob circle, > 1 in the gap
+        if (best > max) max = best;
       }
-      const sorted = Array.from(scoreById.values()).sort((a, b) => a - b);
-      const defaultT = Math.max(2.5, sorted[Math.floor(sorted.length * 0.9)] || 2.5);
       return {
         scoreById,
         max,
-        defaultT,
+        defaultT: 1, // the blob circle edge
         count: rows.length,
-        clusters: clusters.map(cl => ({ c: cl.c, cov: cl.cov })) as { c: number[]; cov: number[][] }[] | undefined,
+        clusters: clusters as { c: number[]; r: number }[] | undefined,
       };
     }
     if (ref.length < 5 || candidates.length === 0) return null;
@@ -426,7 +408,7 @@ export default function PcaPanel({
       max,
       defaultT,
       count: candidates.length,
-      clusters: undefined as { c: number[]; cov: number[][] }[] | undefined,
+      clusters: undefined as { c: number[]; r: number }[] | undefined,
     };
   }, [result, boundaryOn, boundaryUnsup, boundaryK]);
 
@@ -782,7 +764,7 @@ export default function PcaPanel({
                     {boundary && (
                       <>
                         <div className="flex items-center justify-between text-[11px] text-slate-500">
-                          <span>{boundaryUnsup ? 'Distance from the nearest blob (σ)' : 'Min distance from a pure blob'}</span>
+                          <span>{boundaryUnsup ? 'Distance from the nearest blob (1 = circle edge)' : 'Min distance from a pure blob'}</span>
                           <span className="text-fuchsia-300">
                             {boundaryIds.size} / {boundary.count} flagged
                             {boundaryUnsup && boundaryEdgeFrac !== null && (
@@ -801,7 +783,7 @@ export default function PcaPanel({
                         />
                         <p className="text-[10px] leading-relaxed text-slate-600">
                           {boundaryUnsup
-                            ? 'No labels: k-means finds k pure clusters (drawn as blue blobs) and each pixel is scored by its distance to the nearest one, in that blob’s own shape (σ units), so a pixel far from every blob at once scores high. A small isolated cluster gets its own blob, so its pixels sit on it and read ~0. Lower k if pure clusters get split; raise it to separate more crops/scenarios. “% real edges” is how often a flagged pixel is genuinely an edge·other pixel.'
+                            ? 'No labels: k-means finds k pure clusters, each drawn as a blue circle (centroid + its largest 2σ radius). A pixel is scored by its distance to the nearest centroid ÷ that blob’s radius, so a point inside a circle reads < 1 (part of the blob, not flagged) and the gaps between blobs read > 1. Lower k if pure clusters get split; raise it to separate more crops/scenarios. “% real edges” is how often a flagged pixel is genuinely an edge·other pixel.'
                             : 'Higher keeps only the pixels most in the middle — farthest from any pure-species signature. Flagged pixels are ringed here and on the map.'}
                         </p>
                       </>
