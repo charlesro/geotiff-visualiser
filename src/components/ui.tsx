@@ -121,6 +121,7 @@ export function Button({
   busy,
   variant = 'primary',
   className,
+  title,
 }: {
   children: React.ReactNode;
   onClick?: () => void;
@@ -128,10 +129,12 @@ export function Button({
   busy?: boolean;
   variant?: 'primary' | 'ghost' | 'danger';
   className?: string;
+  title?: string;
 }) {
   return (
     <button
       onClick={onClick}
+      title={title}
       disabled={disabled || busy}
       className={cn(
         'inline-flex items-center justify-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition-colors',

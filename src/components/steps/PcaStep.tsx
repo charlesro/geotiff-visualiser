@@ -260,7 +260,13 @@ export default function PcaStep(props: PcaStepProps) {
         </div>
       )}
 
-      <Button onClick={props.onRun} busy={props.busy} disabled={!props.zones} className="w-full">
+      <Button
+        onClick={props.onRun}
+        busy={props.busy}
+        disabled={!props.zones || fieldCount === 0}
+        title={fieldCount === 0 ? 'Select at least one field above' : undefined}
+        className="w-full"
+      >
         <BarChart3 className="h-3.5 w-3.5" />
         Run PCA{scoped ? ` · scenario ${scoped.cluster + 1}` : ''}
       </Button>

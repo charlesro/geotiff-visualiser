@@ -84,8 +84,9 @@ export default function App() {
 
   // Step 5 — PCA
   const [pcaScope, setPcaScope] = useState<string>(PCA_SCOPE_ALL);
-  /** Subset of extracted fields (pids) the PCA runs on; null = all. */
-  const [pcaFields, setPcaFields] = useState<Set<number> | null>(null);
+  /** Subset of extracted fields (pids) the PCA runs on; null = all, empty = none.
+   *  Defaults to none so the user picks the fields/groups deliberately. */
+  const [pcaFields, setPcaFields] = useState<Set<number> | null>(new Set());
   // Default: fit the axes on the pure interior pixels, and display the
   // interior vs the edge facing another species (the comparison of interest).
   const [pcaFitZones, setPcaFitZones] = useState<PixelZone[]>(PCA_DEFAULT_FIT);
@@ -95,8 +96,6 @@ export default function App() {
   const [pcaError, setPcaError] = useState<string | null>(null);
   const [showPcaPanel, setShowPcaPanel] = useState(false);
   const [showBoundaryPanel, setShowBoundaryPanel] = useState(false);
-  /** Edge·other pixels flagged as boundaries in the PCA-gap finder. */
-  const [pcaBoundaryPixels, setPcaBoundaryPixels] = useState<{ id: string; lng: number; lat: number }[]>([]);
 
   // Step 7 — boundary prediction
   const [prediction, setPrediction] = useState<BoundaryPrediction | null>(null);
@@ -235,7 +234,7 @@ export default function App() {
     setClustering(null);
     setClusteringError(null);
     setPcaScope(PCA_SCOPE_ALL);
-    setPcaFields(null);
+    setPcaFields(new Set());
     setPcaFitZones(PCA_DEFAULT_FIT);
     setPcaProjectZones(PCA_DEFAULT_PROJECT);
     setPcaResult(null);
@@ -821,7 +820,6 @@ export default function App() {
   const closePcaPanel = useCallback(() => {
     setShowPcaPanel(false);
     setHighlightPixel(null);
-    setPcaBoundaryPixels([]);
   }, []);
 
   const exportCsv = useCallback(() => {
@@ -1030,7 +1028,6 @@ export default function App() {
             clusterVersion={clustering?.createdAt ?? 0}
             preview={preview}
             clusterGrids={clusterGrids}
-            boundaryPixels={pcaBoundaryPixels}
             predictionOverlays={predictionOverlays}
             scenes={scenes}
             previewSceneId={previewSceneId}
@@ -1064,7 +1061,6 @@ export default function App() {
               onProjectZonesChange={setPcaProjectZones}
               highlightPixelId={highlightPixel?.id ?? null}
               onPickPixel={pickPcaPixel}
-              onBoundaryPixels={setPcaBoundaryPixels}
               onClose={closePcaPanel}
               onExportCsv={exportCsv}
             />
