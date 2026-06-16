@@ -79,47 +79,64 @@ function meanNearest(scores: number[], ref: { scores: number[] }[], dims: number
   return acc / K;
 }
 
-/** Like meanNearest but also returns the indices of the K nearest, and can skip
- *  one index (a point's own slot when measuring within its own set). Used by
- *  the density-adaptive (LOF-style) boundary finder. */
-function kNearest(
-  scores: number[],
-  set: { scores: number[] }[],
-  dims: number,
-  K: number,
-  skip = -1
-): { mean: number; idx: number[] } {
-  const dist = new Float64Array(K).fill(Infinity);
-  const ix = new Int32Array(K).fill(-1);
-  for (let q = 0; q < set.length; q++) {
-    if (q === skip) continue;
-    const qs = set[q].scores;
+/** k-means centroids (over the first `dims` PCs) with deterministic
+ *  farthest-point seeding. Used by the unsupervised boundary finder to locate
+ *  the pure clusters without labels. */
+function kmeansCentroids(pts: { scores: number[] }[], k: number, dims: number): number[][] {
+  const d2 = (a: number[], b: number[]) => {
     let s = 0;
-    for (let k = 0; k < dims; k++) {
-      const e = scores[k] - qs[k];
+    for (let i = 0; i < dims; i++) {
+      const e = a[i] - b[i];
       s += e * e;
     }
-    if (s < dist[K - 1]) {
-      let j = K - 1;
-      while (j > 0 && dist[j - 1] > s) {
-        dist[j] = dist[j - 1];
-        ix[j] = ix[j - 1];
-        j--;
+    return s;
+  };
+  if (pts.length <= k) return pts.map(p => p.scores.slice(0, dims));
+  const cent: number[][] = [pts[0].scores.slice(0, dims)];
+  while (cent.length < k) {
+    let far = pts[0].scores;
+    let fd = -1;
+    for (const p of pts) {
+      let m = Infinity;
+      for (const c of cent) {
+        const dd = d2(p.scores, c);
+        if (dd < m) m = dd;
       }
-      dist[j] = s;
-      ix[j] = q;
+      if (m > fd) {
+        fd = m;
+        far = p.scores;
+      }
     }
+    cent.push(far.slice(0, dims));
   }
-  let acc = 0;
-  let n = 0;
-  const idx: number[] = [];
-  for (let k = 0; k < K; k++) {
-    if (ix[k] < 0) continue;
-    acc += Math.sqrt(dist[k]);
-    idx.push(ix[k]);
-    n++;
+  for (let it = 0; it < 40; it++) {
+    const sum = cent.map(() => new Float64Array(dims));
+    const cnt = new Int32Array(k);
+    for (const p of pts) {
+      let b = 0;
+      let bd = Infinity;
+      for (let c = 0; c < k; c++) {
+        const dd = d2(p.scores, cent[c]);
+        if (dd < bd) {
+          bd = dd;
+          b = c;
+        }
+      }
+      cnt[b]++;
+      for (let i = 0; i < dims; i++) sum[b][i] += p.scores[i];
+    }
+    let moved = false;
+    for (let c = 0; c < k; c++) {
+      if (!cnt[c]) continue;
+      for (let i = 0; i < dims; i++) {
+        const v = sum[c][i] / cnt[c];
+        if (v !== cent[c][i]) moved = true;
+        cent[c][i] = v;
+      }
+    }
+    if (!moved) break;
   }
-  return { mean: n ? acc / n : 0, idx };
+  return cent;
 }
 
 export interface PcaPickedPixel {
@@ -172,9 +189,10 @@ export default function PcaPanel({
   // gap between the pure-interior blobs in PCA space.
   const [boundaryOn, setBoundaryOn] = useState(false);
   const [boundaryT, setBoundaryT] = useState<number | null>(null); // null = default
-  // Unsupervised: ignore the edge/interior labels — discover the pure blobs by
-  // density and score every pixel, so the finder doesn't "know" the answer.
+  // Unsupervised: ignore the edge/interior labels — find the pure clusters by
+  // k-means and score every pixel by how "between" two of them it is.
   const [boundaryUnsup, setBoundaryUnsup] = useState(false);
+  const [boundaryK, setBoundaryK] = useState(3); // assumed number of pure clusters
 
   const hasPairs = useMemo(() => result.rows.some(r => r.properties?.pair_id != null), [result]);
   const hasMixing = useMemo(() => result.rows.some(r => typeof r.properties?.mix_frac_a === 'number'), [result]);
@@ -268,33 +286,40 @@ export default function PcaPanel({
       ref = rows.filter(r => r.zone === 'interior');
       candidates = rows.filter(r => r.zone === 'edge_other_species');
     } else {
-      // Unsupervised, density-adaptive (a Local Outlier Factor). A single
-      // global density cut fails when the blobs differ in size/density — a
-      // small tight blob looks "sparse" next to a big dense one and gets
-      // wrongly flagged. Instead score each pixel by how sparse its
-      // neighbourhood is *relative to its own neighbours'*: a core pixel
-      // matches its neighbours (~1) whatever the blob's size, while a gap pixel
-      // is far sparser than the blob edges around it (>1).
+      // Unsupervised, "betweenness". A boundary pixel is a mixture of two pure
+      // crops, so in PCA space it lies *between* two pure clusters. Find the
+      // clusters with k-means (no labels), then score each pixel by the ratio
+      // of its distance to its nearest centroid vs its second-nearest: ~0 sits
+      // on a centroid (pure, any cluster size), →1 sits midway between two
+      // (a mix). Unlike a density/distance score this isn't fooled by a small
+      // isolated pure cluster — that cluster gets its own centroid, so its
+      // pixels read ~0, not "far from the mass".
       const uni = subsample(rows, 2500);
-      if (uni.length < 15) return null;
-      const K = Math.min(12, uni.length - 1);
-      // Each universe point's local radius = mean distance to its K nearest.
-      const radius = new Float64Array(uni.length);
-      for (let i = 0; i < uni.length; i++) radius[i] = kNearest(uni[i].scores, uni, dims, K, i).mean;
-
+      const k = Math.min(boundaryK, uni.length);
+      if (uni.length < k + 3 || k < 2) return null;
+      const cent = kmeansCentroids(uni, k, dims);
       const scoreById = new Map<string, number>();
       let max = 0;
       for (const r of rows) {
-        const { mean: own, idx } = kNearest(r.scores, uni, dims, K);
-        let nb = 0;
-        for (const j of idx) nb += radius[j];
-        nb /= idx.length || 1;
-        const score = own / (nb + 1e-9); // ~1 inside any blob, >1 in the gaps
+        let d1 = Infinity;
+        let d2 = Infinity;
+        for (const c of cent) {
+          let s = 0;
+          for (let i = 0; i < dims; i++) {
+            const e = r.scores[i] - c[i];
+            s += e * e;
+          }
+          if (s < d1) {
+            d2 = d1;
+            d1 = s;
+          } else if (s < d2) d2 = s;
+        }
+        const score = Math.sqrt(d1) / (Math.sqrt(d2) + 1e-9); // 0 = on a centroid, →1 = between two
         scoreById.set(r.pixelId, score);
         if (score > max) max = score;
       }
       const sorted = Array.from(scoreById.values()).sort((a, b) => a - b);
-      const defaultT = Math.max(1.5, sorted[Math.floor(sorted.length * 0.9)] || 0);
+      const defaultT = Math.max(0.55, sorted[Math.floor(sorted.length * 0.9)] || 0.55);
       return { scoreById, max, defaultT, count: rows.length };
     }
     if (ref.length < 5 || candidates.length === 0) return null;
@@ -310,7 +335,7 @@ export default function PcaPanel({
     const sorted = Array.from(scoreById.values()).sort((a, b) => a - b);
     const defaultT = sorted[Math.floor(sorted.length * 0.6)] || 0;
     return { scoreById, max, defaultT, count: candidates.length };
-  }, [result, boundaryOn, boundaryUnsup]);
+  }, [result, boundaryOn, boundaryUnsup, boundaryK]);
 
   const boundaryT_ = boundaryT ?? boundary?.defaultT ?? 0;
   const boundaryIds = useMemo(() => {
@@ -643,12 +668,28 @@ export default function PcaPanel({
                         }}
                         className="accent-fuchsia-500"
                       />
-                      Ignore labels (unsupervised) — find the blobs by density, score every pixel
+                      Ignore labels (unsupervised) — find pure clusters, flag pixels between them
                     </label>
+                    {boundaryUnsup && (
+                      <label className="flex items-center gap-2 text-[11px] text-slate-500">
+                        Pure clusters to assume (k)
+                        <input
+                          type="number"
+                          min={2}
+                          max={8}
+                          value={boundaryK}
+                          onChange={e => {
+                            setBoundaryK(Math.max(2, Math.min(8, Math.round(Number(e.target.value)) || 2)));
+                            setBoundaryT(null);
+                          }}
+                          className="w-14 rounded border border-white/10 bg-[#0b0e11] px-1.5 py-0.5 text-slate-300"
+                        />
+                      </label>
+                    )}
                     {boundary && (
                       <>
                         <div className="flex items-center justify-between text-[11px] text-slate-500">
-                          <span>{boundaryUnsup ? 'Sparsity vs neighbours' : 'Min distance from a pure blob'}</span>
+                          <span>{boundaryUnsup ? 'Betweenness (0 = pure → 1 = midway)' : 'Min distance from a pure blob'}</span>
                           <span className="text-fuchsia-300">
                             {boundaryIds.size} / {boundary.count} flagged
                             {boundaryUnsup && boundaryEdgeFrac !== null && (
@@ -667,7 +708,7 @@ export default function PcaPanel({
                         />
                         <p className="text-[10px] leading-relaxed text-slate-600">
                           {boundaryUnsup
-                            ? 'No labels: each pixel is scored by how much sparser its neighbourhood is than its neighbours’ own (a local outlier factor), so a small tight blob counts as pure just like a big one. ~1 sits inside a blob, higher means a gap pixel. “% real edges” is how often a flagged pixel is genuinely an edge·other pixel.'
+                            ? 'No labels: k-means finds k pure clusters and each pixel is scored by how “between” two of them it lies (a mixture). A small isolated cluster gets its own centroid, so it reads ~0 — not flagged. Lower k if pure clusters get split; raise it to separate more crops/scenarios. “% real edges” is how often a flagged pixel is genuinely an edge·other pixel.'
                             : 'Higher keeps only the pixels most in the middle — farthest from any pure-species signature. Flagged pixels are ringed here and on the map.'}
                         </p>
                       </>
