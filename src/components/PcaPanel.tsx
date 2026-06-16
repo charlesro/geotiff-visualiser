@@ -48,6 +48,37 @@ const ATTR_LABEL: Record<Attr, string> = {
 /** Keep the scatter responsive — evenly sampled above this. */
 const MAX_POINTS = 4000;
 
+/** Even subsample of an array down to at most n items. */
+function subsample<T>(arr: T[], n: number): T[] {
+  if (arr.length <= n) return arr;
+  return Array.from({ length: n }, (_, i) => arr[Math.floor((i * arr.length) / n)]);
+}
+
+/** Mean Euclidean distance (over the first `dims` PCs) from a point to its K
+ *  nearest neighbours in `ref`. Used both for the boundary score (distance to
+ *  the pure blobs) and, with `ref` = all points, as a local-density proxy. */
+function meanNearest(scores: number[], ref: { scores: number[] }[], dims: number, K: number): number {
+  const kbest = new Float64Array(K).fill(Infinity);
+  for (const q of ref) {
+    let s = 0;
+    for (let k = 0; k < dims; k++) {
+      const e = scores[k] - q.scores[k];
+      s += e * e;
+    }
+    if (s < kbest[K - 1]) {
+      let j = K - 1;
+      while (j > 0 && kbest[j - 1] > s) {
+        kbest[j] = kbest[j - 1];
+        j--;
+      }
+      kbest[j] = s;
+    }
+  }
+  let acc = 0;
+  for (let k = 0; k < K; k++) acc += Math.sqrt(kbest[k]);
+  return acc / K;
+}
+
 export interface PcaPickedPixel {
   id: string;
   zone: PixelZone;
@@ -98,6 +129,9 @@ export default function PcaPanel({
   // gap between the pure-interior blobs in PCA space.
   const [boundaryOn, setBoundaryOn] = useState(false);
   const [boundaryT, setBoundaryT] = useState<number | null>(null); // null = default
+  // Unsupervised: ignore the edge/interior labels — discover the pure blobs by
+  // density and score every pixel, so the finder doesn't "know" the answer.
+  const [boundaryUnsup, setBoundaryUnsup] = useState(false);
 
   const hasPairs = useMemo(() => result.rows.some(r => r.properties?.pair_id != null), [result]);
   const hasMixing = useMemo(() => result.rows.some(r => typeof r.properties?.mix_frac_a === 'number'), [result]);
@@ -170,54 +204,53 @@ export default function PcaPanel({
     return categoricalColor(index);
   };
 
-  // Boundary finder. In PCA space the pure-interior pixels form the species
-  // blobs; an edge·other pixel that is a genuine mix sits in the gap *between*
-  // them, far from any pure signature. Score each edge·other pixel by its mean
-  // distance to its few nearest interior pixels — the deeper in the gap, the
-  // higher the score. The threshold then keeps only those far enough from
-  // every blob to count as a boundary (the ones "most in the middle").
+  // Boundary finder. In PCA space the pure pixels form the species blobs; a
+  // genuine mix sits in the gap *between* them, far from any pure signature.
+  // Each candidate pixel is scored by its mean distance to its few nearest
+  // *pure* pixels — the deeper in the gap, the higher the score — and a
+  // threshold keeps only those far enough from every blob (most "in the
+  // middle"). Two ways to define "pure" and "candidate":
+  //   supervised   — pure = interior label, candidates = edge·other label.
+  //   unsupervised — pure = the densest pixels (found from the data, no
+  //                  labels), candidates = every pixel; the finder never sees
+  //                  which pixels are edges.
+  const canFindBoundary = useMemo(() => result.rows.length >= 10, [result]);
   const boundary = useMemo(() => {
+    if (!boundaryOn) return null; // skip the (sometimes heavy) work when off
     const dims = result.components;
-    const interior = result.rows.filter(r => r.zone === 'interior');
-    const reds = result.rows.filter(r => r.zone === 'edge_other_species');
-    if (interior.length < 5 || reds.length === 0) return null;
-    // Subsample the pure reference for the nearest-neighbour search on big runs.
-    const ref =
-      interior.length > 1500
-        ? Array.from({ length: 1500 }, (_, i) => interior[Math.floor((i * interior.length) / 1500)])
-        : interior;
-    const K = Math.min(4, ref.length);
+    const rows = result.rows;
+    let ref: typeof rows;
+    let candidates: typeof rows;
+    if (!boundaryUnsup) {
+      ref = rows.filter(r => r.zone === 'interior');
+      candidates = rows.filter(r => r.zone === 'edge_other_species');
+    } else {
+      // Local density of each pixel (mean distance to its nearest neighbours);
+      // the densest half are the blob cores — the label-free "pure" set.
+      const uni = subsample(rows, 2500);
+      if (uni.length < 10) return null;
+      const kD = Math.min(9, uni.length);
+      const dens = uni.map(p => meanNearest(p.scores, uni, dims, kD));
+      const cut = [...dens].sort((a, b) => a - b)[Math.floor(dens.length * 0.5)];
+      ref = uni.filter((_, i) => dens[i] <= cut);
+      candidates = rows;
+    }
+    if (ref.length < 5 || candidates.length === 0) return null;
+    const refSub = subsample(ref, 1500);
+    const K = Math.min(4, refSub.length);
     const scoreById = new Map<string, number>();
     let max = 0;
-    const kbest = new Float64Array(K);
-    for (const r of reds) {
-      kbest.fill(Infinity);
-      for (const q of ref) {
-        let s = 0;
-        for (let k = 0; k < dims; k++) {
-          const e = r.scores[k] - q.scores[k];
-          s += e * e;
-        }
-        if (s < kbest[K - 1]) {
-          let j = K - 1;
-          while (j > 0 && kbest[j - 1] > s) {
-            kbest[j] = kbest[j - 1];
-            j--;
-          }
-          kbest[j] = s;
-        }
-      }
-      let acc = 0;
-      for (let k = 0; k < K; k++) acc += Math.sqrt(kbest[k]);
-      const score = acc / K;
+    for (const r of candidates) {
+      const score = meanNearest(r.scores, refSub, dims, K);
       scoreById.set(r.pixelId, score);
       if (score > max) max = score;
     }
     const sorted = Array.from(scoreById.values()).sort((a, b) => a - b);
-    // Default threshold around the upper-middle so something shows immediately.
-    const defaultT = sorted[Math.floor(sorted.length * 0.6)] || 0;
-    return { scoreById, max, defaultT, count: reds.length };
-  }, [result]);
+    // Unsupervised scores most pixels (the pure ones) near zero, so start the
+    // threshold higher to surface only the gap pixels.
+    const defaultT = sorted[Math.floor(sorted.length * (boundaryUnsup ? 0.9 : 0.6))] || 0;
+    return { scoreById, max, defaultT, count: candidates.length };
+  }, [result, boundaryOn, boundaryUnsup]);
 
   const boundaryT_ = boundaryT ?? boundary?.defaultT ?? 0;
   const boundaryIds = useMemo(() => {
@@ -226,6 +259,16 @@ export default function PcaPanel({
     for (const [id, sc] of boundary.scoreById) if (sc >= boundaryT_) set.add(id);
     return set;
   }, [boundaryOn, boundary, boundaryT_]);
+
+  // Validation: of the flagged pixels, how many are actually labelled edge·other
+  // (the real boundaries). Meaningful in unsupervised mode — the finder didn't
+  // use those labels, so this is its precision against ground truth.
+  const boundaryEdgeFrac = useMemo(() => {
+    if (boundaryIds.size === 0) return null;
+    let e = 0;
+    for (const r of result.rows) if (boundaryIds.has(r.pixelId) && r.zone === 'edge_other_species') e++;
+    return e / boundaryIds.size;
+  }, [boundaryIds, result]);
 
   // Mirror the flagged pixels onto the map.
   useEffect(() => {
@@ -516,7 +559,7 @@ export default function PcaPanel({
               </label>
             </div>
 
-            {boundary && (
+            {canFindBoundary && (
               <div className="mb-2 rounded-md border border-fuchsia-500/25 bg-fuchsia-500/5 px-2.5 py-2">
                 <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-200">
                   <input
@@ -526,29 +569,49 @@ export default function PcaPanel({
                     className="accent-fuchsia-500"
                   />
                   <span className="font-medium">Find boundaries</span>
-                  <span className="text-[11px] text-slate-500">edge·other pixels in the gap between the pure blobs</span>
+                  <span className="text-[11px] text-slate-500">pixels in the gap between the pure blobs</span>
                 </label>
                 {boundaryOn && (
-                  <div className="mt-2 space-y-1">
-                    <div className="flex items-center justify-between text-[11px] text-slate-500">
-                      <span>Min distance from a pure blob</span>
-                      <span className="text-fuchsia-300">
-                        {boundaryIds.size} / {boundary.count} flagged
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      min={0}
-                      max={boundary.max}
-                      step={boundary.max / 100 || 0.001}
-                      value={boundaryT_}
-                      onChange={e => setBoundaryT(Number(e.target.value))}
-                      className="w-full accent-fuchsia-500"
-                    />
-                    <p className="text-[10px] leading-relaxed text-slate-600">
-                      Higher keeps only the pixels most in the middle — farthest from any pure-species signature.
-                      Flagged pixels are ringed here and on the map.
-                    </p>
+                  <div className="mt-2 space-y-1.5">
+                    <label className="flex cursor-pointer items-center gap-2 text-[11px] text-slate-400">
+                      <input
+                        type="checkbox"
+                        checked={boundaryUnsup}
+                        onChange={e => {
+                          setBoundaryUnsup(e.target.checked);
+                          setBoundaryT(null); // score scale differs per mode — reset to its default
+                        }}
+                        className="accent-fuchsia-500"
+                      />
+                      Ignore labels (unsupervised) — find the blobs by density, score every pixel
+                    </label>
+                    {boundary && (
+                      <>
+                        <div className="flex items-center justify-between text-[11px] text-slate-500">
+                          <span>Min distance from a pure blob</span>
+                          <span className="text-fuchsia-300">
+                            {boundaryIds.size} / {boundary.count} flagged
+                            {boundaryUnsup && boundaryEdgeFrac !== null && (
+                              <span className="text-slate-500"> · {(boundaryEdgeFrac * 100).toFixed(0)}% real edges</span>
+                            )}
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0}
+                          max={boundary.max}
+                          step={boundary.max / 100 || 0.001}
+                          value={boundaryT_}
+                          onChange={e => setBoundaryT(Number(e.target.value))}
+                          className="w-full accent-fuchsia-500"
+                        />
+                        <p className="text-[10px] leading-relaxed text-slate-600">
+                          {boundaryUnsup
+                            ? 'The finder never sees the edge labels — it locates the dense pure blobs itself and flags the pixels sitting between them. “% real edges” is how often a flagged pixel is genuinely an edge·other pixel.'
+                            : 'Higher keeps only the pixels most in the middle — farthest from any pure-species signature. Flagged pixels are ringed here and on the map.'}
+                        </p>
+                      </>
+                    )}
                   </div>
                 )}
               </div>
