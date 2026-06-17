@@ -145,6 +145,47 @@ function kmeans(pts: { scores: number[] }[], k: number, dims: number): { cent: n
   return { cent, asn };
 }
 
+/** Mean silhouette of a clustering (how compact + separated), on an even
+ *  subsample for speed. Used to auto-pick the number of clusters k: higher is
+ *  better. Range roughly [-1, 1]. */
+function silhouette(pts: { scores: number[] }[], asn: Int32Array, k: number, dims: number): number {
+  const N = pts.length;
+  const sN = Math.min(500, N);
+  const idx = Array.from({ length: sN }, (_, i) => Math.floor((i * N) / sN));
+  const sums = new Float64Array(k);
+  const cnts = new Int32Array(k);
+  let total = 0;
+  let count = 0;
+  for (const i of idx) {
+    sums.fill(0);
+    cnts.fill(0);
+    for (const j of idx) {
+      if (j === i) continue;
+      let s = 0;
+      for (let d = 0; d < dims; d++) {
+        const e = pts[i].scores[d] - pts[j].scores[d];
+        s += e * e;
+      }
+      const dd = Math.sqrt(s);
+      sums[asn[j]] += dd;
+      cnts[asn[j]]++;
+    }
+    const ci = asn[i];
+    if (cnts[ci] === 0) continue;
+    const a = sums[ci] / cnts[ci];
+    let b = Infinity;
+    for (let c = 0; c < k; c++) {
+      if (c === ci || cnts[c] === 0) continue;
+      const mean = sums[c] / cnts[c];
+      if (mean < b) b = mean;
+    }
+    if (!isFinite(b)) continue;
+    total += (b - a) / Math.max(a, b, 1e-9);
+    count++;
+  }
+  return count > 0 ? total / count : -1;
+}
+
 /**
  * Draws the k-means pure clusters found by the unsupervised boundary finder:
  * a cross at each centroid and a circle drawn at the flagging contour — the
@@ -267,7 +308,7 @@ export default function PcaPanel({
   // Unsupervised: ignore the edge/interior labels — find the pure clusters by
   // k-means and score every pixel by how "between" two of them it is.
   const [boundaryUnsup, setBoundaryUnsup] = useState(false);
-  const [boundaryK, setBoundaryK] = useState(3); // assumed number of pure clusters
+  const [boundaryK, setBoundaryK] = useState<number | 'auto'>('auto'); // pure-cluster count, or auto
   // Direction gate: a boundary pixel is a mixture, so it sits *on the line*
   // between two blobs. Keep only pixels within a small perpendicular distance
   // of a corridor (the segment between a pair of blobs they project between).
@@ -382,7 +423,25 @@ export default function PcaPanel({
       // inside a blob, a positive gap distance outside.
       const px = (row: (typeof rows)[number]) => [row.scores[pcX], row.scores[pcY]];
       const uni = subsample(rows, 2500).map(row => ({ scores: px(row) }));
-      const k = Math.min(boundaryK, uni.length);
+      if (uni.length < 5) return null;
+      // Choose k: the requested value, or auto-pick the one with the best
+      // silhouette over 2..6 clusters (most compact + separated).
+      let k: number;
+      if (boundaryK === 'auto') {
+        const kMax = Math.min(6, uni.length - 1);
+        let bestK = 2;
+        let bestSil = -Infinity;
+        for (let kk = 2; kk <= kMax; kk++) {
+          const sil = silhouette(uni, kmeans(uni, kk, 2).asn, kk, 2);
+          if (sil > bestSil) {
+            bestSil = sil;
+            bestK = kk;
+          }
+        }
+        k = bestK;
+      } else {
+        k = Math.min(boundaryK, uni.length);
+      }
       if (uni.length < k + 3 || k < 2) return null;
       const { cent, asn } = kmeans(uni, k, 2);
       const clusters = cent.map((mu, c) => {
@@ -454,6 +513,7 @@ export default function PcaPanel({
         max,
         defaultT: 0, // the blob circle edge
         count: rows.length,
+        k: k as number | undefined,
         clusters: clusters as { c: number[]; r: number }[] | undefined,
       };
     }
@@ -477,6 +537,7 @@ export default function PcaPanel({
       max,
       defaultT,
       count: candidates.length,
+      k: undefined as number | undefined,
       clusters: undefined as { c: number[]; r: number }[] | undefined,
     };
   }, [result, boundaryOn, boundaryUnsup, boundaryK, pcX, pcY]);
@@ -825,18 +886,26 @@ export default function PcaPanel({
                     </label>
                     {boundaryUnsup && (
                       <label className="flex items-center gap-2 text-[11px] text-slate-500">
-                        Pure clusters to assume (k)
-                        <input
-                          type="number"
-                          min={2}
-                          max={8}
+                        Pure clusters (k)
+                        <select
                           value={boundaryK}
                           onChange={e => {
-                            setBoundaryK(Math.max(2, Math.min(8, Math.round(Number(e.target.value)) || 2)));
+                            const v = e.target.value;
+                            setBoundaryK(v === 'auto' ? 'auto' : Number(v));
                             setBoundaryT(null);
                           }}
-                          className="w-14 rounded border border-white/10 bg-[#0b0e11] px-1.5 py-0.5 text-slate-300"
-                        />
+                          className="rounded border border-white/10 bg-[#0b0e11] px-1.5 py-0.5 text-slate-300"
+                        >
+                          <option value="auto">auto</option>
+                          {[2, 3, 4, 5, 6, 7, 8].map(n => (
+                            <option key={n} value={n}>
+                              {n}
+                            </option>
+                          ))}
+                        </select>
+                        {boundaryK === 'auto' && boundary?.k != null && (
+                          <span className="text-fuchsia-300">detected {boundary.k}</span>
+                        )}
                       </label>
                     )}
                     {boundaryUnsup && (
@@ -888,7 +957,7 @@ export default function PcaPanel({
                         />
                         <p className="text-[10px] leading-relaxed text-slate-600">
                           {boundaryUnsup
-                            ? 'No labels: k-means finds k pure clusters, each drawn as a blue circle (centroid + its largest 2σ radius). A pixel is scored by its distance to the nearest circle *edge* — negative inside a blob, positive out in the gap — so the threshold is the gap distance beyond the edge at which a pixel counts as a boundary (0 = the circle itself). The circles grow with the threshold to match. “Between two blobs” adds a direction test: it keeps a flagged pixel only when it lies close to a *corridor* — the line between a pair of blobs it sits between (the dashed lines) — within the slider distance. So a pixel that drifts off in another direction, away from every corridor, drops out. Lower k if pure clusters get split; raise it to separate more crops/scenarios. “% real edges” is how often a flagged pixel is genuinely an edge·other pixel.'
+                            ? 'No labels: k-means finds k pure clusters, each drawn as a blue circle (centroid + its largest 2σ radius). A pixel is scored by its distance to the nearest circle *edge* — negative inside a blob, positive out in the gap — so the threshold is the gap distance beyond the edge at which a pixel counts as a boundary (0 = the circle itself). The circles grow with the threshold to match. “Between two blobs” adds a direction test: it keeps a flagged pixel only when it lies close to a *corridor* — the line between a pair of blobs it sits between (the dashed lines) — within the slider distance. So a pixel that drifts off in another direction, away from every corridor, drops out. k is auto-picked (best silhouette over 2–6 clusters); override it if the split looks wrong. “% real edges” is how often a flagged pixel is genuinely an edge·other pixel.'
                             : 'Higher keeps only the pixels most in the middle — farthest from any pure-species signature. Flagged pixels are ringed here and on the map.'}
                         </p>
                       </>
