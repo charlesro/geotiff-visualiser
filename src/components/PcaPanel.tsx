@@ -156,9 +156,11 @@ function kmeans(pts: { scores: number[] }[], k: number, dims: number): { cent: n
 function BlobOverlay({
   clusters,
   threshold,
+  showLines,
 }: {
   clusters: { c: number[]; r: number }[];
   threshold: number;
+  showLines: boolean;
 }) {
   const xScale = useXAxisScale();
   const yScale = useYAxisScale();
@@ -167,8 +169,19 @@ function BlobOverlay({
   const sx = Math.abs((xScale(1) as number) - (xScale(0) as number));
   const sy = Math.abs((yScale(1) as number) - (yScale(0) as number));
   const s = (sx + sy) / 2;
+  const px = (cl: { c: number[] }) => [xScale(cl.c[0]) as number, yScale(cl.c[1]) as number];
   return (
     <g style={{ pointerEvents: 'none' }}>
+      {/* The mixing corridors: lines between every pair of blob centroids. */}
+      {showLines &&
+        clusters.flatMap((a, i) =>
+          clusters.slice(i + 1).map((b, j) => {
+            const [ax, ay] = px(a);
+            const [bx, by] = px(b);
+            if (![ax, ay, bx, by].every(isFinite)) return null;
+            return <line key={`l-${i}-${j}`} x1={ax} y1={ay} x2={bx} y2={by} stroke="#38bdf8" strokeWidth={1} strokeDasharray="2 4" opacity={0.4} />;
+          })
+        )}
       {clusters.map((cl, i) => {
         // Centroid is already in the displayed (pcX, pcY) plane.
         const cx = xScale(cl.c[0]) as number;
@@ -255,6 +268,11 @@ export default function PcaPanel({
   // k-means and score every pixel by how "between" two of them it is.
   const [boundaryUnsup, setBoundaryUnsup] = useState(false);
   const [boundaryK, setBoundaryK] = useState(3); // assumed number of pure clusters
+  // Direction gate: a boundary pixel is a mixture, so it sits *between* two
+  // blobs. Require the angle blob–pixel–blob (at the two nearest blobs) to be
+  // wide enough — ~180° means the pixel is on the line between them.
+  const [boundaryDir, setBoundaryDir] = useState(false);
+  const [boundaryDirAngle, setBoundaryDirAngle] = useState(120); // degrees
   // Real plot-area aspect (width/height), measured from the chart, for exact
   // equal-scale axes so the blob circles render as true circles.
   const [measuredAspect, setMeasuredAspect] = useState<number | null>(null);
@@ -391,22 +409,52 @@ export default function PcaPanel({
         return { c: mu, r };
       });
       const scoreById = new Map<string, number>();
+      const angleById = new Map<string, number>();
       let max = 0;
       for (const row of rows) {
         const x = row.scores[pcX];
         const y = row.scores[pcY];
-        let best = Infinity;
-        for (const cl of clusters) {
+        let best = Infinity; // min distance to any circle edge
+        let d1 = Infinity;
+        let d2 = Infinity;
+        let n1 = -1;
+        let n2 = -1; // two nearest centroids (by raw distance)
+        for (let c = 0; c < clusters.length; c++) {
+          const cl = clusters[c];
           const dx = x - cl.c[0];
           const dy = y - cl.c[1];
-          const edge = Math.sqrt(dx * dx + dy * dy) - cl.r; // distance to the circle edge
-          if (edge < best) best = edge;
+          const dd = Math.sqrt(dx * dx + dy * dy);
+          if (dd - cl.r < best) best = dd - cl.r;
+          if (dd < d1) {
+            d2 = d1;
+            n2 = n1;
+            d1 = dd;
+            n1 = c;
+          } else if (dd < d2) {
+            d2 = dd;
+            n2 = c;
+          }
         }
         scoreById.set(row.pixelId, best); // ≤ 0 inside a circle, > 0 = gap distance
         if (best > max) max = best;
+        // Angle blob–pixel–blob at the two nearest blobs (~180° = between them).
+        if (n1 >= 0 && n2 >= 0) {
+          const A = clusters[n1].c;
+          const B = clusters[n2].c;
+          const pax = A[0] - x;
+          const pay = A[1] - y;
+          const pbx = B[0] - x;
+          const pby = B[1] - y;
+          const dot = pax * pbx + pay * pby;
+          const mag = Math.sqrt(pax * pax + pay * pay) * Math.sqrt(pbx * pbx + pby * pby) + 1e-9;
+          angleById.set(row.pixelId, (Math.acos(Math.max(-1, Math.min(1, dot / mag))) * 180) / Math.PI);
+        } else {
+          angleById.set(row.pixelId, 0);
+        }
       }
       return {
         scoreById,
+        angleById: angleById as Map<string, number> | undefined,
         max,
         defaultT: 0, // the blob circle edge
         count: rows.length,
@@ -427,6 +475,7 @@ export default function PcaPanel({
     const defaultT = sorted[Math.floor(sorted.length * 0.6)] || 0;
     return {
       scoreById,
+      angleById: undefined as Map<string, number> | undefined,
       max,
       defaultT,
       count: candidates.length,
@@ -438,9 +487,16 @@ export default function PcaPanel({
   const boundaryIds = useMemo(() => {
     const set = new Set<string>();
     if (!boundaryOn || !boundary) return set;
-    for (const [id, sc] of boundary.scoreById) if (sc >= boundaryT_) set.add(id);
+    const ang = boundary.angleById;
+    const gate = boundaryDir && ang;
+    for (const [id, sc] of boundary.scoreById) {
+      if (sc < boundaryT_) continue;
+      // Direction gate: keep only pixels sitting between two blobs.
+      if (gate && (ang.get(id) ?? 0) < boundaryDirAngle) continue;
+      set.add(id);
+    }
     return set;
-  }, [boundaryOn, boundary, boundaryT_]);
+  }, [boundaryOn, boundary, boundaryT_, boundaryDir, boundaryDirAngle]);
 
   // Validation: of the flagged pixels, how many are actually labelled edge·other
   // (the real boundaries). Meaningful in unsupervised mode — the finder didn't
@@ -784,6 +840,36 @@ export default function PcaPanel({
                         />
                       </label>
                     )}
+                    {boundaryUnsup && (
+                      <>
+                        <label className="flex cursor-pointer items-center gap-2 text-[11px] text-slate-400">
+                          <input
+                            type="checkbox"
+                            checked={boundaryDir}
+                            onChange={e => setBoundaryDir(e.target.checked)}
+                            className="accent-fuchsia-500"
+                          />
+                          Between two blobs (use direction)
+                        </label>
+                        {boundaryDir && (
+                          <label className="flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                            <span>Min angle blob–pixel–blob</span>
+                            <span className="flex items-center gap-2">
+                              <input
+                                type="range"
+                                min={90}
+                                max={179}
+                                step={1}
+                                value={boundaryDirAngle}
+                                onChange={e => setBoundaryDirAngle(Number(e.target.value))}
+                                className="w-32 accent-fuchsia-500"
+                              />
+                              <span className="w-8 text-fuchsia-300">{boundaryDirAngle}°</span>
+                            </span>
+                          </label>
+                        )}
+                      </>
+                    )}
                     {boundary && (
                       <>
                         <div className="flex items-center justify-between text-[11px] text-slate-500">
@@ -806,7 +892,7 @@ export default function PcaPanel({
                         />
                         <p className="text-[10px] leading-relaxed text-slate-600">
                           {boundaryUnsup
-                            ? 'No labels: k-means finds k pure clusters, each drawn as a blue circle (centroid + its largest 2σ radius). A pixel is scored by its distance to the nearest circle *edge* — negative inside a blob, positive out in the gap — so the threshold is the gap distance beyond the edge at which a pixel counts as a boundary (0 = the circle itself). The circles grow with the threshold to match. Lower k if pure clusters get split; raise it to separate more crops/scenarios. “% real edges” is how often a flagged pixel is genuinely an edge·other pixel.'
+                            ? 'No labels: k-means finds k pure clusters, each drawn as a blue circle (centroid + its largest 2σ radius). A pixel is scored by its distance to the nearest circle *edge* — negative inside a blob, positive out in the gap — so the threshold is the gap distance beyond the edge at which a pixel counts as a boundary (0 = the circle itself). The circles grow with the threshold to match. “Between two blobs” adds a direction test: it keeps a flagged pixel only when the angle blob–pixel–blob at its two nearest blobs is wide enough (≈180° = on the line between them), so points off in a random direction drop out. Lower k if pure clusters get split; raise it to separate more crops/scenarios. “% real edges” is how often a flagged pixel is genuinely an edge·other pixel.'
                             : 'Higher keeps only the pixels most in the middle — farthest from any pure-species signature. Flagged pixels are ringed here and on the map.'}
                         </p>
                       </>
@@ -857,7 +943,7 @@ export default function PcaPanel({
                 <Scatter data={points} shape={renderPoint} isAnimationActive={false} />
                 <PlotAspectProbe onAspect={onAspect} />
                 {boundaryOn && boundaryUnsup && boundary?.clusters && (
-                  <BlobOverlay clusters={boundary.clusters} threshold={boundaryT_} />
+                  <BlobOverlay clusters={boundary.clusters} threshold={boundaryT_} showLines={boundaryDir} />
                 )}
             </ScatterChart>
 
