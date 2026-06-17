@@ -146,11 +146,11 @@ function kmeans(pts: { scores: number[] }[], k: number, dims: number): { cent: n
 
 /**
  * Draws the k-means pure clusters found by the unsupervised boundary finder:
- * a cross at each centroid and a circle drawn at the *current threshold*
- * contour (threshold × the blob's radius). Since a pixel is flagged exactly
- * when its distance exceeds that contour, the circle *is* the flagging
- * boundary — nothing inside it is flagged. Rendered inside the ScatterChart so
- * it can read the axis scales (recharts v3 hooks).
+ * a cross at each centroid and a circle drawn at the flagging contour — the
+ * blob's radius grown by the current threshold (the gap distance beyond the
+ * edge at which a pixel is flagged). So the circle *is* the boundary; nothing
+ * inside it is flagged. Rendered inside the ScatterChart so it can read the
+ * axis scales (recharts v3 hooks).
  */
 function BlobOverlay({
   clusters,
@@ -175,7 +175,7 @@ function BlobOverlay({
       {clusters.map((cl, i) => {
         const cx = xScale(cl.c[pcX]) as number;
         const cy = yScale(cl.c[pcY]) as number;
-        const r = cl.r * threshold * s;
+        const r = (cl.r + threshold) * s; // flagging contour: dist − radius = threshold
         if (!isFinite(cx) || !isFinite(cy) || !isFinite(r) || r <= 0) return null;
         return (
           <g key={i}>
@@ -390,16 +390,18 @@ export default function PcaPanel({
       for (const row of rows) {
         let best = Infinity;
         for (const cl of clusters) {
-          const ratio = dist(row.scores, cl.c) / cl.r;
-          if (ratio < best) best = ratio;
+          // Distance to this blob's circle *edge*: negative inside, positive in
+          // the gap. The score is the smallest such distance over all blobs.
+          const edge = dist(row.scores, cl.c) - cl.r;
+          if (edge < best) best = edge;
         }
-        scoreById.set(row.pixelId, best); // < 1 inside a blob circle, > 1 in the gap
+        scoreById.set(row.pixelId, best); // ≤ 0 inside a circle, > 0 = gap distance
         if (best > max) max = best;
       }
       return {
         scoreById,
         max,
-        defaultT: 1, // the blob circle edge
+        defaultT: 0, // the blob circle edge
         count: rows.length,
         clusters: clusters as { c: number[]; r: number }[] | undefined,
       };
@@ -777,7 +779,7 @@ export default function PcaPanel({
                     {boundary && (
                       <>
                         <div className="flex items-center justify-between text-[11px] text-slate-500">
-                          <span>{boundaryUnsup ? 'Distance from the nearest blob (1 = circle edge)' : 'Min distance from a pure blob'}</span>
+                          <span>{boundaryUnsup ? 'Gap beyond the blob edge (0 = circle)' : 'Min distance from a pure blob'}</span>
                           <span className="text-fuchsia-300">
                             {boundaryIds.size} / {boundary.count} flagged
                             {boundaryUnsup && boundaryEdgeFrac !== null && (
@@ -796,7 +798,7 @@ export default function PcaPanel({
                         />
                         <p className="text-[10px] leading-relaxed text-slate-600">
                           {boundaryUnsup
-                            ? 'No labels: k-means finds k pure clusters, each drawn as a blue circle (centroid + its largest 2σ radius). A pixel is scored by its distance to the nearest centroid ÷ that blob’s radius, so a point inside a circle reads < 1 (part of the blob, not flagged) and the gaps between blobs read > 1. Lower k if pure clusters get split; raise it to separate more crops/scenarios. “% real edges” is how often a flagged pixel is genuinely an edge·other pixel.'
+                            ? 'No labels: k-means finds k pure clusters, each drawn as a blue circle (centroid + its largest 2σ radius). A pixel is scored by its distance to the nearest circle *edge* — negative inside a blob, positive out in the gap — so the threshold is the gap distance beyond the edge at which a pixel counts as a boundary (0 = the circle itself). The circles grow with the threshold to match. Lower k if pure clusters get split; raise it to separate more crops/scenarios. “% real edges” is how often a flagged pixel is genuinely an edge·other pixel.'
                             : 'Higher keeps only the pixels most in the middle — farthest from any pure-species signature. Flagged pixels are ringed here and on the map.'}
                         </p>
                       </>
