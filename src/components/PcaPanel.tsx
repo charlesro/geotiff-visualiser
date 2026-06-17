@@ -415,42 +415,32 @@ export default function PcaPanel({
         const x = row.scores[pcX];
         const y = row.scores[pcY];
         let best = Infinity; // min distance to any circle edge
-        let d1 = Infinity;
-        let d2 = Infinity;
-        let n1 = -1;
-        let n2 = -1; // two nearest centroids (by raw distance)
-        for (let c = 0; c < clusters.length; c++) {
-          const cl = clusters[c];
+        for (const cl of clusters) {
           const dx = x - cl.c[0];
           const dy = y - cl.c[1];
-          const dd = Math.sqrt(dx * dx + dy * dy);
-          if (dd - cl.r < best) best = dd - cl.r;
-          if (dd < d1) {
-            d2 = d1;
-            n2 = n1;
-            d1 = dd;
-            n1 = c;
-          } else if (dd < d2) {
-            d2 = dd;
-            n2 = c;
-          }
+          if (Math.sqrt(dx * dx + dy * dy) - cl.r < best) best = Math.sqrt(dx * dx + dy * dy) - cl.r;
         }
         scoreById.set(row.pixelId, best); // ≤ 0 inside a circle, > 0 = gap distance
         if (best > max) max = best;
-        // Angle blob–pixel–blob at the two nearest blobs (~180° = between them).
-        if (n1 >= 0 && n2 >= 0) {
-          const A = clusters[n1].c;
-          const B = clusters[n2].c;
+        // Widest angle blob–pixel–blob over *every* pair of blobs (~180° = the
+        // pixel sits on the line between that pair, whichever pair it is).
+        let bestAngle = 0;
+        for (let i = 0; i < clusters.length; i++) {
+          const A = clusters[i].c;
           const pax = A[0] - x;
           const pay = A[1] - y;
-          const pbx = B[0] - x;
-          const pby = B[1] - y;
-          const dot = pax * pbx + pay * pby;
-          const mag = Math.sqrt(pax * pax + pay * pay) * Math.sqrt(pbx * pbx + pby * pby) + 1e-9;
-          angleById.set(row.pixelId, (Math.acos(Math.max(-1, Math.min(1, dot / mag))) * 180) / Math.PI);
-        } else {
-          angleById.set(row.pixelId, 0);
+          const magA = Math.sqrt(pax * pax + pay * pay) + 1e-9;
+          for (let j = i + 1; j < clusters.length; j++) {
+            const B = clusters[j].c;
+            const pbx = B[0] - x;
+            const pby = B[1] - y;
+            const magB = Math.sqrt(pbx * pbx + pby * pby) + 1e-9;
+            const cos = (pax * pbx + pay * pby) / (magA * magB);
+            const ang = (Math.acos(Math.max(-1, Math.min(1, cos))) * 180) / Math.PI;
+            if (ang > bestAngle) bestAngle = ang;
+          }
         }
+        angleById.set(row.pixelId, bestAngle);
       }
       return {
         scoreById,
@@ -892,7 +882,7 @@ export default function PcaPanel({
                         />
                         <p className="text-[10px] leading-relaxed text-slate-600">
                           {boundaryUnsup
-                            ? 'No labels: k-means finds k pure clusters, each drawn as a blue circle (centroid + its largest 2σ radius). A pixel is scored by its distance to the nearest circle *edge* — negative inside a blob, positive out in the gap — so the threshold is the gap distance beyond the edge at which a pixel counts as a boundary (0 = the circle itself). The circles grow with the threshold to match. “Between two blobs” adds a direction test: it keeps a flagged pixel only when the angle blob–pixel–blob at its two nearest blobs is wide enough (≈180° = on the line between them), so points off in a random direction drop out. Lower k if pure clusters get split; raise it to separate more crops/scenarios. “% real edges” is how often a flagged pixel is genuinely an edge·other pixel.'
+                            ? 'No labels: k-means finds k pure clusters, each drawn as a blue circle (centroid + its largest 2σ radius). A pixel is scored by its distance to the nearest circle *edge* — negative inside a blob, positive out in the gap — so the threshold is the gap distance beyond the edge at which a pixel counts as a boundary (0 = the circle itself). The circles grow with the threshold to match. “Between two blobs” adds a direction test: it keeps a flagged pixel only when the widest angle blob–pixel–blob over *any* pair of blobs is large enough (≈180° = on the line between that pair), so points off in a random direction drop out. Lower k if pure clusters get split; raise it to separate more crops/scenarios. “% real edges” is how often a flagged pixel is genuinely an edge·other pixel.'
                             : 'Higher keeps only the pixels most in the middle — farthest from any pure-species signature. Flagged pixels are ringed here and on the map.'}
                         </p>
                       </>
