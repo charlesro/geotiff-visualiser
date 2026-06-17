@@ -268,11 +268,11 @@ export default function PcaPanel({
   // k-means and score every pixel by how "between" two of them it is.
   const [boundaryUnsup, setBoundaryUnsup] = useState(false);
   const [boundaryK, setBoundaryK] = useState(3); // assumed number of pure clusters
-  // Direction gate: a boundary pixel is a mixture, so it sits *between* two
-  // blobs. Require the angle blob–pixel–blob (at the two nearest blobs) to be
-  // wide enough — ~180° means the pixel is on the line between them.
+  // Direction gate: a boundary pixel is a mixture, so it sits *on the line*
+  // between two blobs. Keep only pixels within a small perpendicular distance
+  // of a corridor (the segment between a pair of blobs they project between).
   const [boundaryDir, setBoundaryDir] = useState(false);
-  const [boundaryDirAngle, setBoundaryDirAngle] = useState(120); // degrees
+  const [boundaryDirDist, setBoundaryDirDist] = useState<number | null>(null); // null = default
   // Real plot-area aspect (width/height), measured from the chart, for exact
   // equal-scale axes so the blob circles render as true circles.
   const [measuredAspect, setMeasuredAspect] = useState<number | null>(null);
@@ -409,8 +409,9 @@ export default function PcaPanel({
         return { c: mu, r };
       });
       const scoreById = new Map<string, number>();
-      const angleById = new Map<string, number>();
+      const dirById = new Map<string, number>();
       let max = 0;
+      let dirMax = 0;
       for (const row of rows) {
         const x = row.scores[pcX];
         const y = row.scores[pcY];
@@ -422,29 +423,34 @@ export default function PcaPanel({
         }
         scoreById.set(row.pixelId, best); // ≤ 0 inside a circle, > 0 = gap distance
         if (best > max) max = best;
-        // Widest angle blob–pixel–blob over *every* pair of blobs (~180° = the
-        // pixel sits on the line between that pair, whichever pair it is).
-        let bestAngle = 0;
+        // Perpendicular distance to the nearest mixing corridor: the segment
+        // between a pair of blobs that the pixel projects *between* (0 ≤ t ≤ 1).
+        // Small = on the line between two blobs; ∞ = not between any pair.
+        let dir = Infinity;
         for (let i = 0; i < clusters.length; i++) {
           const A = clusters[i].c;
-          const pax = A[0] - x;
-          const pay = A[1] - y;
-          const magA = Math.sqrt(pax * pax + pay * pay) + 1e-9;
           for (let j = i + 1; j < clusters.length; j++) {
             const B = clusters[j].c;
-            const pbx = B[0] - x;
-            const pby = B[1] - y;
-            const magB = Math.sqrt(pbx * pbx + pby * pby) + 1e-9;
-            const cos = (pax * pbx + pay * pby) / (magA * magB);
-            const ang = (Math.acos(Math.max(-1, Math.min(1, cos))) * 180) / Math.PI;
-            if (ang > bestAngle) bestAngle = ang;
+            const abx = B[0] - A[0];
+            const aby = B[1] - A[1];
+            const l2 = abx * abx + aby * aby || 1e-9;
+            const t = ((x - A[0]) * abx + (y - A[1]) * aby) / l2;
+            if (t < 0 || t > 1) continue;
+            const ex = x - (A[0] + t * abx);
+            const ey = y - (A[1] + t * aby);
+            const perp = Math.sqrt(ex * ex + ey * ey);
+            if (perp < dir) dir = perp;
           }
         }
-        angleById.set(row.pixelId, bestAngle);
+        dirById.set(row.pixelId, dir);
+        if (isFinite(dir) && dir > dirMax) dirMax = dir;
       }
+      const avgR = clusters.reduce((s, cl) => s + cl.r, 0) / clusters.length;
       return {
         scoreById,
-        angleById: angleById as Map<string, number> | undefined,
+        dirById: dirById as Map<string, number> | undefined,
+        dirMax,
+        dirDefault: avgR, // ~one blob radius off the line
         max,
         defaultT: 0, // the blob circle edge
         count: rows.length,
@@ -465,7 +471,9 @@ export default function PcaPanel({
     const defaultT = sorted[Math.floor(sorted.length * 0.6)] || 0;
     return {
       scoreById,
-      angleById: undefined as Map<string, number> | undefined,
+      dirById: undefined as Map<string, number> | undefined,
+      dirMax: 0,
+      dirDefault: 0,
       max,
       defaultT,
       count: candidates.length,
@@ -474,19 +482,20 @@ export default function PcaPanel({
   }, [result, boundaryOn, boundaryUnsup, boundaryK, pcX, pcY]);
 
   const boundaryT_ = boundaryT ?? boundary?.defaultT ?? 0;
+  const boundaryDirDist_ = boundaryDirDist ?? boundary?.dirDefault ?? 0;
   const boundaryIds = useMemo(() => {
     const set = new Set<string>();
     if (!boundaryOn || !boundary) return set;
-    const ang = boundary.angleById;
-    const gate = boundaryDir && ang;
+    const dir = boundary.dirById;
+    const gate = boundaryDir && dir;
     for (const [id, sc] of boundary.scoreById) {
       if (sc < boundaryT_) continue;
-      // Direction gate: keep only pixels sitting between two blobs.
-      if (gate && (ang.get(id) ?? 0) < boundaryDirAngle) continue;
+      // Direction gate: keep only pixels close to a corridor between two blobs.
+      if (gate && (dir.get(id) ?? Infinity) > boundaryDirDist_) continue;
       set.add(id);
     }
     return set;
-  }, [boundaryOn, boundary, boundaryT_, boundaryDir, boundaryDirAngle]);
+  }, [boundaryOn, boundary, boundaryT_, boundaryDir, boundaryDirDist_]);
 
   // Validation: of the flagged pixels, how many are actually labelled edge·other
   // (the real boundaries). Meaningful in unsupervised mode — the finder didn't
@@ -841,21 +850,18 @@ export default function PcaPanel({
                           />
                           Between two blobs (use direction)
                         </label>
-                        {boundaryDir && (
+                        {boundaryDir && boundary && boundary.dirMax > 0 && (
                           <label className="flex items-center justify-between gap-2 text-[11px] text-slate-500">
-                            <span>Min angle blob–pixel–blob</span>
-                            <span className="flex items-center gap-2">
-                              <input
-                                type="range"
-                                min={90}
-                                max={179}
-                                step={1}
-                                value={boundaryDirAngle}
-                                onChange={e => setBoundaryDirAngle(Number(e.target.value))}
-                                className="w-32 accent-fuchsia-500"
-                              />
-                              <span className="w-8 text-fuchsia-300">{boundaryDirAngle}°</span>
-                            </span>
+                            <span>Max distance off the corridor</span>
+                            <input
+                              type="range"
+                              min={0}
+                              max={boundary.dirMax}
+                              step={boundary.dirMax / 100}
+                              value={boundaryDirDist_}
+                              onChange={e => setBoundaryDirDist(Number(e.target.value))}
+                              className="w-40 accent-fuchsia-500"
+                            />
                           </label>
                         )}
                       </>
@@ -882,7 +888,7 @@ export default function PcaPanel({
                         />
                         <p className="text-[10px] leading-relaxed text-slate-600">
                           {boundaryUnsup
-                            ? 'No labels: k-means finds k pure clusters, each drawn as a blue circle (centroid + its largest 2σ radius). A pixel is scored by its distance to the nearest circle *edge* — negative inside a blob, positive out in the gap — so the threshold is the gap distance beyond the edge at which a pixel counts as a boundary (0 = the circle itself). The circles grow with the threshold to match. “Between two blobs” adds a direction test: it keeps a flagged pixel only when the widest angle blob–pixel–blob over *any* pair of blobs is large enough (≈180° = on the line between that pair), so points off in a random direction drop out. Lower k if pure clusters get split; raise it to separate more crops/scenarios. “% real edges” is how often a flagged pixel is genuinely an edge·other pixel.'
+                            ? 'No labels: k-means finds k pure clusters, each drawn as a blue circle (centroid + its largest 2σ radius). A pixel is scored by its distance to the nearest circle *edge* — negative inside a blob, positive out in the gap — so the threshold is the gap distance beyond the edge at which a pixel counts as a boundary (0 = the circle itself). The circles grow with the threshold to match. “Between two blobs” adds a direction test: it keeps a flagged pixel only when it lies close to a *corridor* — the line between a pair of blobs it sits between (the dashed lines) — within the slider distance. So a pixel that drifts off in another direction, away from every corridor, drops out. Lower k if pure clusters get split; raise it to separate more crops/scenarios. “% real edges” is how often a flagged pixel is genuinely an edge·other pixel.'
                             : 'Higher keeps only the pixels most in the middle — farthest from any pure-species signature. Flagged pixels are ringed here and on the map.'}
                         </p>
                       </>
