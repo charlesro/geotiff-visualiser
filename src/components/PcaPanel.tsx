@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { X, Download, Loader2 } from 'lucide-react';
 import {
   ScatterChart,
@@ -17,6 +17,7 @@ import {
   Symbols,
   useXAxisScale,
   useYAxisScale,
+  usePlotArea,
 } from 'recharts';
 import { PcaRunResult } from '../lib/pca';
 import { PixelZone } from '../lib/zones';
@@ -154,13 +155,9 @@ function kmeans(pts: { scores: number[] }[], k: number, dims: number): { cent: n
  */
 function BlobOverlay({
   clusters,
-  pcX,
-  pcY,
   threshold,
 }: {
   clusters: { c: number[]; r: number }[];
-  pcX: number;
-  pcY: number;
   threshold: number;
 }) {
   const xScale = useXAxisScale();
@@ -173,8 +170,9 @@ function BlobOverlay({
   return (
     <g style={{ pointerEvents: 'none' }}>
       {clusters.map((cl, i) => {
-        const cx = xScale(cl.c[pcX]) as number;
-        const cy = yScale(cl.c[pcY]) as number;
+        // Centroid is already in the displayed (pcX, pcY) plane.
+        const cx = xScale(cl.c[0]) as number;
+        const cy = yScale(cl.c[1]) as number;
         const r = (cl.r + threshold) * s; // flagging contour: dist − radius = threshold
         if (!isFinite(cx) || !isFinite(cy) || !isFinite(r) || r <= 0) return null;
         return (
@@ -190,6 +188,17 @@ function BlobOverlay({
       })}
     </g>
   );
+}
+
+/** Reports the chart's real plot-area aspect (width/height) so the parent can
+ *  make the axes exactly equal-scale — then a data-circle renders as a true
+ *  circle and the blob circles match the score precisely. */
+function PlotAspectProbe({ onAspect }: { onAspect: (a: number) => void }) {
+  const area = usePlotArea();
+  useEffect(() => {
+    if (area && area.width > 0 && area.height > 0) onAspect(area.width / area.height);
+  }, [area?.width, area?.height, onAspect]);
+  return null;
 }
 
 export interface PcaPickedPixel {
@@ -246,6 +255,13 @@ export default function PcaPanel({
   // k-means and score every pixel by how "between" two of them it is.
   const [boundaryUnsup, setBoundaryUnsup] = useState(false);
   const [boundaryK, setBoundaryK] = useState(3); // assumed number of pure clusters
+  // Real plot-area aspect (width/height), measured from the chart, for exact
+  // equal-scale axes so the blob circles render as true circles.
+  const [measuredAspect, setMeasuredAspect] = useState<number | null>(null);
+  const onAspect = useCallback(
+    (a: number) => setMeasuredAspect(prev => (prev === null || Math.abs(prev - a) > 0.01 ? a : prev)),
+    []
+  );
 
   const hasPairs = useMemo(() => result.rows.some(r => r.properties?.pair_id != null), [result]);
   const hasMixing = useMemo(() => result.rows.some(r => typeof r.properties?.mix_frac_a === 'number'), [result]);
@@ -339,60 +355,51 @@ export default function PcaPanel({
       ref = rows.filter(r => r.zone === 'interior');
       candidates = rows.filter(r => r.zone === 'edge_other_species');
     } else {
-      // Unsupervised. Find the pure clusters with k-means (no labels), then
-      // score each pixel by its distance to the *nearest* cluster — so a pixel
-      // far from every blob at once (deep in the gap) scores high, exactly the
-      // "in the middle of all the blobs" idea. Each blob is a circle centred on
-      // its centroid with radius = its largest 2σ spread (the major axis of its
-      // covariance, via power iteration). A pixel is scored by its distance to
-      // the nearest centroid divided by that blob's radius, so inside any blob
-      // circle reads < 1 (part of the blob, not flagged) and the gap reads > 1.
-      const uni = subsample(rows, 2500);
+      // Unsupervised, computed entirely in the *displayed* 2D plane (pcX, pcY)
+      // so the blob circles and the flagging are the exact same shape — a pixel
+      // inside a drawn circle is never flagged (no hidden PC3 to disagree).
+      // k-means finds the pure clusters; each blob is a circle at its centroid
+      // with radius = its largest 2σ spread (major axis of the 2×2 covariance).
+      // A pixel is scored by its distance to the nearest circle *edge*: negative
+      // inside a blob, a positive gap distance outside.
+      const px = (row: (typeof rows)[number]) => [row.scores[pcX], row.scores[pcY]];
+      const uni = subsample(rows, 2500).map(row => ({ scores: px(row) }));
       const k = Math.min(boundaryK, uni.length);
       if (uni.length < k + 3 || k < 2) return null;
-      const { cent, asn } = kmeans(uni, k, dims);
+      const { cent, asn } = kmeans(uni, k, 2);
       const clusters = cent.map((mu, c) => {
-        const cov = Array.from({ length: dims }, () => new Array<number>(dims).fill(0));
+        let a = 0;
+        let b = 0;
+        let d = 0;
         let n = 0;
         for (let p = 0; p < uni.length; p++) {
           if (asn[p] !== c) continue;
           n++;
-          for (let i = 0; i < dims; i++) {
-            const di = uni[p].scores[i] - mu[i];
-            for (let j = 0; j < dims; j++) cov[i][j] += di * (uni[p].scores[j] - mu[j]);
-          }
+          const dx = uni[p].scores[0] - mu[0];
+          const dy = uni[p].scores[1] - mu[1];
+          a += dx * dx;
+          b += dx * dy;
+          d += dy * dy;
         }
-        for (let i = 0; i < dims; i++) for (let j = 0; j < dims; j++) cov[i][j] /= Math.max(1, n - 1);
-        // Largest eigenvalue (power iteration) → major-axis 2σ = the radius.
-        let v = new Array(dims).fill(0);
-        v[0] = 1;
-        for (let it = 0; it < 60; it++) {
-          const w = new Array(dims).fill(0);
-          for (let i = 0; i < dims; i++) for (let j = 0; j < dims; j++) w[i] += cov[i][j] * v[j];
-          const norm = Math.sqrt(w.reduce((s, x) => s + x * x, 0)) || 1;
-          v = w.map(x => x / norm);
-        }
-        let lambda = 0;
-        for (let i = 0; i < dims; i++) for (let j = 0; j < dims; j++) lambda += v[i] * cov[i][j] * v[j];
-        const r = 2 * Math.sqrt(Math.max(1e-9, lambda)); // 2σ along the major axis
+        const m = Math.max(1, n - 1);
+        a /= m;
+        b /= m;
+        d /= m;
+        const mean = (a + d) / 2;
+        const rad = Math.sqrt(Math.max(0, ((a - d) / 2) ** 2 + b * b));
+        const r = 2 * Math.sqrt(Math.max(1e-9, mean + rad)); // 2σ along the major axis
         return { c: mu, r };
       });
-      const dist = (s: number[], mu: number[]) => {
-        let acc = 0;
-        for (let i = 0; i < dims; i++) {
-          const e = s[i] - mu[i];
-          acc += e * e;
-        }
-        return Math.sqrt(acc);
-      };
       const scoreById = new Map<string, number>();
       let max = 0;
       for (const row of rows) {
+        const x = row.scores[pcX];
+        const y = row.scores[pcY];
         let best = Infinity;
         for (const cl of clusters) {
-          // Distance to this blob's circle *edge*: negative inside, positive in
-          // the gap. The score is the smallest such distance over all blobs.
-          const edge = dist(row.scores, cl.c) - cl.r;
+          const dx = x - cl.c[0];
+          const dy = y - cl.c[1];
+          const edge = Math.sqrt(dx * dx + dy * dy) - cl.r; // distance to the circle edge
           if (edge < best) best = edge;
         }
         scoreById.set(row.pixelId, best); // ≤ 0 inside a circle, > 0 = gap distance
@@ -425,7 +432,7 @@ export default function PcaPanel({
       count: candidates.length,
       clusters: undefined as { c: number[]; r: number }[] | undefined,
     };
-  }, [result, boundaryOn, boundaryUnsup, boundaryK]);
+  }, [result, boundaryOn, boundaryUnsup, boundaryK, pcX, pcY]);
 
   const boundaryT_ = boundaryT ?? boundary?.defaultT ?? 0;
   const boundaryIds = useMemo(() => {
@@ -532,7 +539,8 @@ export default function PcaPanel({
   const X_AXIS_H = 40;
   const plotW = CHART_W - 10 - Y_AXIS_W; // margins: right 10, left 0
   const plotH = CHART_H - 10 - 10 - X_AXIS_H; // margins: top 10, bottom 10
-  const plotAspect = plotW / plotH;
+  // Use the real plot aspect once measured; fall back to the estimate first paint.
+  const plotAspect = measuredAspect ?? plotW / plotH;
   const domains = useMemo(() => {
     if (points.length === 0) return { x: [0, 1] as [number, number], y: [0, 1] as [number, number] };
     let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
@@ -847,8 +855,9 @@ export default function PcaPanel({
                   }}
                 />
                 <Scatter data={points} shape={renderPoint} isAnimationActive={false} />
+                <PlotAspectProbe onAspect={onAspect} />
                 {boundaryOn && boundaryUnsup && boundary?.clusters && (
-                  <BlobOverlay clusters={boundary.clusters} pcX={pcX} pcY={pcY} threshold={boundaryT_} />
+                  <BlobOverlay clusters={boundary.clusters} threshold={boundaryT_} />
                 )}
             </ScatterChart>
 
