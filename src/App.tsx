@@ -682,11 +682,12 @@ export default function App() {
   );
 
   /**
-   * Extracted fields grouped into neighbour *clusters* for the PCA field
-   * list: the neighbour-pairs are merged by transitive closure (union-find),
-   * so every field reachable through a chain of neighbours lands in one
-   * group — not just the 2-field pairs. Groups and fields are ordered by
-   * pixel count, largest first.
+   * Extracted fields grouped into neighbour *clusters* for the PCA field list:
+   * connected components of the neighbour graph (union-find), so every field
+   * reachable through a chain of neighbours lands in one group. The graph is
+   * built from each row's actual (field ↔ neighbour) edge — never the
+   * concatenated `pair_id`, which can collide when field ids contain "_" and
+   * then merge fields that are nowhere near each other. Ordered by pixel count.
    */
   const pcaFieldGroups = useMemo(() => {
     const per = zones?.perPolygon || [];
@@ -707,20 +708,20 @@ export default function App() {
     };
     const add = (k: string) => parent.has(k) || parent.set(k, k);
 
-    // Collect each pair's extracted members, then union them together.
-    const pairMembers = new Map<string, string[]>();
+    // One edge per row: this field ↔ its neighbour. Both must be extracted.
     const inGroup = new Set<string>();
     for (const f of polygons?.features || []) {
-      const pairId = f.properties?.pair_id;
-      if (pairId == null) continue;
-      const entry = byKey.get(featureKey(f));
-      if (!entry) continue; // field not part of the extraction
-      add(entry.key);
-      (pairMembers.get(String(pairId)) ?? pairMembers.set(String(pairId), []).get(String(pairId))!).push(entry.key);
-      inGroup.add(entry.key);
-    }
-    for (const members of pairMembers.values()) {
-      for (let i = 1; i < members.length; i++) parent.set(find(members[0]), find(members[i]));
+      const a = byKey.get(featureKey(f));
+      if (!a) continue;
+      const nid = f.properties?.neighbor_id;
+      if (nid == null) continue;
+      const b = byKey.get(String(nid));
+      if (!b || b.key === a.key) continue; // neighbour not extracted, or self
+      add(a.key);
+      add(b.key);
+      parent.set(find(a.key), find(b.key));
+      inGroup.add(a.key);
+      inGroup.add(b.key);
     }
 
     // Gather the connected components.
