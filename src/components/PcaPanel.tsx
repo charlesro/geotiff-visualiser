@@ -198,10 +198,13 @@ function BlobOverlay({
   clusters,
   threshold,
   showLines,
+  corridorDist,
 }: {
   clusters: { c: number[]; r: number }[];
   threshold: number;
   showLines: boolean;
+  /** Half-width of the corridor band to draw (the direction threshold, data units). */
+  corridorDist: number;
 }) {
   const xScale = useXAxisScale();
   const yScale = useYAxisScale();
@@ -211,16 +214,26 @@ function BlobOverlay({
   const sy = Math.abs((yScale(1) as number) - (yScale(0) as number));
   const s = (sx + sy) / 2;
   const px = (cl: { c: number[] }) => [xScale(cl.c[0]) as number, yScale(cl.c[1]) as number];
+  const band = 2 * corridorDist * s; // pixel width of the kept-corridor band
   return (
     <g style={{ pointerEvents: 'none' }}>
-      {/* The mixing corridors: lines between every pair of blob centroids. */}
+      {/* The mixing corridors: between every pair of blob centroids, a faint
+          band the width of the direction threshold (the kept region) + the
+          centre line. */}
       {showLines &&
         clusters.flatMap((a, i) =>
           clusters.slice(i + 1).map((b, j) => {
             const [ax, ay] = px(a);
             const [bx, by] = px(b);
             if (![ax, ay, bx, by].every(isFinite)) return null;
-            return <line key={`l-${i}-${j}`} x1={ax} y1={ay} x2={bx} y2={by} stroke="#38bdf8" strokeWidth={1} strokeDasharray="2 4" opacity={0.4} />;
+            return (
+              <g key={`l-${i}-${j}`}>
+                {band > 0.5 && (
+                  <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#38bdf8" strokeWidth={band} strokeLinecap="butt" opacity={0.1} />
+                )}
+                <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#38bdf8" strokeWidth={1} strokeDasharray="2 4" opacity={0.45} />
+              </g>
+            );
           })
         )}
       {clusters.map((cl, i) => {
@@ -1008,7 +1021,12 @@ export default function PcaPanel({
                 <Scatter data={points} shape={renderPoint} isAnimationActive={false} />
                 <PlotAspectProbe onAspect={onAspect} />
                 {boundaryOn && boundaryUnsup && boundary?.clusters && (
-                  <BlobOverlay clusters={boundary.clusters} threshold={boundaryT_} showLines={boundaryDir} />
+                  <BlobOverlay
+                    clusters={boundary.clusters}
+                    threshold={boundaryT_}
+                    showLines={boundaryDir}
+                    corridorDist={boundaryDir ? boundaryDirDist_ : 0}
+                  />
                 )}
             </ScatterChart>
 
