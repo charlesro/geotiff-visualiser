@@ -109,6 +109,35 @@ function distToBoundaryM(lng: number, lat: number, rings: number[][][]): number 
 }
 
 /**
+ * Min boundary-to-boundary distance (m) between two fields, approximated as the
+ * smallest vertex→segment distance taken in both directions. Exact when the
+ * fields share cadastral vertices (the usual case for touching fields) and
+ * accurate to a vertex spacing otherwise. Short-circuits to 0 once the rings
+ * touch. Used to decide neighbour adjacency for the PCA field grouping.
+ */
+export function fieldGapMeters(a: any, b: any): number {
+  const ra = ringsOf(a);
+  const rb = ringsOf(b);
+  if (ra.length === 0 || rb.length === 0) return Infinity;
+  let best = Infinity;
+  for (const ring of ra) {
+    for (const [lng, lat] of ring) {
+      const d = distToBoundaryM(lng, lat, rb);
+      if (d < best) best = d;
+      if (best === 0) return 0;
+    }
+  }
+  for (const ring of rb) {
+    for (const [lng, lat] of ring) {
+      const d = distToBoundaryM(lng, lat, ra);
+      if (d < best) best = d;
+      if (best === 0) return 0;
+    }
+  }
+  return best;
+}
+
+/**
  * Neighbour-aware classifier for edge pixels. Context polygons are
  * deduplicated by field identity and indexed by their padded bbox; ring
  * coordinates are extracted lazily only for polygons that pixels actually

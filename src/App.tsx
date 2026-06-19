@@ -13,7 +13,7 @@ import NdviPanel from './components/NdviPanel';
 import { fetchSentinelSeries, SeriesFetchParams, SeriesProgress } from './lib/fetch-series';
 import { clusterFeatureBboxes } from './lib/cluster';
 import { GeoTIFFData } from './lib/geotiff-utils';
-import { extractZones, featureKey, PixelZone, ZoneExtraction, ZoneProgress } from './lib/zones';
+import { extractZones, featureKey, fieldGapMeters, PixelZone, ZoneExtraction, ZoneProgress } from './lib/zones';
 import { computeUnmixing } from './lib/unmix';
 import { clusterBySpecies, SpeciesClustering, fieldKeyOf } from './lib/species-clusters';
 import { runPixelPca, pcaScoresToCsv, PcaRunResult } from './lib/pca';
@@ -683,52 +683,55 @@ export default function App() {
 
   /**
    * Extracted fields grouped into neighbour *clusters* for the PCA field list:
-   * connected components of the neighbour graph (union-find), so every field
-   * reachable through a chain of neighbours lands in one group. The graph is
-   * built from each row's actual (field ↔ neighbour) edge — never the
-   * concatenated `pair_id`, which can collide when field ids contain "_" and
-   * then merge fields that are nowhere near each other. Ordered by pixel count.
+   * connected components of the adjacency graph (union-find), so every field
+   * reachable through a chain of neighbours lands in one group. Adjacency is
+   * measured from the *geometry* — two fields are neighbours when their
+   * boundaries come within the extraction's neighbour gap. This is the app's
+   * own notion of a facing neighbour, and unlike the cross-species
+   * `neighbor_id` column it also links same-species neighbours and is never
+   * truncated by the max-pairs limit, so a contiguous block never splits.
+   * Ordered by pixel count.
    */
   const pcaFieldGroups = useMemo(() => {
     const per = zones?.perPolygon || [];
-    const byKey = new Map(per.map(p => [p.key, p]));
     const px = (p: { interior: number; edge: number }) => p.interior + p.edge;
 
-    // Union-find over extracted field keys.
-    const parent = new Map<string, string>();
-    const find = (k: string): string => {
-      let r = k;
-      while (parent.get(r) !== r) r = parent.get(r)!;
-      while (parent.get(k) !== r) {
-        const n = parent.get(k)!;
-        parent.set(k, r);
-        k = n;
-      }
-      return r;
-    };
-    const add = (k: string) => parent.has(k) || parent.set(k, k);
-
-    // One edge per row: this field ↔ its neighbour. Both must be extracted.
-    const inGroup = new Set<string>();
+    // One geometry per extracted field (the polygon rows repeat a field once
+    // per neighbour pair; any of them carries the same geometry).
+    const geomByKey = new Map<string, any>();
     for (const f of polygons?.features || []) {
-      const a = byKey.get(featureKey(f));
-      if (!a) continue;
-      const nid = f.properties?.neighbor_id;
-      if (nid == null) continue;
-      const b = byKey.get(String(nid));
-      if (!b || b.key === a.key) continue; // neighbour not extracted, or self
-      add(a.key);
-      add(b.key);
-      parent.set(find(a.key), find(b.key));
-      inGroup.add(a.key);
-      inGroup.add(b.key);
+      const k = featureKey(f);
+      if (!geomByKey.has(k)) geomByKey.set(k, f);
+    }
+    const fields = per
+      .map(p => {
+        const f = geomByKey.get(p.key);
+        const bbox = f ? getGeoJsonBounds(f) : null;
+        return f && bbox ? { p, f, bbox } : null;
+      })
+      .filter((x): x is { p: (typeof per)[number]; f: any; bbox: Bbox } => x !== null);
+
+    // Union-find over field indices; link any two within the neighbour gap.
+    const gapM = Math.max(zones?.neighbourGap ?? 12, 2);
+    const padded = fields.map(x => bufferBboxMeters(x.bbox, gapM));
+    const parent = fields.map((_, i) => i);
+    const find = (i: number): number => {
+      while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; }
+      return i;
+    };
+    for (let i = 0; i < fields.length; i++) {
+      for (let j = i + 1; j < fields.length; j++) {
+        if (find(i) === find(j)) continue;
+        if (getBboxIntersectionArea(padded[i], padded[j]) <= 0) continue; // bbox pre-filter
+        if (fieldGapMeters(fields[i].f, fields[j].f) <= gapM) parent[find(i)] = find(j);
+      }
     }
 
     // Gather the connected components.
-    const comps = new Map<string, (typeof per)[number][]>();
-    for (const key of inGroup) {
-      const root = find(key);
-      (comps.get(root) ?? comps.set(root, []).get(root)!).push(byKey.get(key)!);
+    const comps = new Map<number, (typeof per)[number][]>();
+    for (let i = 0; i < fields.length; i++) {
+      const root = find(i);
+      (comps.get(root) ?? comps.set(root, []).get(root)!).push(fields[i].p);
     }
 
     const groups = Array.from(comps.values())
