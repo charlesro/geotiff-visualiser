@@ -450,8 +450,10 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
     }
     return {
       color: selected ? '#38bdf8' : base,
-      weight: selected ? 2.5 : scenario !== undefined ? 1.8 : 1.2,
-      opacity: selected ? 1 : 0.7,
+      // Full-opacity, thick outlines so field boundaries read clearly; the
+      // fill stays muted (the dots / species fill carry the colour inside).
+      weight: selected ? 3.5 : 2.5,
+      opacity: 1,
       fillColor: base,
       fillOpacity: selected ? Math.max(fillOpacity, 0.2) : fillOpacity,
     };
