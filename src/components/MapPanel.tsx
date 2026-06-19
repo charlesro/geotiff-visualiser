@@ -8,7 +8,7 @@ import { polygonLabel } from '../lib/polygon-source';
 import { NdviPixel } from '../lib/ndvi-series';
 import { CLUSTER_COLORS, fieldKeyOf } from '../lib/species-clusters';
 import { mixHexColors } from '../lib/unmix';
-import { ZONE_CLASSES, zoneColor, speciesColor, NEUTRAL } from '../lib/legend';
+import { ZONE_CLASSES, zoneColor, speciesColor } from '../lib/legend';
 import { renderAnalysisGridPreview } from '../lib/mosaic';
 import { DEFAULT_OPTIONS } from '../lib/layer-factory';
 import { GeoTIFFData } from '../lib/geotiff-utils';
@@ -441,8 +441,9 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
       base = CLUSTER_COLORS[scenario % CLUSTER_COLORS.length];
       fillOpacity = 0.3;
     } else if (polygonMode === 'neutral') {
-      // Pixel zones drawn: dots carry the colour, so mute the outlines.
-      base = NEUTRAL;
+      // Pixel zones drawn: the dots carry the class colour, so the outline is
+      // just a frame — a vivid cyan that pops on the green/brown imagery.
+      base = '#00e5ff';
       fillOpacity = 0.04;
     } else {
       base = speciesColor(feature?.properties?.crp_lbl);

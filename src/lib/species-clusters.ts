@@ -10,7 +10,10 @@ import { ZoneExtraction } from './zones';
  * species group, so clusters never mix species.
  */
 
-export const CLUSTER_COLORS = ['#38bdf8', '#f472b6', '#a3e635', '#fb923c', '#c084fc', '#2dd4bf', '#facc15', '#fb7185'];
+// Vivid cyan / orange / blue / purple tones that punch through the green /
+// brown / pinkish field imagery (no greens or yellows that would blend in,
+// and no red — that's the edge·other pixel class).
+export const CLUSTER_COLORS = ['#00e5ff', '#ff7a00', '#c026ff', '#2f6bff', '#9b5cff', '#00aaff', '#ff9100', '#7d3cff'];
 
 export interface ClusteredField {
   /** Field identity (NewID), same convention as the zone extraction. */

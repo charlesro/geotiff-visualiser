@@ -73,15 +73,31 @@ export const zoneShort = (key: string): string => zoneClass(key)?.short ?? key;
 
 // ----- Species -----------------------------------------------------------------
 
-/** Per-crop hues; distinct from the four pixel-class colours above. */
+/**
+ * Per-crop hues — vivid cyan / orange / blue / purple. Chosen to punch through
+ * the green / brown / pinkish false-colour field imagery (so no green, yellow
+ * or brown of their own) and to stay clear of the pixel-class colours above
+ * (no red, which is edge·other). Cyan and orange (a max-contrast pair) sit at
+ * the two slots the two main crops hash to.
+ */
 const SPECIES_PALETTE = [
-  '#60a5fa', '#a78bfa', '#f472b6', '#22d3ee', '#c084fc', '#2dd4bf',
-  '#818cf8', '#e879f9', '#38bdf8', '#fb7185', '#4ade80', '#facc15',
+  '#ff5e00', // deep orange
+  '#9b5cff', // violet
+  '#c026ff', // purple
+  '#2f6bff', // blue
+  '#ff9100', // orange
+  '#00b8d4', // teal-cyan
+  '#00e5ff', // cyan        ← Maïs ensilage
+  '#d000ff', // magenta-purple
+  '#00aaff', // azure
+  '#7d3cff', // violet
+  '#ffab00', // amber
+  '#ff7a00', // orange      ← Luzerne
 ];
 
 /** Deterministic colour for a crop label (same crop → same colour every run). */
 export const speciesColor = (crpLbl: string | undefined): string => {
-  if (!crpLbl) return '#cbd5e1';
+  if (!crpLbl) return '#e2e8f0';
   let hash = 0;
   for (let i = 0; i < crpLbl.length; i++) {
     hash = (hash << 5) - hash + crpLbl.charCodeAt(i);
