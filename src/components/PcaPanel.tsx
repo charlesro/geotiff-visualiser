@@ -703,19 +703,20 @@ export default function PcaPanel({
     window.addEventListener('pointerup', onUp);
   };
 
-  // Equal scale on both axes (same units per pixel), so distances in the
-  // scatter are honest: the domains are centred on the data and sized from
-  // the larger spread, corrected by the plot's width/height ratio.
+  // Honest scale: the same data-units per pixel on both axes, so distances and
+  // the cloud's shape are faithful. Instead of padding the lower-variance axis
+  // to fill a fixed plot (which looks like that axis got stretched), the plot
+  // *height* is sized to the data — height ∝ y/x spread — so at equal scale the
+  // cloud sits tight to both axes with no stretch. Only when the spread ratio
+  // is too extreme to fit the height bounds does the wider axis get a little
+  // padding, to stay equal-scale.
   const CHART_W = width - 40; // p-4 padding + border
-  const CHART_H = 470;
   const Y_AXIS_W = 60;
   const X_AXIS_H = 40;
   const plotW = CHART_W - 10 - Y_AXIS_W; // margins: right 10, left 0
-  const plotH = CHART_H - 10 - 10 - X_AXIS_H; // margins: top 10, bottom 10
-  // Use the real plot aspect once measured; fall back to the estimate first paint.
-  const plotAspect = measuredAspect ?? plotW / plotH;
-  const domains = useMemo(() => {
-    if (points.length === 0) return { x: [0, 1] as [number, number], y: [0, 1] as [number, number] };
+
+  const dataBounds = useMemo(() => {
+    if (points.length === 0) return null;
     let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
     for (const p of points) {
       if (p.x < xMin) xMin = p.x;
@@ -723,12 +724,27 @@ export default function PcaPanel({
       if (p.y < yMin) yMin = p.y;
       if (p.y > yMax) yMax = p.y;
     }
+    return { xMin, xMax, yMin, yMax };
+  }, [points]);
+
+  const xSpread = dataBounds ? Math.max(dataBounds.xMax - dataBounds.xMin, 1e-6) : 1;
+  const ySpread = dataBounds ? Math.max(dataBounds.yMax - dataBounds.yMin, 1e-6) : 1;
+  const plotH = Math.min(520, Math.max(220, (plotW * ySpread) / xSpread));
+  const CHART_H = plotH + 10 + 10 + X_AXIS_H; // + margins (top 10, bottom 10) + x-axis
+  // Use the real plot aspect once measured; fall back to the estimate first paint.
+  const plotAspect = measuredAspect ?? plotW / plotH;
+  const domains = useMemo(() => {
+    if (!dataBounds) return { x: [0, 1] as [number, number], y: [0, 1] as [number, number] };
+    const { xMin, xMax, yMin, yMax } = dataBounds;
     const cx = (xMin + xMax) / 2;
     const cy = (yMin + yMax) / 2;
-    const ry = Math.max((yMax - yMin) / 2, (xMax - xMin) / 2 / plotAspect, 1e-6) * 1.08;
+    // Equal-scale half-extents. With the height chosen above the two terms match,
+    // so the data is tight to both axes; the max() only adds padding to the wider
+    // axis if the height clamped.
+    const ry = Math.max((yMax - yMin) / 2, (xMax - xMin) / 2 / plotAspect, 1e-6) * 1.04;
     const rx = ry * plotAspect;
     return { x: [cx - rx, cx + rx] as [number, number], y: [cy - ry, cy + ry] as [number, number] };
-  }, [points, plotAspect]);
+  }, [dataBounds, plotAspect]);
 
   const toggleProjected = (zone: PixelZone) => {
     if (projectZones.includes(zone)) {
