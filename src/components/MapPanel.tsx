@@ -431,9 +431,9 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
 
   const polygonStyle = (feature: any) => {
     const selected = selectedIds.has(feature?.properties?.__pid);
-    // The base fill keeps encoding the active mode (species / scenario /
-    // muted) even when selected — selection is shown as a blue outline on
-    // top, so the species colour stays visible.
+    // The base colour keeps encoding the active mode (species / scenario /
+    // muted) even when selected — selection is shown only as a thicker
+    // outline, never a colour change, so the field's own colour stays.
     const scenario = clusterAssignment?.get(fieldKeyOf(feature?.properties));
     let base: string;
     let fillOpacity: number;
@@ -450,10 +450,11 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
       fillOpacity = 0.12;
     }
     return {
-      color: selected ? '#38bdf8' : base,
       // Full-opacity, thick outlines so field boundaries read clearly; the
       // fill stays muted (the dots / species fill carry the colour inside).
-      weight: selected ? 3.5 : 2.5,
+      // Selection just thickens the same-coloured outline.
+      color: base,
+      weight: selected ? 5 : 2.5,
       opacity: 1,
       fillColor: base,
       fillOpacity: selected ? Math.max(fillOpacity, 0.2) : fillOpacity,
@@ -471,7 +472,7 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
         if (probeRef.current) handlersRef.current.onInspectPolygon(feature);
         else handlersRef.current.onTogglePolygon(feature.properties.__pid);
       },
-      mouseover: () => path.setStyle({ weight: 3.5 }),
+      mouseover: () => path.setStyle({ weight: selectedIds.has(feature?.properties?.__pid) ? 6.5 : 4 }),
       mouseout: () => path.setStyle(polygonStyle(feature)),
     });
   };
@@ -692,7 +693,7 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
           )}
           {selectedIds.size > 0 && (
             <button onClick={onClearSelection} className="group flex w-full items-center gap-2 py-0.5 text-left" title="Clear the selection">
-              <span className="h-2.5 w-2.5 shrink-0 rounded-[3px]" style={{ background: '#38bdf8' }} />
+              <span className="h-2.5 w-2.5 shrink-0 rounded-[3px] border-2 border-slate-200 bg-transparent" />
               <span className="min-w-0 flex-1 truncate text-xs text-slate-300 group-hover:text-white">
                 Selected <span className="text-slate-500 group-hover:text-slate-300">· clear</span>
               </span>
