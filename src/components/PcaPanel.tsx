@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { X, Download, Loader2 } from 'lucide-react';
 import {
   ScatterChart,
@@ -252,6 +252,28 @@ function BlobOverlay({
             </text>
           </g>
         );
+      })}
+    </g>
+  );
+}
+
+/**
+ * Pink rings on the flagged boundary pixels, drawn as a light SVG layer inside
+ * the chart (reads the axis scales). Kept separate from the main <Scatter> so
+ * moving the threshold sliders only redraws these few rings, not the whole
+ * point cloud.
+ */
+function BoundaryHighlight({ points }: { points: { x: number; y: number }[] }) {
+  const xScale = useXAxisScale();
+  const yScale = useYAxisScale();
+  if (!xScale || !yScale || points.length === 0) return null;
+  return (
+    <g style={{ pointerEvents: 'none' }}>
+      {points.map((p, i) => {
+        const cx = xScale(p.x) as number;
+        const cy = yScale(p.y) as number;
+        if (!isFinite(cx) || !isFinite(cy)) return null;
+        return <circle key={i} cx={cx} cy={cy} r={7} fill="none" stroke="#e879f9" strokeWidth={2} />;
       })}
     </g>
   );
@@ -557,19 +579,24 @@ export default function PcaPanel({
 
   const boundaryT_ = boundaryT ?? boundary?.defaultT ?? 0;
   const boundaryDirDist_ = boundaryDirDist ?? boundary?.dirDefault ?? 0;
+  // The slider thumbs read the immediate values above; the flagging + overlay
+  // recompute off these deferred copies so dragging stays responsive even with
+  // thousands of points (React renders the heavy update at lower priority).
+  const dBoundaryT = useDeferredValue(boundaryT_);
+  const dBoundaryDirDist = useDeferredValue(boundaryDirDist_);
   const boundaryIds = useMemo(() => {
     const set = new Set<string>();
     if (!boundaryOn || !boundary) return set;
     const dir = boundary.dirById;
     const gate = boundaryDir && dir;
     for (const [id, sc] of boundary.scoreById) {
-      if (sc < boundaryT_) continue;
+      if (sc < dBoundaryT) continue;
       // Direction gate: keep only pixels close to a corridor between two blobs.
-      if (gate && (dir.get(id) ?? Infinity) > boundaryDirDist_) continue;
+      if (gate && (dir.get(id) ?? Infinity) > dBoundaryDirDist) continue;
       set.add(id);
     }
     return set;
-  }, [boundaryOn, boundary, boundaryT_, boundaryDir, boundaryDirDist_]);
+  }, [boundaryOn, boundary, dBoundaryT, boundaryDir, dBoundaryDirDist]);
 
   // Validation: of the flagged pixels, how many are actually labelled edge·other
   // (the real boundaries). Meaningful in unsupervised mode — the finder didn't
@@ -594,7 +621,10 @@ export default function PcaPanel({
   // Clear the map markers when the panel unmounts.
   useEffect(() => () => onBoundaryPixels?.([]), [onBoundaryPixels]);
 
-  const points = useMemo(() => {
+  // The rows actually drawn (evenly sub-sampled past MAX_POINTS). Kept apart
+  // from `points` and from the boundary state so neither the heavy point cloud
+  // nor this list rebuilds when only a threshold slider moves.
+  const displayedRows = useMemo(() => {
     let rows =
       result.rows.length > MAX_POINTS
         ? Array.from({ length: MAX_POINTS }, (_, i) => result.rows[Math.floor((i * result.rows.length) / MAX_POINTS)])
@@ -605,9 +635,13 @@ export default function PcaPanel({
       const sel = result.rows.find(r => r.pixelId === highlightPixelId);
       if (sel) rows = [...rows, sel];
     }
+    return rows;
+  }, [result, highlightPixelId]);
+
+  const points = useMemo(() => {
     const colorIdx = new Map(colorCats.map((c, i) => [c.name, i]));
     const shapeIdx = new Map(shapeCats.map((c, i) => [c.name, i]));
-    return rows.map(row => {
+    return displayedRows.map(row => {
       const cv = attrValue(row, colorBy);
       const sv = shapeBy === 'none' ? null : attrValue(row, shapeBy);
       // Mixing: continuous scale on the own-field fraction; pixels with no
@@ -628,11 +662,21 @@ export default function PcaPanel({
         pixelId: row.pixelId,
         color,
         symbol: (sv === null ? 'circle' : SYMBOL_TYPES[(shapeIdx.get(sv) ?? 0) % SYMBOL_TYPES.length]) as SymbolType,
-        isBoundary: boundaryIds.has(row.pixelId),
         row,
       };
     });
-  }, [result, pcX, pcY, colorBy, shapeBy, colorCats, shapeCats, attrValue, mixAxis, highlightPixelId, boundaryIds]);
+  }, [displayedRows, pcX, pcY, colorBy, shapeBy, colorCats, shapeCats, attrValue, mixAxis]);
+
+  // Coordinates of the flagged boundary pixels among the drawn rows — fed to the
+  // lightweight overlay, so threshold changes never touch the main scatter.
+  const boundaryHi = useMemo(() => {
+    if (!boundaryOn || boundaryIds.size === 0) return [];
+    const out: { x: number; y: number }[] = [];
+    for (const r of displayedRows) {
+      if (boundaryIds.has(r.pixelId)) out.push({ x: r.scores[pcX], y: r.scores[pcY] });
+    }
+    return out;
+  }, [boundaryOn, boundaryIds, displayedRows, pcX, pcY]);
 
   const pick = (p: (typeof points)[number]) => {
     if (highlightPixelId === p.pixelId) onPickPixel(null);
@@ -701,7 +745,6 @@ export default function PcaPanel({
     const selected = payload.pixelId === highlightPixelId;
     return (
       <g onClick={() => pick(payload)} style={{ cursor: 'pointer' }}>
-        {payload.isBoundary && <circle cx={cx} cy={cy} r={7} fill="none" stroke="#e879f9" strokeWidth={2} />}
         {selected && <circle cx={cx} cy={cy} r={9} fill="none" stroke="#ffffff" strokeWidth={2} />}
         <Symbols
           cx={cx}
@@ -714,6 +757,15 @@ export default function PcaPanel({
       </g>
     );
   };
+
+  // Stable Scatter element: only re-create it when the drawn points actually
+  // change. Slider-driven boundary updates re-render the chart but reuse this
+  // element, so the (up to MAX_POINTS) custom shapes are not rebuilt each tick.
+  const scatterEl = useMemo(
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    () => <Scatter data={points} shape={renderPoint} isAnimationActive={false} />,
+    [points]
+  );
 
   const varianceData = result.explained.map((v, i) => ({
     pc: `PC${i + 1}`,
@@ -1018,14 +1070,15 @@ export default function PcaPanel({
                     );
                   }}
                 />
-                <Scatter data={points} shape={renderPoint} isAnimationActive={false} />
+                {scatterEl}
+                {boundaryOn && <BoundaryHighlight points={boundaryHi} />}
                 <PlotAspectProbe onAspect={onAspect} />
                 {boundaryOn && boundaryUnsup && boundary?.clusters && (
                   <BlobOverlay
                     clusters={boundary.clusters}
-                    threshold={boundaryT_}
+                    threshold={dBoundaryT}
                     showLines={boundaryDir}
-                    corridorDist={boundaryDir ? boundaryDirDist_ : 0}
+                    corridorDist={boundaryDir ? dBoundaryDirDist : 0}
                   />
                 )}
             </ScatterChart>
