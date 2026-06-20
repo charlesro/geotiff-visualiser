@@ -403,7 +403,7 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
 
   // Legend data for the active polygon encoding.
   const speciesLegend = useMemo<[string, number][]>(() => {
-    if (!polygons || polygonMode !== 'species') return [];
+    if (!polygons || polygonMode === 'scenario') return [];
     const counts = new Map<string, number>();
     for (const f of polygons.features) {
       const s = f.properties?.crp_lbl ?? f.properties?.species;
@@ -441,9 +441,10 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
       base = CLUSTER_COLORS[scenario % CLUSTER_COLORS.length];
       fillOpacity = 0.3;
     } else if (polygonMode === 'neutral') {
-      // Pixel zones drawn: the dots carry the class colour, so the outline is
-      // just a frame — a vivid cyan that pops on the green/brown imagery.
-      base = '#00e5ff';
+      // Pixel zones drawn: keep each field's species colour on the outline so
+      // polygons stay identifiable, and just mute the fill so the
+      // class-coloured dots inside dominate.
+      base = speciesColor(feature?.properties?.crp_lbl);
       fillOpacity = 0.04;
     } else {
       base = speciesColor(feature?.properties?.crp_lbl);
@@ -675,13 +676,13 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
         >
           {/* What the polygon outlines mean */}
           <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-slate-500">
-            Fields · {polygonMode === 'scenario' ? 'growth scenario' : polygonMode === 'neutral' ? 'muted' : 'by species'}
+            Fields · {polygonMode === 'scenario' ? 'growth scenario' : 'by species'}
           </div>
-          {polygonMode === 'species' &&
+          {polygonMode !== 'scenario' &&
             speciesLegend.slice(0, 6).map(([s, c]) => (
               <LegendRow key={s} color={speciesColor(s)} label={s} count={c} shape="square" />
             ))}
-          {polygonMode === 'species' && speciesLegend.length > 6 && (
+          {polygonMode !== 'scenario' && speciesLegend.length > 6 && (
             <div className="py-0.5 text-[10px] text-slate-600">+{speciesLegend.length - 6} more species</div>
           )}
           {polygonMode === 'scenario' &&
@@ -689,7 +690,7 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
               <LegendRow key={n} color={CLUSTER_COLORS[n % CLUSTER_COLORS.length]} label={`Scenario ${n + 1}`} count={c} shape="square" />
             ))}
           {polygonMode === 'neutral' && (
-            <div className="py-0.5 text-[11px] text-slate-500">Outlines muted — coloured by pixel class below.</div>
+            <div className="py-0.5 text-[11px] text-slate-500">Pixel classes are the dots below.</div>
           )}
           {selectedIds.size > 0 && (
             <button onClick={onClearSelection} className="group flex w-full items-center gap-2 py-0.5 text-left" title="Clear the selection">
