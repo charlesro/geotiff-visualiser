@@ -229,7 +229,7 @@ function BlobOverlay({
             return (
               <g key={`l-${i}-${j}`}>
                 {band > 0.5 && (
-                  <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#38bdf8" strokeWidth={band} strokeLinecap="butt" opacity={0.1} />
+                  <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#38bdf8" strokeWidth={band} strokeLinecap="round" opacity={0.07} />
                 )}
                 <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#38bdf8" strokeWidth={1} strokeDasharray="2 4" opacity={0.45} />
               </g>
@@ -244,7 +244,7 @@ function BlobOverlay({
         if (!isFinite(cx) || !isFinite(cy) || !isFinite(r) || r <= 0) return null;
         return (
           <g key={i}>
-            <circle cx={cx} cy={cy} r={r} fill="none" stroke="#38bdf8" strokeWidth={1.5} strokeDasharray="5 3" opacity={0.9} />
+            <circle cx={cx} cy={cy} r={r} fill="none" stroke="#38bdf8" strokeWidth={1.5} strokeDasharray="5 4" opacity={0.6} />
             <line x1={cx - 6} y1={cy} x2={cx + 6} y2={cy} stroke="#38bdf8" strokeWidth={1.5} />
             <line x1={cx} y1={cy - 6} x2={cx} y2={cy + 6} stroke="#38bdf8" strokeWidth={1.5} />
             <text x={cx + 8} y={cy - 8} fontSize={11} fontWeight={600} fill="#7dd3fc">
@@ -750,9 +750,12 @@ export default function PcaPanel({
           cx={cx}
           cy={cy}
           type={payload.symbol}
-          size={selected ? 90 : 32}
+          size={selected ? 90 : 34}
           fill={payload.color}
-          fillOpacity={selected ? 1 : 0.8}
+          fillOpacity={selected ? 1 : 0.82}
+          stroke="#0b0e11"
+          strokeWidth={selected ? 0 : 0.6}
+          strokeOpacity={0.55}
         />
       </g>
     );
@@ -1032,8 +1035,12 @@ export default function PcaPanel({
               </div>
             )}
 
+            <div
+              className="overflow-hidden rounded-xl ring-1 ring-inset ring-white/[0.06]"
+              style={{ background: 'radial-gradient(125% 90% at 50% -10%, #161d26 0%, #0c1014 60%)' }}
+            >
             <ScatterChart width={CHART_W} height={CHART_H} margin={{ top: 10, right: 10, bottom: 10, left: 0 }}>
-                <CartesianGrid stroke="#ffffff14" />
+                <CartesianGrid stroke="#ffffff0a" strokeDasharray="3 6" />
                 <XAxis
                   type="number"
                   dataKey="x"
@@ -1042,6 +1049,8 @@ export default function PcaPanel({
                   height={X_AXIS_H}
                   tickFormatter={(v: number) => v.toFixed(2)}
                   tick={{ fill: '#64748b', fontSize: 11 }}
+                  tickLine={false}
+                  axisLine={{ stroke: '#ffffff14' }}
                   label={{ value: pcLabel(pcX), position: 'insideBottom', offset: -5, fill: '#94a3b8', fontSize: 12 }}
                 />
                 <YAxis
@@ -1052,6 +1061,8 @@ export default function PcaPanel({
                   width={Y_AXIS_W}
                   tickFormatter={(v: number) => v.toFixed(2)}
                   tick={{ fill: '#64748b', fontSize: 11 }}
+                  tickLine={false}
+                  axisLine={{ stroke: '#ffffff14' }}
                   label={{ value: pcLabel(pcY), angle: -90, position: 'insideLeft', fill: '#94a3b8', fontSize: 12 }}
                 />
                 <ZAxis range={[32, 32]} />
@@ -1082,6 +1093,7 @@ export default function PcaPanel({
                   />
                 )}
             </ScatterChart>
+            </div>
 
             {/* Colour legend */}
             {colorBy === 'mixing' ? (
