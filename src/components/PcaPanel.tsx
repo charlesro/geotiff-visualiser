@@ -761,13 +761,14 @@ export default function PcaPanel({
     );
   };
 
-  // Stable Scatter element: only re-create it when the drawn points actually
-  // change. Slider-driven boundary updates re-render the chart but reuse this
-  // element, so the (up to MAX_POINTS) custom shapes are not rebuilt each tick.
+  // Stable Scatter element: re-create it only when the drawn points or the
+  // selection change (renderPoint closes over highlightPixelId for the ring).
+  // Slider-driven boundary updates touch neither, so they reuse this element
+  // and the (up to MAX_POINTS) custom shapes are not rebuilt each tick.
   const scatterEl = useMemo(
     // eslint-disable-next-line react-hooks/exhaustive-deps
     () => <Scatter data={points} shape={renderPoint} isAnimationActive={false} />,
-    [points]
+    [points, highlightPixelId]
   );
 
   const varianceData = result.explained.map((v, i) => ({
