@@ -462,6 +462,14 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
     };
   };
 
+  // Outline-only version of the polygon style, drawn as a separate non-interactive
+  // layer on top of the pixel-zone dots so the field contours stay visible over
+  // them (the filled, clickable layer below keeps handling selection).
+  const outlineStyle = (feature: any) => {
+    const s = polygonStyle(feature);
+    return { color: s.color, weight: s.weight, opacity: s.opacity, fill: false };
+  };
+
   const onEachPolygon = (feature: any, layer: L.Layer) => {
     const path = layer as L.Path;
     const scenario = clusterAssignment?.get(fieldKeyOf(feature?.properties));
@@ -565,6 +573,10 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
               <>
                 <GeoJSON key={`zone-edge-${zonesKey}-${showMixing ? 'mix' : 'cls'}`} data={zones.edge} pointToLayer={pixelToMarker} />
                 <GeoJSON key={`zone-interior-${zonesKey}`} data={zones.interior} pointToLayer={pixelToMarker} />
+                {/* Re-draw the field contours above the dots so they stay visible. */}
+                {polygons && (
+                  <GeoJSON key={`outline-${polygonsKey}`} data={polygons} style={outlineStyle} interactive={false} />
+                )}
               </>
             )}
             <GeoJSON
