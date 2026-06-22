@@ -17,6 +17,7 @@ import { extractZones, featureKey, fieldGapMeters, PixelZone, ZoneExtraction, Zo
 import { computeUnmixing } from './lib/unmix';
 import { clusterBySpecies, SpeciesClustering, fieldKeyOf } from './lib/species-clusters';
 import { runPixelPca, pcaScoresToCsv, PcaRunResult } from './lib/pca';
+import { DrMethod } from './lib/projections';
 import { isCancelledError } from './lib/cancel';
 import { DatasetDateRange } from './lib/neighbor-query';
 import { cacheClear, cacheDelete, cacheGet, cacheSet, reviveScenes, serializeScenes } from './lib/persist';
@@ -91,6 +92,7 @@ export default function App() {
   // interior vs the edge facing another species (the comparison of interest).
   const [pcaFitZones, setPcaFitZones] = useState<PixelZone[]>(PCA_DEFAULT_FIT);
   const [pcaProjectZones, setPcaProjectZones] = useState<PixelZone[]>(PCA_DEFAULT_PROJECT);
+  const [pcaMethod, setPcaMethod] = useState<DrMethod>('pca');
   const [pcaResult, setPcaResult] = useState<PcaRunResult | null>(null);
   const [pcaBusy, setPcaBusy] = useState(false);
   const [pcaError, setPcaError] = useState<string | null>(null);
@@ -783,6 +785,7 @@ export default function App() {
       const result = runPixelPca(pixels, zones.metric, {
         fitZones: pcaFitZones,
         projectZones: pcaProjectZones,
+        method: pcaMethod,
       });
       setPcaResult(result);
       setShowPcaPanel(true);
@@ -792,7 +795,7 @@ export default function App() {
     } finally {
       setPcaBusy(false);
     }
-  }, [zones, clustering, pcaScope, pcaFields, pcaFitZones, pcaProjectZones]);
+  }, [zones, clustering, pcaScope, pcaFields, pcaFitZones, pcaProjectZones, pcaMethod]);
 
   // Changing the projected classes from the results panel re-runs the
   // projection live. Refs avoid re-firing when the run itself lands.
@@ -800,7 +803,7 @@ export default function App() {
   pcaLive.current = { runPca, active: pcaResult !== null };
   useEffect(() => {
     if (pcaLive.current.active) pcaLive.current.runPca();
-  }, [pcaProjectZones]);
+  }, [pcaProjectZones, pcaMethod]);
 
   /** Scatter point picked in the results panel → white ring on the map and
    *  the map flies to the pixel (offset so the drawer doesn't cover it). */
@@ -1067,6 +1070,8 @@ export default function App() {
               clusterAssignment={clusterAssignment}
               projectZones={pcaProjectZones}
               onProjectZonesChange={setPcaProjectZones}
+              method={pcaMethod}
+              onMethodChange={setPcaMethod}
               highlightPixelId={highlightPixel?.id ?? null}
               onPickPixel={pickPcaPixel}
               onBoundaryPixels={setPcaBoundaryPixels}

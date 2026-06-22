@@ -20,6 +20,7 @@ import {
   usePlotArea,
 } from 'recharts';
 import { PcaRunResult } from '../lib/pca';
+import { DR_METHODS, DrMethod } from '../lib/projections';
 import { PixelZone } from '../lib/zones';
 import { CLUSTER_COLORS, fieldKeyOf } from '../lib/species-clusters';
 import { mixHexColors } from '../lib/unmix';
@@ -313,6 +314,9 @@ interface PcaPanelProps {
   onPickPixel: (pixel: PcaPickedPixel | null) => void;
   /** Edge·other pixels flagged as boundaries (PCA-gap finder) → shown on the map. */
   onBoundaryPixels?: (pixels: { id: string; lng: number; lat: number }[]) => void;
+  /** Dimensionality-reduction method (re-runs the projection on change). */
+  method: DrMethod;
+  onMethodChange: (m: DrMethod) => void;
   onClose: () => void;
   onExportCsv: () => void;
 }
@@ -328,6 +332,8 @@ export default function PcaPanel({
   highlightPixelId,
   onPickPixel,
   onBoundaryPixels,
+  method,
+  onMethodChange,
   onClose,
   onExportCsv,
 }: PcaPanelProps) {
@@ -801,7 +807,20 @@ export default function PcaPanel({
     return entry;
   });
 
-  const pcLabel = (i: number) => `PC${i + 1} (${result.explained[i].toFixed(1)}%)`;
+  const AXIS_ABBR: Record<DrMethod, string> = {
+    pca: 'PC',
+    whitened: 'PC',
+    ica: 'IC',
+    mnf: 'MNF',
+    random: 'RP',
+    kpca: 'KPC',
+    isomap: 'Iso',
+    diffusion: 'DC',
+    tsne: 'tSNE',
+  };
+  const axisAbbr = AXIS_ABBR[result.method] ?? 'C';
+  const axisName = (i: number) => `${axisAbbr}${i + 1}`;
+  const pcLabel = (i: number) => `${axisName(i)} (${result.explained[i].toFixed(1)}%)`;
   const selectClass =
     'rounded-md border border-white/10 bg-[#0b0e11] px-2 py-1 text-xs text-slate-300 focus:outline-none';
 
@@ -824,13 +843,18 @@ export default function PcaPanel({
       <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
         <div>
           <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-100">
-            PCA results
+            {DR_METHODS.find(m => m.id === result.method)?.label ?? 'PCA'} results
             {busy && <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-400" />}
           </h2>
           <p className="text-[11px] text-slate-500">
-            axes fit on {result.fitCount} px (
-            {result.fitZones.map(z => ZONE_CHIPS.find(c => c.key === z)?.label ?? z).join(', ')}) ·{' '}
-            {result.rows.length} px placed · {result.metric} · {result.dates.length} dates ·{' '}
+            {result.method === 'pca' || result.method === 'whitened' || result.method === 'ica' || result.method === 'mnf' || result.method === 'random' ? (
+              <>
+                axes fit on {result.fitCount} px (
+                {result.fitZones.map(z => ZONE_CHIPS.find(c => c.key === z)?.label ?? z).join(', ')}) ·{' '}
+              </>
+            ) : null}
+            {result.rows.length} px {result.subsampled ? 'embedded (subsample)' : 'placed'} · {result.metric} ·{' '}
+            {result.dates.length} dates ·{' '}
             {result.interpolatedFraction > 0.005 && (
               <span
                 title="Some pixels were not imaged on every date (fields on different Sentinel-2 overpasses, or clouds). Those gaps were filled by interpolating each pixel's own NDVI curve, so every field is included on the same date axis."
@@ -839,7 +863,9 @@ export default function PcaPanel({
                 {(result.interpolatedFraction * 100).toFixed(0)}% interpolated ·{' '}
               </span>
             )}
-            {result.cumulative[result.components - 1]?.toFixed(1)}% variance in {result.components} PCs
+            {result.cumulative[result.components - 1]?.toFixed(1)}%{' '}
+            {result.method === 'pca' || result.method === 'whitened' ? 'variance' : 'spread'} in {result.components}{' '}
+            {axisAbbr === 'PC' ? 'PCs' : 'axes'}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -897,12 +923,32 @@ export default function PcaPanel({
               })}
             </div>
 
+            <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+              <label className="flex items-center gap-1.5">
+                Method
+                <select
+                  className={selectClass}
+                  value={method}
+                  onChange={e => onMethodChange(e.target.value as DrMethod)}
+                >
+                  {DR_METHODS.map(m => (
+                    <option key={m.id} value={m.id}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <span className="basis-full text-[10px] leading-snug text-slate-600">
+                {DR_METHODS.find(m => m.id === method)?.blurb}
+              </span>
+            </div>
+
             <div className="mb-2 flex flex-wrap items-center gap-3 text-xs text-slate-500">
               <label className="flex items-center gap-1.5">
                 X
                 <select className={selectClass} value={pcX} onChange={e => setPcX(Number(e.target.value))}>
                   {result.explained.map((_, i) => (
-                    <option key={i} value={i}>{`PC${i + 1}`}</option>
+                    <option key={i} value={i}>{axisName(i)}</option>
                   ))}
                 </select>
               </label>
@@ -910,7 +956,7 @@ export default function PcaPanel({
                 Y
                 <select className={selectClass} value={pcY} onChange={e => setPcY(Number(e.target.value))}>
                   {result.explained.map((_, i) => (
-                    <option key={i} value={i}>{`PC${i + 1}`}</option>
+                    <option key={i} value={i}>{axisName(i)}</option>
                   ))}
                 </select>
               </label>
@@ -1236,7 +1282,14 @@ export default function PcaPanel({
           </>
         )}
 
-        {tab === 'loadings' && (
+        {tab === 'loadings' && result.loadings.length === 0 && (
+          <p className="text-[11px] leading-relaxed text-slate-500">
+            Loadings (per-date weights) are only defined for the linear methods — PCA, Whitened PCA, ICA, MNF and
+            Random projection. <span className="text-slate-400">{DR_METHODS.find(m => m.id === result.method)?.label}</span>{' '}
+            embeds the pixels directly, so there are no feature weights to show.
+          </p>
+        )}
+        {tab === 'loadings' && result.loadings.length > 0 && (
           <>
             <p className="mb-3 text-[11px] leading-relaxed text-slate-500">
               Loadings show how much each acquisition date contributes to a component — peaks identify the periods

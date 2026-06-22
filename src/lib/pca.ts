@@ -1,5 +1,5 @@
-import { PCA } from 'ml-pca';
 import { PixelZone } from './zones';
+import { embed, DrMethod } from './projections';
 
 /**
  * PCA on pixel time series.
@@ -28,6 +28,8 @@ export interface PcaFitOptions {
   fitZones?: PixelZone[];
   /** Classes projected (displayed) in the fitted space. Default: all. */
   projectZones?: PixelZone[];
+  /** Dimensionality-reduction method. Default: 'pca'. */
+  method?: DrMethod;
 }
 
 export interface PcaPixelScore {
@@ -60,6 +62,10 @@ export interface PcaRunResult {
   fitZones: PixelZone[];
   projectZones: PixelZone[];
   fitCount: number;
+  /** Which method produced these coordinates. */
+  method: DrMethod;
+  /** True when the method embedded only a subsample (the nonlinear ones). */
+  subsampled: boolean;
 }
 
 const zoneOf = (p: any): PixelZone => (p.properties?.zone as PixelZone) || 'interior';
@@ -148,9 +154,13 @@ export function runPixelPca(pixelFeatures: any[], metric: string, options: PcaFi
   };
 
   const fitMatrix: number[][] = [];
+  const fitPos: [number, number][] = [];
   for (const p of fitPixels) {
     const row = resampleRow(p);
-    if (row) fitMatrix.push(row);
+    if (row) {
+      fitMatrix.push(row);
+      fitPos.push([p.geometry.coordinates[0], p.geometry.coordinates[1]]);
+    }
   }
   if (fitMatrix.length < 10) {
     throw new Error(
@@ -172,30 +182,34 @@ export function runPixelPca(pixelFeatures: any[], metric: string, options: PcaFi
   }
 
   const components = Math.min(3, dates.length);
-  // Fit on the fit classes only; predict() centers new data with the fit's
-  // means, so projected pixels land in the same space.
-  const pca = new PCA(fitMatrix, { center: true, scale: false });
-  const projected = pca.predict(projMatrix, { nComponents: components }).to2DArray();
-  const explainedFractions = pca.getExplainedVariance().slice(0, components);
-  const explained = explainedFractions.map(v => v * 100);
+  const method = options.method ?? 'pca';
+  // The chosen method builds the coordinates: linear methods fit on the fit
+  // classes and place every projected pixel; nonlinear ones embed a subsample
+  // of the projected pixels directly. `index` says which projected pixels got
+  // coordinates (all of them for the linear methods).
+  const { scores, index, explained, loadings } = embed(method, {
+    fit: fitMatrix,
+    proj: projMatrix,
+    fitPos,
+    components,
+  });
   const cumulative = explained.reduce<number[]>((acc, v) => {
     acc.push((acc[acc.length - 1] || 0) + v);
     return acc;
   }, []);
 
-  // ml-pca loadings: rows = components when transposed via getLoadings()
-  const loadingsMatrix = pca.getLoadings().to2DArray();
-  const loadings = loadingsMatrix.slice(0, components);
-
-  const rows: PcaPixelScore[] = kept.map((p, i) => ({
-    pixelId: p.properties.id,
-    zone: zoneOf(p),
-    polygonId: p.properties.polygon_id ?? p.properties.__pid,
-    lng: p.geometry.coordinates[0],
-    lat: p.geometry.coordinates[1],
-    scores: projected[i],
-    properties: p.properties,
-  }));
+  const rows: PcaPixelScore[] = index.map((pi, j) => {
+    const p = kept[pi];
+    return {
+      pixelId: p.properties.id,
+      zone: zoneOf(p),
+      polygonId: p.properties.polygon_id ?? p.properties.__pid,
+      lng: p.geometry.coordinates[0],
+      lat: p.geometry.coordinates[1],
+      scores: scores[j],
+      properties: p.properties,
+    };
+  });
 
   return {
     rows,
@@ -210,6 +224,8 @@ export function runPixelPca(pixelFeatures: any[], metric: string, options: PcaFi
     fitZones: Array.from(fitSet),
     projectZones: Array.from(projectSet),
     fitCount: fitMatrix.length,
+    method,
+    subsampled: rows.length < kept.length,
   };
 }
 
