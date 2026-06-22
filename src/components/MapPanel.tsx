@@ -49,6 +49,8 @@ interface MapPanelProps {
   predictionOverlays: ScenePreview[];
   /** Edge·other pixels flagged as boundaries by the PCA-gap finder. */
   boundaryPixels: { id: string; lng: number; lat: number }[];
+  /** Pixels lassoed in the PCA scatter, mirrored on the map. */
+  selectedPixels: { id: string; lng: number; lat: number }[];
   scenes: RasterLayer[];
   previewSceneId: string | null;
   onPreviewScene: (id: string | null) => void;
@@ -365,7 +367,7 @@ function BboxSelector({ polygons, onSelectBox }: { polygons: any | null; onSelec
   );
 }
 
-export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBoxSelect, onClearSelection, zones, clusterAssignment, clusterVersion, preview, clusterGrids, boundaryPixels, predictionOverlays, scenes, previewSceneId, onPreviewScene, onDeleteScene, onInspectPolygon, inspectPixels, highlightPixel, onPickPixel, pcaPickMode, onPickMapPixel, fitRequest }: MapPanelProps) {
+export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBoxSelect, onClearSelection, zones, clusterAssignment, clusterVersion, preview, clusterGrids, boundaryPixels, selectedPixels, predictionOverlays, scenes, previewSceneId, onPreviewScene, onDeleteScene, onInspectPolygon, inspectPixels, highlightPixel, onPickPixel, pcaPickMode, onPickMapPixel, fitRequest }: MapPanelProps) {
   const [basemap, setBasemap] = useState<BasemapKey>('dark');
   const [mapZoom, setMapZoom] = useState(0);
   const [showZoneDots, setShowZoneDots] = useState(true);
@@ -612,6 +614,15 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
             center={[p.lat, p.lng]}
             radius={5}
             pathOptions={{ color: '#e879f9', weight: 2, fill: true, fillColor: '#e879f9', fillOpacity: 0.5 }}
+            interactive={false}
+          />
+        ))}
+        {selectedPixels.map(p => (
+          <CircleMarker
+            key={`sel-${p.id}`}
+            center={[p.lat, p.lng]}
+            radius={5}
+            pathOptions={{ color: '#22d3ee', weight: 2, fill: true, fillColor: '#22d3ee', fillOpacity: 0.55 }}
             interactive={false}
           />
         ))}

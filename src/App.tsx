@@ -100,6 +100,7 @@ export default function App() {
   const [showBoundaryPanel, setShowBoundaryPanel] = useState(false);
   /** Edge·other pixels flagged as boundaries in the PCA-gap finder. */
   const [pcaBoundaryPixels, setPcaBoundaryPixels] = useState<{ id: string; lng: number; lat: number }[]>([]);
+  const [pcaSelectedPixels, setPcaSelectedPixels] = useState<{ id: string; lng: number; lat: number }[]>([]);
 
   // Step 7 — boundary prediction
   const [prediction, setPrediction] = useState<BoundaryPrediction | null>(null);
@@ -830,6 +831,7 @@ export default function App() {
     setShowPcaPanel(false);
     setHighlightPixel(null);
     setPcaBoundaryPixels([]);
+    setPcaSelectedPixels([]);
   }, []);
 
   const exportCsv = useCallback(() => {
@@ -1039,6 +1041,7 @@ export default function App() {
             preview={preview}
             clusterGrids={clusterGrids}
             boundaryPixels={pcaBoundaryPixels}
+            selectedPixels={pcaSelectedPixels}
             predictionOverlays={predictionOverlays}
             scenes={scenes}
             previewSceneId={previewSceneId}
@@ -1075,6 +1078,7 @@ export default function App() {
               highlightPixelId={highlightPixel?.id ?? null}
               onPickPixel={pickPcaPixel}
               onBoundaryPixels={setPcaBoundaryPixels}
+              onSelectPixels={setPcaSelectedPixels}
               onClose={closePcaPanel}
               onExportCsv={exportCsv}
             />

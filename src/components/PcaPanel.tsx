@@ -1,4 +1,4 @@
-import React, { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { X, Download, Loader2 } from 'lucide-react';
 import {
   ScatterChart,
@@ -283,11 +283,26 @@ function BoundaryHighlight({ points }: { points: { x: number; y: number }[] }) {
 /** Reports the chart's real plot-area aspect (width/height) so the parent can
  *  make the axes exactly equal-scale — then a data-circle renders as a true
  *  circle and the blob circles match the score precisely. */
-function PlotAspectProbe({ onAspect }: { onAspect: (a: number) => void }) {
+export interface PlotRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+function PlotAspectProbe({
+  onAspect,
+  onArea,
+}: {
+  onAspect: (a: number) => void;
+  onArea?: (r: PlotRect) => void;
+}) {
   const area = usePlotArea();
   useEffect(() => {
-    if (area && area.width > 0 && area.height > 0) onAspect(area.width / area.height);
-  }, [area?.width, area?.height, onAspect]);
+    if (area && area.width > 0 && area.height > 0) {
+      onAspect(area.width / area.height);
+      onArea?.({ x: area.x, y: area.y, width: area.width, height: area.height });
+    }
+  }, [area?.x, area?.y, area?.width, area?.height, onAspect, onArea]);
   return null;
 }
 
@@ -314,6 +329,8 @@ interface PcaPanelProps {
   onPickPixel: (pixel: PcaPickedPixel | null) => void;
   /** Edge·other pixels flagged as boundaries (PCA-gap finder) → shown on the map. */
   onBoundaryPixels?: (pixels: { id: string; lng: number; lat: number }[]) => void;
+  /** Pixels lassoed in the scatter → shown on the map. */
+  onSelectPixels?: (pixels: { id: string; lng: number; lat: number }[]) => void;
   /** Dimensionality-reduction method (re-runs the projection on change). */
   method: DrMethod;
   onMethodChange: (m: DrMethod) => void;
@@ -332,6 +349,7 @@ export default function PcaPanel({
   highlightPixelId,
   onPickPixel,
   onBoundaryPixels,
+  onSelectPixels,
   method,
   onMethodChange,
   onClose,
@@ -362,6 +380,23 @@ export default function PcaPanel({
     (a: number) => setMeasuredAspect(prev => (prev === null || Math.abs(prev - a) > 0.01 ? a : prev)),
     []
   );
+  // Exact plot rectangle (SVG coords), for the lasso's data↔pixel mapping.
+  const [plotArea, setPlotArea] = useState<PlotRect | null>(null);
+  const onPlotArea = useCallback(
+    (r: PlotRect) =>
+      setPlotArea(prev =>
+        !prev || Math.abs(prev.x - r.x) > 0.5 || Math.abs(prev.y - r.y) > 0.5 || Math.abs(prev.width - r.width) > 0.5 || Math.abs(prev.height - r.height) > 0.5
+          ? r
+          : prev
+      ),
+    []
+  );
+  // Lasso select: draw a freehand region in the scatter to pick many pixels.
+  const [lassoOn, setLassoOn] = useState(false);
+  const [lassoPath, setLassoPath] = useState<{ x: number; y: number }[]>([]);
+  const [lassoIds, setLassoIds] = useState<Set<string>>(new Set());
+  const lassoDrawing = useRef(false);
+  const lassoSvgRef = useRef<SVGSVGElement>(null);
 
   const hasPairs = useMemo(() => result.rows.some(r => r.properties?.pair_id != null), [result]);
   const hasMixing = useMemo(() => result.rows.some(r => typeof r.properties?.mix_frac_a === 'number'), [result]);
@@ -752,6 +787,73 @@ export default function PcaPanel({
     return { x: [cx - rx, cx + rx] as [number, number], y: [cy - ry, cy + ry] as [number, number] };
   }, [dataBounds, plotAspect]);
 
+  // ----- Lasso select -----------------------------------------------------------
+  // Map a data point (PCxX, PCxY) to a pixel in the chart's SVG frame. Uses the
+  // measured plot rectangle when available, else the deterministic estimate.
+  const dataToPixel = (dx: number, dy: number): { x: number; y: number } => {
+    const a = plotArea ?? { x: Y_AXIS_W, y: 10, width: plotW, height: plotH };
+    const [x0, x1] = domains.x;
+    const [y0, y1] = domains.y;
+    return {
+      x: a.x + ((dx - x0) / (x1 - x0 || 1)) * a.width,
+      y: a.y + ((y1 - dy) / (y1 - y0 || 1)) * a.height, // y axis points up
+    };
+  };
+  // Pointer position in the overlay's SVG coordinate frame (robust to CSS scale).
+  const svgPoint = (e: React.PointerEvent): { x: number; y: number } => {
+    const rect = lassoSvgRef.current!.getBoundingClientRect();
+    return {
+      x: ((e.clientX - rect.left) / (rect.width || 1)) * CHART_W,
+      y: ((e.clientY - rect.top) / (rect.height || 1)) * CHART_H,
+    };
+  };
+  const pointInPath = (pt: { x: number; y: number }, poly: { x: number; y: number }[]): boolean => {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const a = poly[i];
+      const b = poly[j];
+      if (a.y > pt.y !== b.y > pt.y && pt.x < ((b.x - a.x) * (pt.y - a.y)) / (b.y - a.y || 1e-9) + a.x) inside = !inside;
+    }
+    return inside;
+  };
+  const lassoDown = (e: React.PointerEvent) => {
+    if (!lassoOn) return;
+    e.preventDefault();
+    lassoSvgRef.current?.setPointerCapture(e.pointerId);
+    lassoDrawing.current = true;
+    setLassoPath([svgPoint(e)]);
+  };
+  const lassoMove = (e: React.PointerEvent) => {
+    if (!lassoDrawing.current) return;
+    const p = svgPoint(e);
+    setLassoPath(prev => (prev.length && Math.hypot(prev[prev.length - 1].x - p.x, prev[prev.length - 1].y - p.y) < 2 ? prev : [...prev, p]));
+  };
+  const lassoUp = () => {
+    if (!lassoDrawing.current) return;
+    lassoDrawing.current = false;
+    setLassoPath(path => {
+      if (path.length >= 3) {
+        const picked = points.filter(p => pointInPath(dataToPixel(p.x, p.y), path));
+        setLassoIds(new Set(picked.map(p => p.pixelId)));
+        onSelectPixels?.(picked.map(p => ({ id: p.pixelId, lng: p.row.lng, lat: p.row.lat })));
+      }
+      return [];
+    });
+  };
+  const clearLasso = () => {
+    setLassoIds(new Set());
+    setLassoPath([]);
+    onSelectPixels?.([]);
+  };
+  // Drop the selection when the projection changes (the cloud is different).
+  useEffect(() => {
+    setLassoIds(new Set());
+    setLassoPath([]);
+    onSelectPixels?.([]);
+  }, [result, pcX, pcY, onSelectPixels]);
+  // Clear the map markers when the panel unmounts.
+  useEffect(() => () => onSelectPixels?.([]), [onSelectPixels]);
+
   const toggleProjected = (zone: PixelZone) => {
     if (projectZones.includes(zone)) {
       if (projectZones.length === 1) return; // keep at least one class in the space
@@ -987,7 +1089,39 @@ export default function PcaPanel({
                     ))}
                 </select>
               </label>
+              <button
+                onClick={() => setLassoOn(v => !v)}
+                className={cn(
+                  'flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] transition-colors',
+                  lassoOn
+                    ? 'border-cyan-400/50 bg-cyan-400/15 text-cyan-200'
+                    : 'border-white/10 text-slate-500 hover:text-slate-300'
+                )}
+                title="Draw a region around points to select them and show them on the map"
+              >
+                <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth={1.6}>
+                  <path d="M8 2.5c3 0 5.5 1.8 5.5 4S11 10.5 8 10.5 2.5 8.7 2.5 6.5 5 2.5 8 2.5Z" strokeDasharray="2 2" />
+                  <path d="M5.5 10.5C5.5 12 4.7 13.5 3.5 13.5" />
+                  <circle cx="3.5" cy="13.7" r="1.1" fill="currentColor" stroke="none" />
+                </svg>
+                Lasso
+              </button>
+              {lassoIds.size > 0 && (
+                <span className="text-[11px] text-cyan-300">
+                  {lassoIds.size} selected ·{' '}
+                  <button onClick={clearLasso} className="underline decoration-dotted hover:text-cyan-100">
+                    clear
+                  </button>
+                </span>
+              )}
             </div>
+
+            {lassoOn && (
+              <p className="mb-2 text-[10px] leading-snug text-cyan-300/80">
+                Lasso on — drag a loop around points to select them; they’re ringed here and shown on the map. Toggle off
+                to pick single points again.
+              </p>
+            )}
 
             {canFindBoundary && (
               <div className="mb-2 rounded-md border border-fuchsia-500/25 bg-fuchsia-500/5 px-2.5 py-2">
@@ -1099,7 +1233,7 @@ export default function PcaPanel({
             )}
 
             <div
-              className="overflow-hidden rounded-xl ring-1 ring-inset ring-white/[0.06]"
+              className="relative overflow-hidden rounded-xl ring-1 ring-inset ring-white/[0.06]"
               style={{ background: 'radial-gradient(125% 90% at 50% -10%, #161d26 0%, #0c1014 60%)' }}
             >
             <ScatterChart width={CHART_W} height={CHART_H} margin={{ top: 10, right: 10, bottom: 10, left: 0 }}>
@@ -1146,7 +1280,7 @@ export default function PcaPanel({
                 />
                 {scatterEl}
                 {boundaryOn && <BoundaryHighlight points={boundaryHi} />}
-                <PlotAspectProbe onAspect={onAspect} />
+                <PlotAspectProbe onAspect={onAspect} onArea={onPlotArea} />
                 {boundaryOn && boundaryUnsup && boundary?.clusters && (
                   <BlobOverlay
                     clusters={boundary.clusters}
@@ -1156,6 +1290,35 @@ export default function PcaPanel({
                   />
                 )}
             </ScatterChart>
+            {/* Lasso overlay: captures the freehand draw and rings the picks. */}
+            <svg
+              ref={lassoSvgRef}
+              width={CHART_W}
+              height={CHART_H}
+              className="absolute left-0 top-0"
+              style={{ pointerEvents: lassoOn ? 'auto' : 'none', cursor: lassoOn ? 'crosshair' : 'default', touchAction: 'none' }}
+              onPointerDown={lassoDown}
+              onPointerMove={lassoMove}
+              onPointerUp={lassoUp}
+              onPointerLeave={lassoUp}
+            >
+              {lassoIds.size > 0 &&
+                points
+                  .filter(p => lassoIds.has(p.pixelId))
+                  .map(p => {
+                    const { x, y } = dataToPixel(p.x, p.y);
+                    return <circle key={p.pixelId} cx={x} cy={y} r={6} fill="none" stroke="#22d3ee" strokeWidth={1.8} />;
+                  })}
+              {lassoPath.length > 1 && (
+                <polygon
+                  points={lassoPath.map(p => `${p.x},${p.y}`).join(' ')}
+                  fill="#22d3ee22"
+                  stroke="#22d3ee"
+                  strokeWidth={1.5}
+                  strokeDasharray="4 3"
+                />
+              )}
+            </svg>
             </div>
 
             {/* Colour legend */}
