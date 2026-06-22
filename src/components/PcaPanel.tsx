@@ -15,8 +15,6 @@ import {
   Line,
   CartesianGrid,
   Symbols,
-  useXAxisScale,
-  useYAxisScale,
   usePlotArea,
 } from 'recharts';
 import { PcaRunResult } from '../lib/pca';
@@ -185,99 +183,6 @@ function silhouette(pts: { scores: number[] }[], asn: Int32Array, k: number, dim
     count++;
   }
   return count > 0 ? total / count : -1;
-}
-
-/**
- * Draws the k-means pure clusters found by the unsupervised boundary finder:
- * a cross at each centroid and a circle drawn at the flagging contour — the
- * blob's radius grown by the current threshold (the gap distance beyond the
- * edge at which a pixel is flagged). So the circle *is* the boundary; nothing
- * inside it is flagged. Rendered inside the ScatterChart so it can read the
- * axis scales (recharts v3 hooks).
- */
-function BlobOverlay({
-  clusters,
-  threshold,
-  showLines,
-  corridorDist,
-}: {
-  clusters: { c: number[]; r: number }[];
-  threshold: number;
-  showLines: boolean;
-  /** Half-width of the corridor band to draw (the direction threshold, data units). */
-  corridorDist: number;
-}) {
-  const xScale = useXAxisScale();
-  const yScale = useYAxisScale();
-  if (!xScale || !yScale) return null;
-  // Pixels per data unit, averaged over the two axes (near equal-scale).
-  const sx = Math.abs((xScale(1) as number) - (xScale(0) as number));
-  const sy = Math.abs((yScale(1) as number) - (yScale(0) as number));
-  const s = (sx + sy) / 2;
-  const px = (cl: { c: number[] }) => [xScale(cl.c[0]) as number, yScale(cl.c[1]) as number];
-  const band = 2 * corridorDist * s; // pixel width of the kept-corridor band
-  return (
-    <g style={{ pointerEvents: 'none' }}>
-      {/* The mixing corridors: between every pair of blob centroids, a faint
-          band the width of the direction threshold (the kept region) + the
-          centre line. */}
-      {showLines &&
-        clusters.flatMap((a, i) =>
-          clusters.slice(i + 1).map((b, j) => {
-            const [ax, ay] = px(a);
-            const [bx, by] = px(b);
-            if (![ax, ay, bx, by].every(isFinite)) return null;
-            return (
-              <g key={`l-${i}-${j}`}>
-                {band > 0.5 && (
-                  <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#38bdf8" strokeWidth={band} strokeLinecap="round" opacity={0.07} />
-                )}
-                <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#38bdf8" strokeWidth={1} strokeDasharray="2 4" opacity={0.45} />
-              </g>
-            );
-          })
-        )}
-      {clusters.map((cl, i) => {
-        // Centroid is already in the displayed (pcX, pcY) plane.
-        const cx = xScale(cl.c[0]) as number;
-        const cy = yScale(cl.c[1]) as number;
-        const r = (cl.r + threshold) * s; // flagging contour: dist − radius = threshold
-        if (!isFinite(cx) || !isFinite(cy) || !isFinite(r) || r <= 0) return null;
-        return (
-          <g key={i}>
-            <circle cx={cx} cy={cy} r={r} fill="none" stroke="#38bdf8" strokeWidth={1.5} strokeDasharray="5 4" opacity={0.6} />
-            <line x1={cx - 6} y1={cy} x2={cx + 6} y2={cy} stroke="#38bdf8" strokeWidth={1.5} />
-            <line x1={cx} y1={cy - 6} x2={cx} y2={cy + 6} stroke="#38bdf8" strokeWidth={1.5} />
-            <text x={cx + 8} y={cy - 8} fontSize={11} fontWeight={600} fill="#7dd3fc">
-              blob {i + 1}
-            </text>
-          </g>
-        );
-      })}
-    </g>
-  );
-}
-
-/**
- * Pink rings on the flagged boundary pixels, drawn as a light SVG layer inside
- * the chart (reads the axis scales). Kept separate from the main <Scatter> so
- * moving the threshold sliders only redraws these few rings, not the whole
- * point cloud.
- */
-function BoundaryHighlight({ points }: { points: { x: number; y: number }[] }) {
-  const xScale = useXAxisScale();
-  const yScale = useYAxisScale();
-  if (!xScale || !yScale || points.length === 0) return null;
-  return (
-    <g style={{ pointerEvents: 'none' }}>
-      {points.map((p, i) => {
-        const cx = xScale(p.x) as number;
-        const cy = yScale(p.y) as number;
-        if (!isFinite(cx) || !isFinite(cy)) return null;
-        return <circle key={i} cx={cx} cy={cy} r={7} fill="none" stroke="#e879f9" strokeWidth={2} />;
-      })}
-    </g>
-  );
 }
 
 /** Reports the chart's real plot-area aspect (width/height) so the parent can
@@ -793,15 +698,19 @@ export default function PcaPanel({
   // ----- Lasso select -----------------------------------------------------------
   // Map a data point (PCxX, PCxY) to a pixel in the chart's SVG frame. Uses the
   // measured plot rectangle when available, else the deterministic estimate.
+  const plotRect = plotArea ?? { x: Y_AXIS_W, y: 10, width: plotW, height: plotH };
   const dataToPixel = (dx: number, dy: number): { x: number; y: number } => {
-    const a = plotArea ?? { x: Y_AXIS_W, y: 10, width: plotW, height: plotH };
     const [x0, x1] = domains.x;
     const [y0, y1] = domains.y;
     return {
-      x: a.x + ((dx - x0) / (x1 - x0 || 1)) * a.width,
-      y: a.y + ((y1 - dy) / (y1 - y0 || 1)) * a.height, // y axis points up
+      x: plotRect.x + ((dx - x0) / (x1 - x0 || 1)) * plotRect.width,
+      y: plotRect.y + ((y1 - dy) / (y1 - y0 || 1)) * plotRect.height, // y axis points up
     };
   };
+  // Pixels per data unit (near-equal on both axes thanks to equal scaling) —
+  // for the blob circle radii drawn in the overlay.
+  const pxScale =
+    (plotRect.width / (domains.x[1] - domains.x[0] || 1) + plotRect.height / (domains.y[1] - domains.y[0] || 1)) / 2;
   // Pointer position in the overlay's SVG coordinate frame (robust to CSS scale).
   const svgPoint = (e: React.PointerEvent): { x: number; y: number } => {
     const rect = lassoSvgRef.current!.getBoundingClientRect();
@@ -942,6 +851,62 @@ export default function PcaPanel({
     const species = props.crp_lbl ?? props.species;
     return species && props.NewID !== undefined ? `${species} · ${props.NewID}` : String(row.polygonId ?? row.pixelId);
   };
+
+  // The chart itself depends only on the point cloud and axes — never on the
+  // boundary sliders (those drive the external overlay below). Memoizing it on
+  // those inputs keeps recharts from re-rendering the thousands of points on
+  // every slider tick.
+  const chartEl = useMemo(
+    () => (
+      <ScatterChart width={CHART_W} height={CHART_H} margin={{ top: 10, right: 10, bottom: 10, left: 0 }}>
+        <CartesianGrid stroke="#ffffff0a" strokeDasharray="3 6" />
+        <XAxis
+          type="number"
+          dataKey="x"
+          name={pcLabel(pcX)}
+          domain={domains.x}
+          height={X_AXIS_H}
+          tickFormatter={(v: number) => v.toFixed(2)}
+          tick={{ fill: '#64748b', fontSize: 11 }}
+          tickLine={false}
+          axisLine={{ stroke: '#ffffff14' }}
+          label={{ value: pcLabel(pcX), position: 'insideBottom', offset: -5, fill: '#94a3b8', fontSize: 12 }}
+        />
+        <YAxis
+          type="number"
+          dataKey="y"
+          name={pcLabel(pcY)}
+          domain={domains.y}
+          width={Y_AXIS_W}
+          tickFormatter={(v: number) => v.toFixed(2)}
+          tick={{ fill: '#64748b', fontSize: 11 }}
+          tickLine={false}
+          axisLine={{ stroke: '#ffffff14' }}
+          label={{ value: pcLabel(pcY), angle: -90, position: 'insideLeft', fill: '#94a3b8', fontSize: 12 }}
+        />
+        <ZAxis range={[32, 32]} />
+        <Tooltip
+          cursor={{ strokeDasharray: '3 3', stroke: '#475569' }}
+          content={({ payload }: any) => {
+            const p = payload?.[0]?.payload;
+            if (!p) return null;
+            return (
+              <div className="rounded-md border border-white/10 bg-[#11151a] px-2 py-1 text-[11px] text-slate-300">
+                <div>{pickedLabel(p.row)}</div>
+                <div className="text-slate-500">
+                  {p.row.zone} · {p.x.toFixed(3)}, {p.y.toFixed(3)} · click to locate
+                </div>
+              </div>
+            );
+          }}
+        />
+        {scatterEl}
+        <PlotAspectProbe onAspect={onAspect} onArea={onPlotArea} />
+      </ScatterChart>
+    ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [scatterEl, domains, CHART_W, CHART_H, pcX, pcY, result, onAspect, onPlotArea]
+  );
 
   return (
     <div
@@ -1248,61 +1213,10 @@ export default function PcaPanel({
               className="relative overflow-hidden rounded-xl ring-1 ring-inset ring-white/[0.06]"
               style={{ background: 'radial-gradient(125% 90% at 50% -10%, #161d26 0%, #0c1014 60%)' }}
             >
-            <ScatterChart width={CHART_W} height={CHART_H} margin={{ top: 10, right: 10, bottom: 10, left: 0 }}>
-                <CartesianGrid stroke="#ffffff0a" strokeDasharray="3 6" />
-                <XAxis
-                  type="number"
-                  dataKey="x"
-                  name={pcLabel(pcX)}
-                  domain={domains.x}
-                  height={X_AXIS_H}
-                  tickFormatter={(v: number) => v.toFixed(2)}
-                  tick={{ fill: '#64748b', fontSize: 11 }}
-                  tickLine={false}
-                  axisLine={{ stroke: '#ffffff14' }}
-                  label={{ value: pcLabel(pcX), position: 'insideBottom', offset: -5, fill: '#94a3b8', fontSize: 12 }}
-                />
-                <YAxis
-                  type="number"
-                  dataKey="y"
-                  name={pcLabel(pcY)}
-                  domain={domains.y}
-                  width={Y_AXIS_W}
-                  tickFormatter={(v: number) => v.toFixed(2)}
-                  tick={{ fill: '#64748b', fontSize: 11 }}
-                  tickLine={false}
-                  axisLine={{ stroke: '#ffffff14' }}
-                  label={{ value: pcLabel(pcY), angle: -90, position: 'insideLeft', fill: '#94a3b8', fontSize: 12 }}
-                />
-                <ZAxis range={[32, 32]} />
-                <Tooltip
-                  cursor={{ strokeDasharray: '3 3', stroke: '#475569' }}
-                  content={({ payload }) => {
-                    const p = payload?.[0]?.payload;
-                    if (!p) return null;
-                    return (
-                      <div className="rounded-md border border-white/10 bg-[#11151a] px-2 py-1 text-[11px] text-slate-300">
-                        <div>{pickedLabel(p.row)}</div>
-                        <div className="text-slate-500">
-                          {p.row.zone} · {p.x.toFixed(3)}, {p.y.toFixed(3)} · click to locate
-                        </div>
-                      </div>
-                    );
-                  }}
-                />
-                {scatterEl}
-                {boundaryOn && <BoundaryHighlight points={boundaryHi} />}
-                <PlotAspectProbe onAspect={onAspect} onArea={onPlotArea} />
-                {boundaryOn && boundaryUnsup && boundary?.clusters && (
-                  <BlobOverlay
-                    clusters={boundary.clusters}
-                    threshold={dBoundaryT}
-                    showLines={boundaryDir}
-                    corridorDist={boundaryDir ? dBoundaryDirDist : 0}
-                  />
-                )}
-            </ScatterChart>
-            {/* Lasso overlay: captures the freehand draw and rings the picks. */}
+            {chartEl}
+            {/* Overlay: the boundary/blob visuals + the freehand lasso, drawn in
+                pixel space (dataToPixel) on top of the chart. The threshold
+                sliders redraw only this layer, never the memoized point cloud. */}
             <svg
               ref={lassoSvgRef}
               width={CHART_W}
@@ -1314,22 +1228,70 @@ export default function PcaPanel({
               onPointerUp={lassoUp}
               onPointerLeave={lassoUp}
             >
-              {lassoIds.size > 0 &&
-                points
-                  .filter(p => lassoIds.has(p.pixelId))
-                  .map(p => {
-                    const { x, y } = dataToPixel(p.x, p.y);
-                    return <circle key={p.pixelId} cx={x} cy={y} r={6} fill="none" stroke="#22d3ee" strokeWidth={1.8} />;
+              {lassoOn && <rect x={0} y={0} width={CHART_W} height={CHART_H} fill="transparent" />}
+              <g style={{ pointerEvents: 'none' }}>
+                {/* Unsupervised pure-cluster circles + mixing corridors. */}
+                {boundaryOn &&
+                  boundaryUnsup &&
+                  boundary?.clusters &&
+                  (() => {
+                    const clusters = boundary!.clusters!;
+                    return (
+                      <>
+                        {boundaryDir &&
+                          clusters.flatMap((a, i) =>
+                            clusters.slice(i + 1).map((b, j) => {
+                              const A = dataToPixel(a.c[0], a.c[1]);
+                              const B = dataToPixel(b.c[0], b.c[1]);
+                              if (![A.x, A.y, B.x, B.y].every(Number.isFinite)) return null;
+                              const band = 2 * dBoundaryDirDist * pxScale;
+                              return (
+                                <g key={`corr-${i}-${j}`}>
+                                  {band > 0.5 && (
+                                    <line x1={A.x} y1={A.y} x2={B.x} y2={B.y} stroke="#38bdf8" strokeWidth={band} strokeLinecap="round" opacity={0.07} />
+                                  )}
+                                  <line x1={A.x} y1={A.y} x2={B.x} y2={B.y} stroke="#38bdf8" strokeWidth={1} strokeDasharray="2 4" opacity={0.45} />
+                                </g>
+                              );
+                            })
+                          )}
+                        {clusters.map((cl, i) => {
+                          const c = dataToPixel(cl.c[0], cl.c[1]);
+                          const r = (cl.r + dBoundaryT) * pxScale;
+                          if (!Number.isFinite(c.x) || !Number.isFinite(c.y) || !Number.isFinite(r) || r <= 0) return null;
+                          return (
+                            <g key={`blob-${i}`}>
+                              <circle cx={c.x} cy={c.y} r={r} fill="none" stroke="#38bdf8" strokeWidth={1.5} strokeDasharray="5 4" opacity={0.6} />
+                              <line x1={c.x - 6} y1={c.y} x2={c.x + 6} y2={c.y} stroke="#38bdf8" strokeWidth={1.5} />
+                              <line x1={c.x} y1={c.y - 6} x2={c.x} y2={c.y + 6} stroke="#38bdf8" strokeWidth={1.5} />
+                              <text x={c.x + 8} y={c.y - 8} fontSize={11} fontWeight={600} fill="#7dd3fc">
+                                blob {i + 1}
+                              </text>
+                            </g>
+                          );
+                        })}
+                      </>
+                    );
+                  })()}
+                {/* Flagged boundary pixels. */}
+                {boundaryOn &&
+                  boundaryHi.map((p, i) => {
+                    const c = dataToPixel(p.x, p.y);
+                    if (!Number.isFinite(c.x) || !Number.isFinite(c.y)) return null;
+                    return <circle key={`hi-${i}`} cx={c.x} cy={c.y} r={7} fill="none" stroke="#e879f9" strokeWidth={2} />;
                   })}
-              {lassoPath.length > 1 && (
-                <polygon
-                  points={lassoPath.map(p => `${p.x},${p.y}`).join(' ')}
-                  fill="#22d3ee22"
-                  stroke="#22d3ee"
-                  strokeWidth={1.5}
-                  strokeDasharray="4 3"
-                />
-              )}
+                {/* Lassoed pixels + the in-progress loop. */}
+                {lassoIds.size > 0 &&
+                  points
+                    .filter(p => lassoIds.has(p.pixelId))
+                    .map(p => {
+                      const { x, y } = dataToPixel(p.x, p.y);
+                      return <circle key={p.pixelId} cx={x} cy={y} r={6} fill="none" stroke="#22d3ee" strokeWidth={1.8} />;
+                    })}
+                {lassoPath.length > 1 && (
+                  <polygon points={lassoPath.map(p => `${p.x},${p.y}`).join(' ')} fill="#22d3ee22" stroke="#22d3ee" strokeWidth={1.5} strokeDasharray="4 3" />
+                )}
+              </g>
             </svg>
             </div>
 
