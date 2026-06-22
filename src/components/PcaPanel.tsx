@@ -397,6 +397,9 @@ export default function PcaPanel({
   const [lassoIds, setLassoIds] = useState<Set<string>>(new Set());
   const lassoDrawing = useRef(false);
   const lassoSvgRef = useRef<SVGSVGElement>(null);
+  // The live path is kept in a ref too, so pointerup reads the final points
+  // without doing side-effects inside a setState updater.
+  const lassoPathRef = useRef<{ x: number; y: number }[]>([]);
 
   const hasPairs = useMemo(() => result.rows.some(r => r.properties?.pair_id != null), [result]);
   const hasMixing = useMemo(() => result.rows.some(r => typeof r.properties?.mix_frac_a === 'number'), [result]);
@@ -821,33 +824,41 @@ export default function PcaPanel({
     e.preventDefault();
     lassoSvgRef.current?.setPointerCapture(e.pointerId);
     lassoDrawing.current = true;
-    setLassoPath([svgPoint(e)]);
+    const start = [svgPoint(e)];
+    lassoPathRef.current = start;
+    setLassoPath(start);
   };
   const lassoMove = (e: React.PointerEvent) => {
     if (!lassoDrawing.current) return;
     const p = svgPoint(e);
-    setLassoPath(prev => (prev.length && Math.hypot(prev[prev.length - 1].x - p.x, prev[prev.length - 1].y - p.y) < 2 ? prev : [...prev, p]));
+    const prev = lassoPathRef.current;
+    if (prev.length && Math.hypot(prev[prev.length - 1].x - p.x, prev[prev.length - 1].y - p.y) < 2) return;
+    const next = [...prev, p];
+    lassoPathRef.current = next;
+    setLassoPath(next);
   };
   const lassoUp = () => {
     if (!lassoDrawing.current) return;
     lassoDrawing.current = false;
-    setLassoPath(path => {
-      if (path.length >= 3) {
-        const picked = points.filter(p => pointInPath(dataToPixel(p.x, p.y), path));
-        setLassoIds(new Set(picked.map(p => p.pixelId)));
-        onSelectPixels?.(picked.map(p => ({ id: p.pixelId, lng: p.row.lng, lat: p.row.lat })));
-      }
-      return [];
-    });
+    const path = lassoPathRef.current;
+    if (path.length >= 3) {
+      const picked = points.filter(p => pointInPath(dataToPixel(p.x, p.y), path));
+      setLassoIds(new Set(picked.map(p => p.pixelId)));
+      onSelectPixels?.(picked.map(p => ({ id: p.pixelId, lng: p.row.lng, lat: p.row.lat })));
+    }
+    lassoPathRef.current = [];
+    setLassoPath([]);
   };
   const clearLasso = () => {
     setLassoIds(new Set());
+    lassoPathRef.current = [];
     setLassoPath([]);
     onSelectPixels?.([]);
   };
   // Drop the selection when the projection changes (the cloud is different).
   useEffect(() => {
     setLassoIds(new Set());
+    lassoPathRef.current = [];
     setLassoPath([]);
     onSelectPixels?.([]);
   }, [result, pcX, pcY, onSelectPixels]);
@@ -1220,11 +1231,12 @@ export default function PcaPanel({
                           onChange={e => setBoundaryT(Number(e.target.value))}
                           className="w-full accent-fuchsia-500"
                         />
-                        <p className="text-[10px] leading-relaxed text-slate-600">
-                          {boundaryUnsup
-                            ? 'No labels: k-means finds k pure clusters, each drawn as a blue circle (centroid + its largest 2σ radius). A pixel is scored by its distance to the nearest circle *edge* — negative inside a blob, positive out in the gap — so the threshold is the gap distance beyond the edge at which a pixel counts as a boundary (0 = the circle itself). The circles grow with the threshold to match. “Between two blobs” adds a direction test: it keeps a flagged pixel only when it lies close to a *corridor* — the line between a pair of blobs it sits between (the dashed lines) — within the slider distance. So a pixel that drifts off in another direction, away from every corridor, drops out. k is auto-picked (best silhouette over 2–6 clusters); override it if the split looks wrong. “% real edges” is how often a flagged pixel is genuinely an edge·other pixel.'
-                            : 'Higher keeps only the pixels most in the middle — farthest from any pure-species signature. Flagged pixels are ringed here and on the map.'}
-                        </p>
+                        {!boundaryUnsup && (
+                          <p className="text-[10px] leading-relaxed text-slate-600">
+                            Higher keeps only the pixels most in the middle — farthest from any pure-species signature.
+                            Flagged pixels are ringed here and on the map.
+                          </p>
+                        )}
                       </>
                     )}
                   </div>
