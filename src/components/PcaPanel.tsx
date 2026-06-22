@@ -349,9 +349,6 @@ export default function PcaPanel({
   // of a corridor (the segment between a pair of blobs they project between).
   const [boundaryDir, setBoundaryDir] = useState(false);
   const [boundaryDirDist, setBoundaryDirDist] = useState<number | null>(null); // null = default
-  // Spatial regularization: neighbouring pixels likely share a class, so smooth
-  // the flags over each pixel's grid neighbours (0 = off). Mean-field MRF.
-  const [boundarySmooth, setBoundarySmooth] = useState(0);
   // Real plot-area aspect (width/height), measured from the chart, for exact
   // equal-scale axes so the blob circles render as true circles.
   const [measuredAspect, setMeasuredAspect] = useState<number | null>(null);
@@ -587,113 +584,19 @@ export default function PcaPanel({
   // thousands of points (React renders the heavy update at lower priority).
   const dBoundaryT = useDeferredValue(boundaryT_);
   const dBoundaryDirDist = useDeferredValue(boundaryDirDist_);
-  const dBoundarySmooth = useDeferredValue(boundarySmooth);
-
-  // Grid-neighbour graph among the scored pixels, from their true map positions
-  // (for the spatial smoothing). A pixel's neighbours are those within ~1.6× the
-  // local pixel spacing — the immediate cells of the regular analysis grid.
-  // Built once per projection; null when smoothing can't apply.
-  const spatialNeighbors = useMemo(() => {
-    if (!boundaryOn || !boundary) return null;
-    const ids: string[] = [];
-    const xs: number[] = [];
-    const ys: number[] = [];
-    const lat0 = result.rows[0]?.lat ?? 50.7;
-    const kx = 111320 * Math.cos((lat0 * Math.PI) / 180);
-    const ky = 110540;
-    for (const r of result.rows) {
-      if (!boundary.scoreById.has(r.pixelId)) continue;
-      ids.push(r.pixelId);
-      xs.push(r.lng * kx);
-      ys.push(r.lat * ky);
-    }
-    const n = ids.length;
-    if (n < 3) return null;
-    const CELL = 40; // metres; ≥ the largest neighbour radius below
-    const key = (cx: number, cy: number) => cx * 100003 + cy;
-    const buckets = new Map<number, number[]>();
-    for (let i = 0; i < n; i++) {
-      const k = key(Math.floor(xs[i] / CELL), Math.floor(ys[i] / CELL));
-      (buckets.get(k) ?? buckets.set(k, []).get(k)!).push(i);
-    }
-    const around = (i: number): number[] => {
-      const cx = Math.floor(xs[i] / CELL);
-      const cy = Math.floor(ys[i] / CELL);
-      const out: number[] = [];
-      for (let dx = -1; dx <= 1; dx++)
-        for (let dy = -1; dy <= 1; dy++) {
-          const b = buckets.get(key(cx + dx, cy + dy));
-          if (b) out.push(...b);
-        }
-      return out;
-    };
-    // Pixel spacing = median nearest-neighbour distance over a sample → radius.
-    const nn: number[] = [];
-    const step = Math.max(1, Math.floor(n / 200));
-    for (let i = 0; i < n; i += step) {
-      let best = Infinity;
-      for (const j of around(i)) {
-        if (j === i) continue;
-        const d = Math.hypot(xs[i] - xs[j], ys[i] - ys[j]);
-        if (d < best) best = d;
-      }
-      if (isFinite(best)) nn.push(best);
-    }
-    nn.sort((a, b) => a - b);
-    const d0 = nn[Math.floor(nn.length / 2)] || 10;
-    const R2 = Math.min(38, Math.max(8, d0 * 1.6)) ** 2;
-    const graph = new Map<string, string[]>();
-    for (let i = 0; i < n; i++) {
-      const list: string[] = [];
-      for (const j of around(i)) {
-        if (j === i) continue;
-        const dx = xs[i] - xs[j];
-        const dy = ys[i] - ys[j];
-        if (dx * dx + dy * dy <= R2) list.push(ids[j]);
-      }
-      graph.set(ids[i], list);
-    }
-    return graph;
-  }, [boundaryOn, boundary, result]);
-
   const boundaryIds = useMemo(() => {
     const set = new Set<string>();
     if (!boundaryOn || !boundary) return set;
     const dir = boundary.dirById;
     const gate = boundaryDir && dir;
-    const raw = new Set<string>();
     for (const [id, sc] of boundary.scoreById) {
       if (sc < dBoundaryT) continue;
       // Direction gate: keep only pixels close to a corridor between two blobs.
       if (gate && (dir.get(id) ?? Infinity) > dBoundaryDirDist) continue;
-      raw.add(id);
+      set.add(id);
     }
-    // Spatial regularization (Tobler's prior — neighbours likely share a class):
-    // a few mean-field passes on the binary flag over the grid neighbours, so
-    // isolated specks fade below ½ and coherent boundary bands fill in.
-    if (dBoundarySmooth <= 0 || !spatialNeighbors) return raw;
-    // Map the 0–1 slider to a gentle per-pass blend: even at full strength a
-    // 2-px band (the ~20 m buffer) is preserved while isolated specks fade out.
-    const beta = dBoundarySmooth * 0.45;
-    let f = new Map<string, number>();
-    for (const id of boundary.scoreById.keys()) f.set(id, raw.has(id) ? 1 : 0);
-    for (let it = 0; it < 3; it++) {
-      const nf = new Map<string, number>();
-      for (const [id, v] of f) {
-        const nb = spatialNeighbors.get(id);
-        if (!nb || nb.length === 0) {
-          nf.set(id, v);
-          continue;
-        }
-        let s = 0;
-        for (const j of nb) s += f.get(j) ?? 0;
-        nf.set(id, (1 - beta) * v + beta * (s / nb.length));
-      }
-      f = nf;
-    }
-    for (const [id, v] of f) if (v >= 0.5) set.add(id);
     return set;
-  }, [boundaryOn, boundary, dBoundaryT, boundaryDir, dBoundaryDirDist, dBoundarySmooth, spatialNeighbors]);
+  }, [boundaryOn, boundary, dBoundaryT, boundaryDir, dBoundaryDirDist]);
 
   // Validation: of the flagged pixels, how many are actually labelled edge·other
   // (the real boundaries). Meaningful in unsupervised mode — the finder didn't
@@ -1137,27 +1040,6 @@ export default function PcaPanel({
                           onChange={e => setBoundaryT(Number(e.target.value))}
                           className="w-full accent-fuchsia-500"
                         />
-                        <label className="mt-1 flex items-center justify-between gap-2 text-[11px] text-slate-500">
-                          <span>
-                            Spatial smoothing{' '}
-                            {boundarySmooth > 0 && <span className="text-fuchsia-300">{Math.round(boundarySmooth * 100)}%</span>}
-                          </span>
-                          <input
-                            type="range"
-                            min={0}
-                            max={1}
-                            step={0.05}
-                            value={boundarySmooth}
-                            onChange={e => setBoundarySmooth(Number(e.target.value))}
-                            className="w-40 accent-fuchsia-500"
-                          />
-                        </label>
-                        <p className="text-[10px] leading-relaxed text-slate-600">
-                          <span className="text-slate-500">Spatial smoothing</span> uses Tobler's prior — pixels next to
-                          each other likely share a class. It averages each flag over its neighbours on the analysis
-                          grid (a few mean-field passes), so isolated specks drop out and coherent boundary bands fill
-                          in. 0 = off; raise it to clean a noisy result.
-                        </p>
                         <p className="text-[10px] leading-relaxed text-slate-600">
                           {boundaryUnsup
                             ? 'No labels: k-means finds k pure clusters, each drawn as a blue circle (centroid + its largest 2σ radius). A pixel is scored by its distance to the nearest circle *edge* — negative inside a blob, positive out in the gap — so the threshold is the gap distance beyond the edge at which a pixel counts as a boundary (0 = the circle itself). The circles grow with the threshold to match. “Between two blobs” adds a direction test: it keeps a flagged pixel only when it lies close to a *corridor* — the line between a pair of blobs it sits between (the dashed lines) — within the slider distance. So a pixel that drifts off in another direction, away from every corridor, drops out. k is auto-picked (best silhouette over 2–6 clusters); override it if the split looks wrong. “% real edges” is how often a flagged pixel is genuinely an edge·other pixel.'
