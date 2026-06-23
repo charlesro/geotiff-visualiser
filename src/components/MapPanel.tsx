@@ -49,35 +49,35 @@ function drawShapePath(ctx: CanvasRenderingContext2D, shape: string, x: number, 
   }
 }
 
-// A CircleMarker that draws an arbitrary species shape on the canvas renderer
-// instead of a circle — same fast path as the dots, so the species shape on the
-// map matches the PCA scatter. Built lazily so SSR/import order can't break it.
-let ShapeMarkerClass: any = null;
-function shapeMarker(latlng: L.LatLngExpression, options: any): L.CircleMarker {
-  if (!ShapeMarkerClass) {
-    ShapeMarkerClass = (L.CircleMarker as any).extend({
-      options: { shape: 'circle' },
-      _updatePath() {
-        // Defensive: this runs on the canvas renderer's draw loop and can be
-        // hit mid-teardown (hot reload, layer removal). A draw must never throw
-        // up into React and blank the app — fall back to nothing on any gap.
+// A canvas renderer that draws each CircleMarker as its `shape` option instead
+// of a circle, so the map pixel dots carry the same species shape as the PCA
+// scatter. Overriding the renderer's own `_updateCircle` is the well-defined
+// hook (the marker stays an ordinary CircleMarker); used only for the dots, so
+// the other circle markers (highlights, box select) stay round.
+let ShapeCanvasClass: any = null;
+function makeShapeRenderer(): any {
+  if (!ShapeCanvasClass) {
+    ShapeCanvasClass = (L.Canvas as any).extend({
+      _updateCircle(layer: any) {
+        // Mirrors L.Canvas._updateCircle but draws the shape. Guarded so a draw
+        // mid-teardown (hot reload, removal) can never throw up into React.
         try {
-          const renderer = this._renderer;
-          const ctx: CanvasRenderingContext2D | undefined = renderer && renderer._ctx;
-          const p = this._point;
-          if (!renderer || !renderer._drawing || !ctx || !p || this._empty()) return;
-          renderer._drawnLayers[this._leaflet_id] = this;
-          const r = Math.max(Math.round(this._radius), 1);
+          if (!this._drawing || layer._empty()) return;
+          const p = layer._point;
+          const ctx: CanvasRenderingContext2D = this._ctx;
+          if (!p || !ctx) return;
+          const r = Math.max(Math.round(layer._radius), 1);
+          this._drawnLayers[layer._leaflet_id] = layer;
           ctx.beginPath();
-          drawShapePath(ctx, this.options.shape, p.x, p.y, r);
-          renderer._fillStroke(ctx, this);
+          drawShapePath(ctx, layer.options.shape || 'circle', p.x, p.y, r);
+          this._fillStroke(ctx, layer);
         } catch {
           /* never crash the app over a single marker draw */
         }
       },
     });
   }
-  return new ShapeMarkerClass(latlng, options);
+  return new ShapeCanvasClass();
 }
 
 export interface ScenePreview {
@@ -459,6 +459,8 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
     [polygons, selectedIds, clusterVersion, polygonMode]
   );
   const zonesKey = useMemo(() => (zones ? Date.now() : 0), [zones]);
+  // One canvas renderer that draws the zone dots as species shapes.
+  const shapeRenderer = useMemo(() => makeShapeRenderer(), []);
 
   // Legend data for the active polygon encoding.
   const speciesLegend = useMemo<[string, number][]>(() => {
@@ -556,9 +558,10 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
     if (showMixing && props.zone === 'edge_other_species' && typeof props.mix_frac_a === 'number') {
       fill = mixHexColors(speciesColor(props.mix_b_species), speciesColor(props.mix_a_species), props.mix_frac_a);
     }
-    return shapeMarker(latlng, {
+    return L.circleMarker(latlng, {
       radius: 3.5,
       shape: speciesSymbol(props.crp_lbl ?? props.species), // same shape as the PCA scatter
+      renderer: shapeRenderer, // draws the shape, not a circle
       stroke: true,
       color: '#0b0e11',
       weight: 0.8,
@@ -566,7 +569,7 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
       fillColor: fill,
       fillOpacity: 0.95,
       interactive: false,
-    });
+    } as any);
   };
 
   const boundaryStyle = {
