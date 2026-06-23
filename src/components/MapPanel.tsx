@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { MapContainer, TileLayer, GeoJSON, ImageOverlay, CircleMarker, ScaleControl, useMap, useMapEvents } from 'react-leaflet';
+import { MapContainer, TileLayer, GeoJSON, ImageOverlay, CircleMarker, Pane, ScaleControl, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { Bbox } from '../lib/geo';
@@ -569,16 +569,27 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
           <GeoJSON key={polygonsKey} data={polygons} style={polygonStyle} onEachFeature={onEachPolygon} />
         )}
 
+        {/* Field outlines, redrawn in a top pane (z-index above the overlay and
+            marker panes) so they sit above EVERYTHING — dots, boundary markers,
+            selection — and never get covered. */}
+        {polygons && (
+          <Pane name="field-outlines" style={{ zIndex: 640 }}>
+            <GeoJSON
+              key={`outline-${polygonsKey}`}
+              data={polygons}
+              style={outlineStyle}
+              interactive={false}
+              pane="field-outlines"
+            />
+          </Pane>
+        )}
+
         {zones && (
           <>
             {showZoneDots && (
               <>
                 <GeoJSON key={`zone-edge-${zonesKey}-${showMixing ? 'mix' : 'cls'}`} data={zones.edge} pointToLayer={pixelToMarker} />
                 <GeoJSON key={`zone-interior-${zonesKey}`} data={zones.interior} pointToLayer={pixelToMarker} />
-                {/* Re-draw the field contours above the dots so they stay visible. */}
-                {polygons && (
-                  <GeoJSON key={`outline-${polygonsKey}`} data={polygons} style={outlineStyle} interactive={false} />
-                )}
               </>
             )}
             <GeoJSON
