@@ -146,6 +146,8 @@ export default function App() {
   const hydratedRef = useRef(false);
   /** The scenes array that already sits in the cache — skip re-saving it. */
   const persistedScenesRef = useRef<RasterLayer[] | null>(null);
+  /** The zones object already in the cache — skip re-saving the just-restored one. */
+  const persistedZonesRef = useRef<ZoneExtraction | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -166,6 +168,12 @@ export default function App() {
           setPartialDates(prev => prev || series.partialDates || 0);
           setHeterogeneous(prev => prev || series.heterogeneous || false);
           setFetchedSelectionKey(prev => prev ?? series.fetchedSelectionKey ?? null);
+        }
+        const zoneCache = await cacheGet<{ zones: ZoneExtraction; key: string | null }>('zones');
+        if (zoneCache?.zones) {
+          persistedZonesRef.current = zoneCache.zones;
+          setZones(prev => prev ?? zoneCache.zones);
+          setZonesSelectionKey(prev => (prev !== null ? prev : zoneCache.key ?? null));
         }
         const preview = await cacheGet<string>('preview');
         if (preview) setPreviewSceneId(prev => prev ?? preview);
@@ -214,6 +222,22 @@ export default function App() {
     if (!hydratedRef.current) return;
     cacheSet('preview', previewSceneId);
   }, [previewSceneId]);
+
+  // The extracted zones (pixel features per class) survive a reload too — they
+  // can be the slowest thing to recompute. Debounced; large but plain data.
+  useEffect(() => {
+    if (!hydratedRef.current) return;
+    if (!zones) {
+      cacheDelete('zones');
+      return;
+    }
+    if (zones === persistedZonesRef.current) return; // just restored — already cached
+    const t = setTimeout(() => {
+      persistedZonesRef.current = zones;
+      cacheSet('zones', { zones, key: zonesSelectionKey });
+    }, 800);
+    return () => clearTimeout(t);
+  }, [zones, zonesSelectionKey]);
 
   // One cancellation handle for whichever operation is currently running.
   // Stop flips the flag (polled by the long loops) and aborts in-flight
@@ -266,6 +290,27 @@ export default function App() {
     setPredictError(null);
     clearFromZones();
   }, [clearFromZones]);
+
+  // Single-step clears, for the per-step reset buttons (each clears its own
+  // output; the cascade above already drops everything downstream).
+  const clearPolygons = useCallback(() => {
+    setPolygons(null);
+    setSourceLabel('');
+    setSelectedIds(new Set());
+    setPolygonsError(null);
+    clearFromImagery();
+  }, [clearFromImagery]);
+
+  const clearPca = useCallback(() => {
+    setPcaResult(null);
+    setPcaError(null);
+    setShowPcaPanel(false);
+  }, []);
+
+  const clearPrediction = useCallback(() => {
+    setPrediction(null);
+    setPredictError(null);
+  }, []);
 
   // ----- Step 1 handlers -----------------------------------------------------
 
@@ -861,6 +906,8 @@ export default function App() {
         : 'Load from database or file',
       enabled: true,
       done: selectedIds.size > 0,
+      onReset: clearPolygons,
+      canReset: polygons !== null,
       content: (
         <PolygonsStep
           polygons={polygons}
@@ -885,6 +932,8 @@ export default function App() {
       summary: scenes.length > 0 ? `${scenes.length} scenes fetched` : 'Fetch imagery over the selection',
       enabled: selectedIds.size > 0,
       done: scenes.length > 0,
+      onReset: clearFromImagery,
+      canReset: scenes.length > 0,
       content: (
         <ImageryStep
           scenes={scenes}
@@ -913,6 +962,8 @@ export default function App() {
         : 'Split pixels by distance to boundary',
       enabled: scenes.length > 0,
       done: zones !== null,
+      onReset: clearFromZones,
+      canReset: zones !== null,
       content: (
         <ZonesStep
           zones={zones}
@@ -937,6 +988,8 @@ export default function App() {
         : 'Isolate growth scenarios within each species',
       enabled: zones !== null,
       done: clustering !== null,
+      onReset: clearFromClustering,
+      canReset: clustering !== null,
       content: (
         <ClusterStep
           zones={zones}
@@ -955,6 +1008,8 @@ export default function App() {
         : 'Principal components of the pixel series',
       enabled: zones !== null,
       done: pcaResult !== null,
+      onReset: clearPca,
+      canReset: pcaResult !== null,
       content: (
         <PcaStep
           zones={zones}
@@ -993,6 +1048,8 @@ export default function App() {
         : 'Predict field boundaries from the mixing',
       enabled: scenes.length >= 2,
       done: prediction !== null,
+      onReset: clearPrediction,
+      canReset: prediction !== null,
       content: (
         <BoundaryPredictStep
           zones={zones}

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Check, ChevronDown, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { Check, ChevronDown, PanelLeftClose, PanelLeftOpen, RotateCcw } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 /**
@@ -16,6 +16,10 @@ export interface StepDescriptor {
   enabled: boolean;
   done: boolean;
   content: React.ReactNode;
+  /** Clears just this step's output (and the steps that depend on it). */
+  onReset?: () => void;
+  /** Whether there is anything to reset right now. */
+  canReset?: boolean;
 }
 
 export default function Sidebar({
@@ -119,7 +123,18 @@ export default function Sidebar({
                 />
               </button>
               {/* Hidden, not unmounted, when closed: the form state survives. */}
-              <div className={cn('space-y-3 px-4 pb-4 pt-1', !open && 'hidden')}>{step.content}</div>
+              <div className={cn('space-y-3 px-4 pb-4 pt-1', !open && 'hidden')}>
+                {step.onReset && step.canReset && (
+                  <button
+                    onClick={step.onReset}
+                    title="Clear this step's output and the steps that depend on it"
+                    className="flex items-center gap-1.5 rounded-md border border-white/10 px-2 py-1 text-[11px] text-slate-400 transition-colors hover:border-rose-400/40 hover:text-rose-300"
+                  >
+                    <RotateCcw className="h-3 w-3" /> Reset this step
+                  </button>
+                )}
+                {step.content}
+              </div>
             </section>
           );
         })}
