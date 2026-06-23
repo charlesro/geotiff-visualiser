@@ -19,6 +19,7 @@ import {
 } from 'recharts';
 import { PcaRunResult } from '../lib/pca';
 import { DR_METHODS, DrMethod } from '../lib/projections';
+import { BLOB_METHODS, BlobMethod, clusterBlobs } from '../lib/blob-clustering';
 import { PixelZone } from '../lib/zones';
 import { CLUSTER_COLORS, fieldKeyOf } from '../lib/species-clusters';
 import { mixHexColors } from '../lib/unmix';
@@ -79,110 +80,6 @@ function meanNearest(scores: number[], ref: { scores: number[] }[], dims: number
   let acc = 0;
   for (let k = 0; k < K; k++) acc += Math.sqrt(kbest[k]);
   return acc / K;
-}
-
-/** k-means (over the first `dims` PCs) with deterministic farthest-point
- *  seeding. Returns the centroids and each point's cluster index. Used by the
- *  unsupervised boundary finder to locate the pure clusters without labels. */
-function kmeans(pts: { scores: number[] }[], k: number, dims: number): { cent: number[][]; asn: Int32Array } {
-  const d2 = (a: number[], b: number[]) => {
-    let s = 0;
-    for (let i = 0; i < dims; i++) {
-      const e = a[i] - b[i];
-      s += e * e;
-    }
-    return s;
-  };
-  const cent: number[][] = [pts[0].scores.slice(0, dims)];
-  while (cent.length < k) {
-    let far = pts[0].scores;
-    let fd = -1;
-    for (const p of pts) {
-      let m = Infinity;
-      for (const c of cent) {
-        const dd = d2(p.scores, c);
-        if (dd < m) m = dd;
-      }
-      if (m > fd) {
-        fd = m;
-        far = p.scores;
-      }
-    }
-    cent.push(far.slice(0, dims));
-  }
-  const asn = new Int32Array(pts.length);
-  for (let it = 0; it < 40; it++) {
-    let moved = false;
-    for (let p = 0; p < pts.length; p++) {
-      let b = 0;
-      let bd = Infinity;
-      for (let c = 0; c < k; c++) {
-        const dd = d2(pts[p].scores, cent[c]);
-        if (dd < bd) {
-          bd = dd;
-          b = c;
-        }
-      }
-      asn[p] = b;
-    }
-    const sum = cent.map(() => new Float64Array(dims));
-    const cnt = new Int32Array(k);
-    for (let p = 0; p < pts.length; p++) {
-      cnt[asn[p]]++;
-      for (let i = 0; i < dims; i++) sum[asn[p]][i] += pts[p].scores[i];
-    }
-    for (let c = 0; c < k; c++) {
-      if (!cnt[c]) continue;
-      for (let i = 0; i < dims; i++) {
-        const v = sum[c][i] / cnt[c];
-        if (v !== cent[c][i]) moved = true;
-        cent[c][i] = v;
-      }
-    }
-    if (!moved) break;
-  }
-  return { cent, asn };
-}
-
-/** Mean silhouette of a clustering (how compact + separated), on an even
- *  subsample for speed. Used to auto-pick the number of clusters k: higher is
- *  better. Range roughly [-1, 1]. */
-function silhouette(pts: { scores: number[] }[], asn: Int32Array, k: number, dims: number): number {
-  const N = pts.length;
-  const sN = Math.min(500, N);
-  const idx = Array.from({ length: sN }, (_, i) => Math.floor((i * N) / sN));
-  const sums = new Float64Array(k);
-  const cnts = new Int32Array(k);
-  let total = 0;
-  let count = 0;
-  for (const i of idx) {
-    sums.fill(0);
-    cnts.fill(0);
-    for (const j of idx) {
-      if (j === i) continue;
-      let s = 0;
-      for (let d = 0; d < dims; d++) {
-        const e = pts[i].scores[d] - pts[j].scores[d];
-        s += e * e;
-      }
-      const dd = Math.sqrt(s);
-      sums[asn[j]] += dd;
-      cnts[asn[j]]++;
-    }
-    const ci = asn[i];
-    if (cnts[ci] === 0) continue;
-    const a = sums[ci] / cnts[ci];
-    let b = Infinity;
-    for (let c = 0; c < k; c++) {
-      if (c === ci || cnts[c] === 0) continue;
-      const mean = sums[c] / cnts[c];
-      if (mean < b) b = mean;
-    }
-    if (!isFinite(b)) continue;
-    total += (b - a) / Math.max(a, b, 1e-9);
-    count++;
-  }
-  return count > 0 ? total / count : -1;
 }
 
 /** Reports the chart's real plot-area aspect (width/height) so the parent can
@@ -273,6 +170,7 @@ export default function PcaPanel({
   // k-means and score every pixel by how "between" two of them it is.
   const [boundaryUnsup, setBoundaryUnsup] = useState(false);
   const [boundaryK, setBoundaryK] = useState<number | 'auto'>('auto'); // pure-cluster count, or auto
+  const [blobMethod, setBlobMethod] = useState<BlobMethod>('kmeans'); // how the blobs are found
   // Direction gate: a boundary pixel is a mixture, so it sits *on the line*
   // between two blobs. Keep only pixels within a small perpendicular distance
   // of a corridor (the segment between a pair of blobs they project between).
@@ -405,39 +303,25 @@ export default function PcaPanel({
       // with radius = its largest 2σ spread (major axis of the 2×2 covariance).
       // A pixel is scored by its distance to the nearest circle *edge*: negative
       // inside a blob, a positive gap distance outside.
-      const px = (row: (typeof rows)[number]) => [row.scores[pcX], row.scores[pcY]];
-      const uni = subsample(rows, 2500).map(row => ({ scores: px(row) }));
-      if (uni.length < 5) return null;
-      // Choose k: the requested value, or auto-pick the one with the best
-      // silhouette over 2..6 clusters (most compact + separated).
-      let k: number;
-      if (boundaryK === 'auto') {
-        const kMax = Math.min(6, uni.length - 1);
-        let bestK = 2;
-        let bestSil = -Infinity;
-        for (let kk = 2; kk <= kMax; kk++) {
-          const sil = silhouette(uni, kmeans(uni, kk, 2).asn, kk, 2);
-          if (sil > bestSil) {
-            bestSil = sil;
-            bestK = kk;
-          }
-        }
-        k = bestK;
-      } else {
-        k = Math.min(boundaryK, uni.length);
-      }
-      if (uni.length < k + 3 || k < 2) return null;
-      const { cent, asn } = kmeans(uni, k, 2);
-      const clusters = cent.map((mu, c) => {
-        let a = 0;
-        let b = 0;
-        let d = 0;
-        let n = 0;
-        for (let p = 0; p < uni.length; p++) {
-          if (asn[p] !== c) continue;
-          n++;
-          const dx = uni[p].scores[0] - mu[0];
-          const dy = uni[p].scores[1] - mu[1];
+      const px = (row: (typeof rows)[number]): number[] => [row.scores[pcX], row.scores[pcY]];
+      const ptsArr = subsample(rows, 1500).map(px);
+      if (ptsArr.length < 5) return null;
+      // Cluster the blobs with the chosen method (k-means / GMM / DBSCAN /
+      // single-link). Each blob becomes a circle: its mean + the 2σ major axis
+      // of its 2×2 covariance. DBSCAN noise points (assign −1) define no blob.
+      const { assign } = clusterBlobs(blobMethod, ptsArr, boundaryK);
+      const labels = Array.from(new Set(assign.filter(a => a >= 0))).sort((a, b) => a - b);
+      const clusters: { c: number[]; r: number }[] = [];
+      for (const c of labels) {
+        let sx = 0, sy = 0, n = 0;
+        for (let p = 0; p < ptsArr.length; p++) if (assign[p] === c) { sx += ptsArr[p][0]; sy += ptsArr[p][1]; n++; }
+        if (n < 4) continue; // too small to be a blob
+        const mx = sx / n, my = sy / n;
+        let a = 0, b = 0, d = 0;
+        for (let p = 0; p < ptsArr.length; p++) {
+          if (assign[p] !== c) continue;
+          const dx = ptsArr[p][0] - mx;
+          const dy = ptsArr[p][1] - my;
           a += dx * dx;
           b += dx * dy;
           d += dy * dy;
@@ -449,8 +333,9 @@ export default function PcaPanel({
         const mean = (a + d) / 2;
         const rad = Math.sqrt(Math.max(0, ((a - d) / 2) ** 2 + b * b));
         const r = 2 * Math.sqrt(Math.max(1e-9, mean + rad)); // 2σ along the major axis
-        return { c: mu, r };
-      });
+        clusters.push({ c: [mx, my], r });
+      }
+      if (clusters.length < 1) return null;
       const scoreById = new Map<string, number>();
       const dirById = new Map<string, number>();
       let max = 0;
@@ -497,7 +382,7 @@ export default function PcaPanel({
         max,
         defaultT: 0, // the blob circle edge
         count: rows.length,
-        k: k as number | undefined,
+        k: clusters.length as number | undefined,
         clusters: clusters as { c: number[]; r: number }[] | undefined,
       };
     }
@@ -524,7 +409,7 @@ export default function PcaPanel({
       k: undefined as number | undefined,
       clusters: undefined as { c: number[]; r: number }[] | undefined,
     };
-  }, [result, boundaryOn, boundaryUnsup, boundaryK, pcX, pcY]);
+  }, [result, boundaryOn, boundaryUnsup, boundaryK, blobMethod, pcX, pcY]);
 
   const boundaryT_ = boundaryT ?? boundary?.defaultT ?? 0;
   const boundaryDirDist_ = boundaryDirDist ?? boundary?.dirDefault ?? 0;
@@ -1126,28 +1011,56 @@ export default function PcaPanel({
                       Ignore labels (unsupervised) — find pure clusters, flag pixels between them
                     </label>
                     {boundaryUnsup && (
-                      <label className="flex items-center gap-2 text-[11px] text-slate-500">
-                        Pure clusters (k)
-                        <select
-                          value={boundaryK}
-                          onChange={e => {
-                            const v = e.target.value;
-                            setBoundaryK(v === 'auto' ? 'auto' : Number(v));
-                            setBoundaryT(null);
-                          }}
-                          className="rounded border border-white/10 bg-[#0b0e11] px-1.5 py-0.5 text-slate-300"
-                        >
-                          <option value="auto">auto</option>
-                          {[2, 3, 4, 5, 6, 7, 8].map(n => (
-                            <option key={n} value={n}>
-                              {n}
-                            </option>
-                          ))}
-                        </select>
-                        {boundaryK === 'auto' && boundary?.k != null && (
-                          <span className="text-fuchsia-300">detected {boundary.k}</span>
-                        )}
-                      </label>
+                      <>
+                        <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+                          <label className="flex items-center gap-1.5">
+                            Blobs
+                            <select
+                              value={blobMethod}
+                              onChange={e => {
+                                setBlobMethod(e.target.value as BlobMethod);
+                                setBoundaryT(null);
+                              }}
+                              className="rounded border border-white/10 bg-[#0b0e11] px-1.5 py-0.5 text-slate-300"
+                            >
+                              {BLOB_METHODS.map(m => (
+                                <option key={m.id} value={m.id}>
+                                  {m.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          {BLOB_METHODS.find(m => m.id === blobMethod)?.usesK ? (
+                            <label className="flex items-center gap-1.5">
+                              k
+                              <select
+                                value={boundaryK}
+                                onChange={e => {
+                                  const v = e.target.value;
+                                  setBoundaryK(v === 'auto' ? 'auto' : Number(v));
+                                  setBoundaryT(null);
+                                }}
+                                className="rounded border border-white/10 bg-[#0b0e11] px-1.5 py-0.5 text-slate-300"
+                              >
+                                <option value="auto">auto</option>
+                                {[2, 3, 4, 5, 6, 7, 8].map(n => (
+                                  <option key={n} value={n}>
+                                    {n}
+                                  </option>
+                                ))}
+                              </select>
+                              {boundaryK === 'auto' && boundary?.k != null && (
+                                <span className="text-fuchsia-300">detected {boundary.k}</span>
+                              )}
+                            </label>
+                          ) : (
+                            boundary?.k != null && <span className="text-fuchsia-300">{boundary.k} blobs found</span>
+                          )}
+                        </div>
+                        <p className="text-[10px] leading-snug text-slate-600">
+                          {BLOB_METHODS.find(m => m.id === blobMethod)?.blurb}
+                        </p>
+                      </>
                     )}
                     {boundaryUnsup && (
                       <>
