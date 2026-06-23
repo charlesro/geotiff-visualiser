@@ -162,6 +162,8 @@ export default function PcaPanel({
   const [pcY, setPcY] = useState(1);
   const [colorBy, setColorBy] = useState<Attr>('zone');
   const [shapeBy, setShapeBy] = useState<Attr | 'none'>('species');
+  // Emphasise every point of one field/polygon (others dimmed). null = off.
+  const [emphasizedField, setEmphasizedField] = useState<string | null>(null);
   // Experimental boundary finder: flag edge·other pixels sitting deep in the
   // gap between the pure-interior blobs in PCA space.
   const [boundaryOn, setBoundaryOn] = useState(false);
@@ -668,10 +670,30 @@ export default function PcaPanel({
     }
   };
 
+  // Distinct fields present in the scatter, for the "emphasise a field" picker.
+  const fieldOptions = useMemo(() => {
+    const m = new Map<string, { key: string; label: string; count: number }>();
+    for (const r of result.rows) {
+      const key = fieldKeyOf(r.properties);
+      const e = m.get(key);
+      if (e) {
+        e.count++;
+        continue;
+      }
+      const props = r.properties || {};
+      const species = props.crp_lbl ?? props.species;
+      const label = species && props.NewID !== undefined ? `${species} · ${props.NewID}` : String(r.polygonId ?? key);
+      m.set(key, { key, label, count: 1 });
+    }
+    return Array.from(m.values()).sort((a, b) => b.count - a.count);
+  }, [result]);
+
   const renderPoint = (props: any) => {
     const { cx, cy, payload } = props;
     if (typeof cx !== 'number' || typeof cy !== 'number') return <g />;
     const selected = payload.pixelId === highlightPixelId;
+    const emph = emphasizedField !== null && fieldKeyOf(payload.row.properties) === emphasizedField;
+    const dim = emphasizedField !== null && !emph;
     return (
       <g onClick={() => pick(payload)} style={{ cursor: 'pointer' }}>
         {selected && <circle cx={cx} cy={cy} r={9} fill="none" stroke="#ffffff" strokeWidth={2} />}
@@ -679,12 +701,12 @@ export default function PcaPanel({
           cx={cx}
           cy={cy}
           type={payload.symbol}
-          size={selected ? 90 : 34}
+          size={selected ? 90 : emph ? 78 : 34}
           fill={payload.color}
-          fillOpacity={selected ? 1 : 0.82}
-          stroke="#0b0e11"
-          strokeWidth={selected ? 0 : 0.6}
-          strokeOpacity={0.55}
+          fillOpacity={dim ? 0.12 : selected ? 1 : 0.85}
+          stroke={emph ? '#ffffff' : '#0b0e11'}
+          strokeWidth={selected ? 0 : emph ? 1.2 : 0.6}
+          strokeOpacity={dim ? 0.3 : emph ? 0.95 : 0.55}
         />
       </g>
     );
@@ -697,7 +719,7 @@ export default function PcaPanel({
   const scatterEl = useMemo(
     // eslint-disable-next-line react-hooks/exhaustive-deps
     () => <Scatter data={points} shape={renderPoint} isAnimationActive={false} />,
-    [points, highlightPixelId]
+    [points, highlightPixelId, emphasizedField]
   );
 
   const varianceData = result.explained.map((v, i) => ({
@@ -948,6 +970,21 @@ export default function PcaPanel({
                         {ATTR_LABEL[a]}
                       </option>
                     ))}
+                </select>
+              </label>
+              <label className="flex items-center gap-1.5" title="Emphasise every pixel of one field; the rest are dimmed">
+                Field
+                <select
+                  className={selectClass}
+                  value={emphasizedField ?? ''}
+                  onChange={e => setEmphasizedField(e.target.value || null)}
+                >
+                  <option value="">none</option>
+                  {fieldOptions.map(f => (
+                    <option key={f.key} value={f.key}>
+                      {f.label} ({f.count})
+                    </option>
+                  ))}
                 </select>
               </label>
               <button
