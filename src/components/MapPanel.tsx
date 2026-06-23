@@ -8,7 +8,7 @@ import { polygonLabel } from '../lib/polygon-source';
 import { NdviPixel } from '../lib/ndvi-series';
 import { CLUSTER_COLORS, fieldKeyOf } from '../lib/species-clusters';
 import { mixHexColors } from '../lib/unmix';
-import { ZONE_CLASSES, zoneColor, speciesColor, speciesSymbol } from '../lib/legend';
+import { ZONE_CLASSES, zoneColor, speciesColor } from '../lib/legend';
 import { renderAnalysisGridPreview } from '../lib/mosaic';
 import { DEFAULT_OPTIONS } from '../lib/layer-factory';
 import { GeoTIFFData } from '../lib/geotiff-utils';
@@ -22,63 +22,6 @@ import { cn } from '../lib/utils';
  * The single map of the app: polygons (click to select), the buffer-zone
  * pixel split, and an optional true-colour preview of a fetched scene.
  */
-
-/** Draw a species marker shape into a canvas path, centred at (x,y), radius r. */
-function drawShapePath(ctx: CanvasRenderingContext2D, shape: string, x: number, y: number, r: number) {
-  switch (shape) {
-    case 'square':
-      ctx.rect(x - r, y - r, 2 * r, 2 * r);
-      break;
-    case 'diamond':
-      ctx.moveTo(x, y - r);
-      ctx.lineTo(x + r, y);
-      ctx.lineTo(x, y + r);
-      ctx.lineTo(x - r, y);
-      ctx.closePath();
-      break;
-    case 'triangle': {
-      const h = r * 1.25;
-      ctx.moveTo(x, y - h);
-      ctx.lineTo(x + h * 0.92, y + h * 0.6);
-      ctx.lineTo(x - h * 0.92, y + h * 0.6);
-      ctx.closePath();
-      break;
-    }
-    default: // circle
-      ctx.arc(x, y, r, 0, Math.PI * 2, false);
-  }
-}
-
-// A canvas renderer that draws each CircleMarker as its `shape` option instead
-// of a circle, so the map pixel dots carry the same species shape as the PCA
-// scatter. Overriding the renderer's own `_updateCircle` is the well-defined
-// hook (the marker stays an ordinary CircleMarker); used only for the dots, so
-// the other circle markers (highlights, box select) stay round.
-let ShapeCanvasClass: any = null;
-function makeShapeRenderer(): any {
-  if (!ShapeCanvasClass) {
-    ShapeCanvasClass = (L.Canvas as any).extend({
-      _updateCircle(layer: any) {
-        // Mirrors L.Canvas._updateCircle but draws the shape. Guarded so a draw
-        // mid-teardown (hot reload, removal) can never throw up into React.
-        try {
-          if (!this._drawing || layer._empty()) return;
-          const p = layer._point;
-          const ctx: CanvasRenderingContext2D = this._ctx;
-          if (!p || !ctx) return;
-          const r = Math.max(Math.round(layer._radius), 1);
-          this._drawnLayers[layer._leaflet_id] = layer;
-          ctx.beginPath();
-          drawShapePath(ctx, layer.options.shape || 'circle', p.x, p.y, r);
-          this._fillStroke(ctx, layer);
-        } catch {
-          /* never crash the app over a single marker draw */
-        }
-      },
-    });
-  }
-  return new ShapeCanvasClass();
-}
 
 export interface ScenePreview {
   url: string;
@@ -459,8 +402,6 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
     [polygons, selectedIds, clusterVersion, polygonMode]
   );
   const zonesKey = useMemo(() => (zones ? Date.now() : 0), [zones]);
-  // One canvas renderer that draws the zone dots as species shapes.
-  const shapeRenderer = useMemo(() => makeShapeRenderer(), []);
 
   // Legend data for the active polygon encoding.
   const speciesLegend = useMemo<[string, number][]>(() => {
@@ -559,9 +500,7 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
       fill = mixHexColors(speciesColor(props.mix_b_species), speciesColor(props.mix_a_species), props.mix_frac_a);
     }
     return L.circleMarker(latlng, {
-      radius: 3.5,
-      shape: speciesSymbol(props.crp_lbl ?? props.species), // same shape as the PCA scatter
-      renderer: shapeRenderer, // draws the shape, not a circle
+      radius: 3,
       stroke: true,
       color: '#0b0e11',
       weight: 0.8,
@@ -569,7 +508,7 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
       fillColor: fill,
       fillOpacity: 0.95,
       interactive: false,
-    } as any);
+    });
   };
 
   const boundaryStyle = {

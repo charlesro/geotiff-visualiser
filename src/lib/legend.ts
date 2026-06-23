@@ -106,23 +106,6 @@ export const speciesColor = (crpLbl: string | undefined): string => {
   return SPECIES_PALETTE[Math.abs(hash) % SPECIES_PALETTE.length];
 };
 
-/**
- * Deterministic marker shape for a crop label — the same set the PCA scatter
- * and the map dots both use, so a species reads as the same shape in either
- * view. Kept to shapes that stay legible at a few pixels (recharts symbol
- * names). Two crops can share a shape (only four), as two can share a colour.
- */
-export const SPECIES_SYMBOLS = ['circle', 'triangle', 'square', 'diamond'] as const;
-export const speciesSymbol = (crpLbl: string | undefined): (typeof SPECIES_SYMBOLS)[number] => {
-  if (!crpLbl) return 'circle';
-  let hash = 0;
-  for (let i = 0; i < crpLbl.length; i++) {
-    hash = (hash << 5) - hash + crpLbl.charCodeAt(i);
-    hash &= hash;
-  }
-  return SPECIES_SYMBOLS[Math.abs(hash) % SPECIES_SYMBOLS.length];
-};
-
 // ----- Generic categorical (field, pair) ---------------------------------------
 
 /** Neutral categorical ramp for the PCA's field / pair colouring. */

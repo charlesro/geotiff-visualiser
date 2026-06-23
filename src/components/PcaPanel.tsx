@@ -23,7 +23,7 @@ import { BLOB_METHODS, BlobMethod, clusterBlobs } from '../lib/blob-clustering';
 import { PixelZone } from '../lib/zones';
 import { CLUSTER_COLORS, fieldKeyOf } from '../lib/species-clusters';
 import { mixHexColors } from '../lib/unmix';
-import { ZONE_CLASSES, ZONE_COLOR, zoneColor, speciesColor, speciesSymbol, categoricalColor, NEUTRAL } from '../lib/legend';
+import { ZONE_CLASSES, ZONE_COLOR, zoneColor, speciesColor, categoricalColor, NEUTRAL } from '../lib/legend';
 import { cn } from '../lib/utils';
 
 /**
@@ -497,11 +497,7 @@ export default function PcaPanel({
         y: row.scores[pcY],
         pixelId: row.pixelId,
         color,
-        symbol: (sv === null
-          ? 'circle'
-          : shapeBy === 'species'
-            ? speciesSymbol(sv) // shared with the map dots
-            : SYMBOL_TYPES[(shapeIdx.get(sv) ?? 0) % SYMBOL_TYPES.length]) as SymbolType,
+        symbol: (sv === null ? 'circle' : SYMBOL_TYPES[(shapeIdx.get(sv) ?? 0) % SYMBOL_TYPES.length]) as SymbolType,
         row,
       };
     });
@@ -1306,13 +1302,7 @@ export default function PcaPanel({
                 {shapeCats.slice(0, SYMBOL_TYPES.length).map((c, i) => (
                   <span key={c.name} className="flex items-center gap-1.5">
                     <svg width={12} height={12}>
-                      <Symbols
-                        cx={6}
-                        cy={6}
-                        type={(shapeBy === 'species' ? speciesSymbol(c.name) : SYMBOL_TYPES[i % SYMBOL_TYPES.length]) as SymbolType}
-                        size={42}
-                        fill="#cbd5e1"
-                      />
+                      <Symbols cx={6} cy={6} type={SYMBOL_TYPES[i % SYMBOL_TYPES.length]} size={42} fill="#cbd5e1" />
                     </svg>
                     {c.name} ({c.count})
                   </span>
