@@ -1032,6 +1032,8 @@ export default function App() {
         />
       ),
     },
+    /* Boundary profile (6) and Boundary prediction (7) are hidden for now —
+       uncomment to bring the steps back; the components/handlers below are kept.
     {
       id: 6,
       title: 'Boundary profile',
@@ -1065,6 +1067,7 @@ export default function App() {
         />
       ),
     },
+    */
   ];
 
   return (
