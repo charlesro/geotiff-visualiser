@@ -573,7 +573,7 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
             marker panes) so they sit above EVERYTHING — dots, boundary markers,
             selection — and never get covered. */}
         {polygons && (
-          <Pane name="field-outlines" style={{ zIndex: 640 }}>
+          <Pane name="field-outlines" style={{ zIndex: 640, pointerEvents: 'none' }}>
             <GeoJSON
               key={`outline-${polygonsKey}`}
               data={polygons}
