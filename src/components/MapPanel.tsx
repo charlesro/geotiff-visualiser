@@ -8,7 +8,7 @@ import { polygonLabel } from '../lib/polygon-source';
 import { NdviPixel } from '../lib/ndvi-series';
 import { CLUSTER_COLORS, fieldKeyOf } from '../lib/species-clusters';
 import { mixHexColors } from '../lib/unmix';
-import { ZONE_CLASSES, zoneColor, speciesColor } from '../lib/legend';
+import { ZONE_CLASSES, zoneColor, speciesColor, speciesSymbol } from '../lib/legend';
 import { renderAnalysisGridPreview } from '../lib/mosaic';
 import { DEFAULT_OPTIONS } from '../lib/layer-factory';
 import { GeoTIFFData } from '../lib/geotiff-utils';
@@ -22,6 +22,56 @@ import { cn } from '../lib/utils';
  * The single map of the app: polygons (click to select), the buffer-zone
  * pixel split, and an optional true-colour preview of a fetched scene.
  */
+
+/** Draw a species marker shape into a canvas path, centred at (x,y), radius r. */
+function drawShapePath(ctx: CanvasRenderingContext2D, shape: string, x: number, y: number, r: number) {
+  switch (shape) {
+    case 'square':
+      ctx.rect(x - r, y - r, 2 * r, 2 * r);
+      break;
+    case 'diamond':
+      ctx.moveTo(x, y - r);
+      ctx.lineTo(x + r, y);
+      ctx.lineTo(x, y + r);
+      ctx.lineTo(x - r, y);
+      ctx.closePath();
+      break;
+    case 'triangle': {
+      const h = r * 1.25;
+      ctx.moveTo(x, y - h);
+      ctx.lineTo(x + h * 0.92, y + h * 0.6);
+      ctx.lineTo(x - h * 0.92, y + h * 0.6);
+      ctx.closePath();
+      break;
+    }
+    default: // circle
+      ctx.arc(x, y, r, 0, Math.PI * 2, false);
+  }
+}
+
+// A CircleMarker that draws an arbitrary species shape on the canvas renderer
+// instead of a circle — same fast path as the dots, so the species shape on the
+// map matches the PCA scatter. Built lazily so SSR/import order can't break it.
+let ShapeMarkerClass: any = null;
+function shapeMarker(latlng: L.LatLngExpression, options: any): L.CircleMarker {
+  if (!ShapeMarkerClass) {
+    ShapeMarkerClass = (L.CircleMarker as any).extend({
+      options: { shape: 'circle' },
+      _updatePath() {
+        const renderer = this._renderer;
+        if (!renderer || !renderer._drawing || this._empty()) return;
+        renderer._drawnLayers[this._leaflet_id] = this;
+        const ctx: CanvasRenderingContext2D = renderer._ctx;
+        const p = this._point;
+        const r = Math.max(Math.round(this._radius), 1);
+        ctx.beginPath();
+        drawShapePath(ctx, this.options.shape, p.x, p.y, r);
+        renderer._fillStroke(ctx, this);
+      },
+    });
+  }
+  return new ShapeMarkerClass(latlng, options);
+}
 
 export interface ScenePreview {
   url: string;
@@ -499,8 +549,9 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
     if (showMixing && props.zone === 'edge_other_species' && typeof props.mix_frac_a === 'number') {
       fill = mixHexColors(speciesColor(props.mix_b_species), speciesColor(props.mix_a_species), props.mix_frac_a);
     }
-    return L.circleMarker(latlng, {
-      radius: 3,
+    return shapeMarker(latlng, {
+      radius: 3.5,
+      shape: speciesSymbol(props.crp_lbl ?? props.species), // same shape as the PCA scatter
       stroke: true,
       color: '#0b0e11',
       weight: 0.8,
