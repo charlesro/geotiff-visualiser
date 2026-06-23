@@ -58,15 +58,22 @@ function shapeMarker(latlng: L.LatLngExpression, options: any): L.CircleMarker {
     ShapeMarkerClass = (L.CircleMarker as any).extend({
       options: { shape: 'circle' },
       _updatePath() {
-        const renderer = this._renderer;
-        if (!renderer || !renderer._drawing || this._empty()) return;
-        renderer._drawnLayers[this._leaflet_id] = this;
-        const ctx: CanvasRenderingContext2D = renderer._ctx;
-        const p = this._point;
-        const r = Math.max(Math.round(this._radius), 1);
-        ctx.beginPath();
-        drawShapePath(ctx, this.options.shape, p.x, p.y, r);
-        renderer._fillStroke(ctx, this);
+        // Defensive: this runs on the canvas renderer's draw loop and can be
+        // hit mid-teardown (hot reload, layer removal). A draw must never throw
+        // up into React and blank the app — fall back to nothing on any gap.
+        try {
+          const renderer = this._renderer;
+          const ctx: CanvasRenderingContext2D | undefined = renderer && renderer._ctx;
+          const p = this._point;
+          if (!renderer || !renderer._drawing || !ctx || !p || this._empty()) return;
+          renderer._drawnLayers[this._leaflet_id] = this;
+          const r = Math.max(Math.round(this._radius), 1);
+          ctx.beginPath();
+          drawShapePath(ctx, this.options.shape, p.x, p.y, r);
+          renderer._fillStroke(ctx, this);
+        } catch {
+          /* never crash the app over a single marker draw */
+        }
       },
     });
   }
