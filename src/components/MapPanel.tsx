@@ -608,18 +608,18 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
             />
           );
         })}
-        {boundaryPixels.map(p => (
+        {boundaryPixels.map((p, i) => (
           <CircleMarker
-            key={`bnd-${p.id}`}
+            key={`bnd-${i}`}
             center={[p.lat, p.lng]}
             radius={5}
             pathOptions={{ color: '#e879f9', weight: 2, fill: true, fillColor: '#e879f9', fillOpacity: 0.5 }}
             interactive={false}
           />
         ))}
-        {selectedPixels.map(p => (
+        {selectedPixels.map((p, i) => (
           <CircleMarker
-            key={`sel-${p.id}`}
+            key={`sel-${i}`}
             center={[p.lat, p.lng]}
             radius={5}
             pathOptions={{ color: '#22d3ee', weight: 2, fill: true, fillColor: '#22d3ee', fillOpacity: 0.55 }}

@@ -618,6 +618,7 @@ export default function PcaPanel({
   const lassoDown = (e: React.PointerEvent) => {
     if (!lassoOn) return;
     e.preventDefault();
+    setEmphasizedField(null); // lasso and field-emphasis are one selection — clear the other
     lassoSvgRef.current?.setPointerCapture(e.pointerId);
     lassoDrawing.current = true;
     const start = [svgPoint(e)];
@@ -651,11 +652,27 @@ export default function PcaPanel({
     setLassoPath([]);
     onSelectPixels?.([]);
   };
+  // Emphasise a field in the scatter AND select its pixels on the map (the same
+  // channel the lasso uses). Clears any active lasso so the two don't overlap.
+  const emphasizeField = (key: string | null) => {
+    setEmphasizedField(key);
+    setLassoIds(new Set());
+    lassoPathRef.current = [];
+    setLassoPath([]);
+    onSelectPixels?.(
+      key
+        ? result.rows
+            .filter(r => fieldKeyOf(r.properties) === key)
+            .map(r => ({ id: r.pixelId, lng: r.lng, lat: r.lat }))
+        : []
+    );
+  };
   // Drop the selection when the projection changes (the cloud is different).
   useEffect(() => {
     setLassoIds(new Set());
     lassoPathRef.current = [];
     setLassoPath([]);
+    setEmphasizedField(null);
     onSelectPixels?.([]);
   }, [result, pcX, pcY, onSelectPixels]);
   // Clear the map markers when the panel unmounts.
@@ -977,7 +994,7 @@ export default function PcaPanel({
                 <select
                   className={selectClass}
                   value={emphasizedField ?? ''}
-                  onChange={e => setEmphasizedField(e.target.value || null)}
+                  onChange={e => emphasizeField(e.target.value || null)}
                 >
                   <option value="">none</option>
                   {fieldOptions.map(f => (
@@ -1234,9 +1251,9 @@ export default function PcaPanel({
                 {lassoIds.size > 0 &&
                   points
                     .filter(p => lassoIds.has(p.pixelId))
-                    .map(p => {
+                    .map((p, i) => {
                       const { x, y } = dataToPixel(p.x, p.y);
-                      return <circle key={p.pixelId} cx={x} cy={y} r={6} fill="none" stroke="#22d3ee" strokeWidth={1.8} />;
+                      return <circle key={`sel-${i}`} cx={x} cy={y} r={6} fill="none" stroke="#22d3ee" strokeWidth={1.8} />;
                     })}
                 {lassoPath.length > 1 && (
                   <polygon points={lassoPath.map(p => `${p.x},${p.y}`).join(' ')} fill="#22d3ee22" stroke="#22d3ee" strokeWidth={1.5} strokeDasharray="4 3" />
