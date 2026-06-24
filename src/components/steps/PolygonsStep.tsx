@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Database, FileUp, CheckSquare, Square, Plug, Search } from 'lucide-react';
 import { Button, ErrorNote, Field, inputClass, NumberInput, StopButton } from '../ui';
 import { polygonLabel } from '../../lib/polygon-source';
@@ -6,6 +6,8 @@ import {
   buildNeighborPairsQuery,
   filterToSpanningComponents,
   fetchSpeciesList,
+  fetchSpeciesAdjacency,
+  speciesSetConnected,
   fetchDatasetDateRange,
   DatasetDateRange,
   DEFAULT_NEIGHBOR_PARAMS,
@@ -84,6 +86,10 @@ export default function PolygonsStep(props: PolygonsStepProps) {
   const [sql, setSql] = useState(() => localStorage.getItem('ppca_db_query') || DEFAULT_CUSTOM_QUERY);
   const [params, setParams] = useState<NeighborPairsParams>(loadStoredParams);
   const [species, setSpecies] = useState<string[]>([]);
+  // Which crops border which (within the current distance) — drives the
+  // species dropdowns so they only offer crops that can form a spanning cluster.
+  const [speciesAdj, setSpeciesAdj] = useState<Record<string, string[]> | null>(null);
+  const [adjBusy, setAdjBusy] = useState(false);
   const [connectState, setConnectState] = useState<'idle' | 'busy' | 'ok'>('idle');
   const [connectError, setConnectError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -94,6 +100,40 @@ export default function PolygonsStep(props: PolygonsStepProps) {
       localStorage.setItem('ppca_pair_params', JSON.stringify(next));
       return next;
     });
+  };
+
+  // Recompute the species-adjacency graph once connected, and whenever the
+  // distance (or parquet) changes — debounced, since it scans the whole file.
+  useEffect(() => {
+    if (connectState !== 'ok') return;
+    let cancelled = false;
+    setAdjBusy(true);
+    const t = setTimeout(() => {
+      fetchSpeciesAdjacency(dbUrl, params.parquetPath, params.neighborDistance)
+        .then(adj => {
+          if (!cancelled) setSpeciesAdj(adj);
+        })
+        .catch(() => {
+          if (!cancelled) setSpeciesAdj(null); // fall back to offering every species
+        })
+        .finally(() => {
+          if (!cancelled) setAdjBusy(false);
+        });
+    }, 700);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [connectState, dbUrl, params.parquetPath, params.neighborDistance]);
+
+  // Species valid for slot i: those that keep the *other* chosen species a
+  // single connected cluster (so the spanning rule can be satisfied). Without
+  // an adjacency graph yet, just avoid duplicates.
+  const validSpeciesForSlot = (i: number): string[] => {
+    const others = params.species.filter((_, j) => j !== i);
+    const used = new Set(others);
+    if (!speciesAdj) return species.filter(s => !used.has(s));
+    return species.filter(s => !used.has(s) && speciesSetConnected([...others, s], speciesAdj));
   };
 
   const connect = async () => {
@@ -136,8 +176,10 @@ export default function PolygonsStep(props: PolygonsStepProps) {
     setParam('species', params.species.map((s, j) => (j === i ? value : s)));
   const addSpecies = () => {
     const used = new Set(params.species);
-    const next = species.find(s => !used.has(s)) ?? '';
-    setParam('species', [...params.species, next]);
+    const candidates = speciesAdj
+      ? species.filter(s => !used.has(s) && speciesSetConnected([...params.species, s], speciesAdj))
+      : species.filter(s => !used.has(s));
+    setParam('species', [...params.species, candidates[0] ?? '']);
   };
   const removeSpecies = (i: number) => setParam('species', params.species.filter((_, j) => j !== i));
 
@@ -147,21 +189,24 @@ export default function PolygonsStep(props: PolygonsStepProps) {
     props.onLoadFromDb(dbUrl, sql);
   };
 
-  const speciesRow = (value: string, i: number) => (
-    <div key={i} className="flex items-center gap-1.5">
-      {species.length > 0 ? (
-        <select className={inputClass} value={value} onChange={e => setSpeciesAt(i, e.target.value)}>
-          {value !== '' && !species.includes(value) && <option value={value}>{value}</option>}
-          {value === '' && <option value="">— pick a species —</option>}
-          {species.map(s => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
-      ) : (
-        <input className={inputClass} value={value} onChange={e => setSpeciesAt(i, e.target.value)} />
-      )}
+  const speciesRow = (value: string, i: number) => {
+    const opts = validSpeciesForSlot(i);
+    // Always keep the current value selectable even if it's now out of range.
+    const optionList = value !== '' && !opts.includes(value) ? [value, ...opts] : opts;
+    return (
+      <div key={i} className="flex items-center gap-1.5">
+        {species.length > 0 ? (
+          <select className={inputClass} value={value} onChange={e => setSpeciesAt(i, e.target.value)}>
+            {value === '' && <option value="">— pick a species —</option>}
+            {optionList.map(s => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <input className={inputClass} value={value} onChange={e => setSpeciesAt(i, e.target.value)} />
+        )}
       <button
         onClick={() => removeSpecies(i)}
         disabled={params.species.length <= 2}
@@ -171,7 +216,8 @@ export default function PolygonsStep(props: PolygonsStepProps) {
         <X className="h-3.5 w-3.5" />
       </button>
     </div>
-  );
+    );
+  };
 
   const features: any[] = props.polygons?.features || [];
 
@@ -249,12 +295,23 @@ export default function PolygonsStep(props: PolygonsStepProps) {
               <Field label={`Species (${params.species.length})`} info={PARAM_INFO.species}>
                 <div className="space-y-1.5">
                   {params.species.map((s, i) => speciesRow(s, i))}
-                  <button
-                    onClick={addSpecies}
-                    className="flex items-center gap-1.5 rounded-md border border-white/10 px-2 py-1 text-[11px] text-slate-400 transition-colors hover:border-sky-400/40 hover:text-sky-300"
-                  >
-                    <Plus className="h-3 w-3" /> Add species
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={addSpecies}
+                      className="flex items-center gap-1.5 rounded-md border border-white/10 px-2 py-1 text-[11px] text-slate-400 transition-colors hover:border-sky-400/40 hover:text-sky-300"
+                    >
+                      <Plus className="h-3 w-3" /> Add species
+                    </button>
+                    {connectState === 'ok' && (
+                      <span className="text-[10px] text-slate-600">
+                        {adjBusy
+                          ? 'mapping which crops border…'
+                          : speciesAdj
+                            ? 'only crops that can join the cluster are offered'
+                            : 'connect to filter by adjacency'}
+                      </span>
+                    )}
+                  </div>
                 </div>
               </Field>
               <div className="grid grid-cols-2 gap-2">
