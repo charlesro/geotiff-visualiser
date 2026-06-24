@@ -184,30 +184,6 @@ export async function fetchSpeciesList(baseUrl: string, parquetPath: string): Pr
   return (data.rows || []).map((r: any) => String(r.crp_lbl));
 }
 
-/**
- * Whether a set of crops is connected in the crop-adjacency graph using only
- * edges among set members — i.e. they can share one spanning cluster. Drives
- * the species dropdowns (the graph is precomputed in src/data/species-adjacency
- * .json; see scripts/build_species_adjacency.py). Crops missing from the graph
- * are treated as having no neighbours.
- */
-export function speciesSetConnected(set: string[], adjacency: Record<string, string[]>): boolean {
-  if (set.length <= 1) return true;
-  const inSet = new Set(set);
-  const seen = new Set<string>([set[0]]);
-  const stack = [set[0]];
-  while (stack.length) {
-    const x = stack.pop()!;
-    for (const y of adjacency[x] || []) {
-      if (inSet.has(y) && !seen.has(y)) {
-        seen.add(y);
-        stack.push(y);
-      }
-    }
-  }
-  return seen.size === inSet.size;
-}
-
 export interface DatasetDateRange {
   start: string;
   end: string;
