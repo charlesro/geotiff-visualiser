@@ -7,6 +7,7 @@ import {
   filterToSpanningComponents,
   fetchSpeciesList,
   fetchDatasetDateRange,
+  speciesSetConnected,
   DatasetDateRange,
   DEFAULT_NEIGHBOR_PARAMS,
   NeighborPairsParams,
@@ -14,6 +15,25 @@ import {
 import { Plus, X } from 'lucide-react';
 import { checkLocalServerStatus } from '../../services/local-server';
 import { cn } from '../../lib/utils';
+import speciesAdjacencyData from '../../data/species-adjacency.json';
+
+/**
+ * Precomputed crop-adjacency graph (which crops can border which, within the
+ * neighbour distance). Lets each species menu offer only crops that keep the
+ * chosen set a single connected cluster — so a pick can't trigger the
+ * "No cluster spans every chosen species" dead end. Regenerate with
+ * scripts/build_species_adjacency.py if the dataset changes.
+ */
+const SPECIES_ADJACENCY = speciesAdjacencyData.adjacency as Record<string, string[]>;
+const adjacencyKnows = (s: string): boolean =>
+  Object.prototype.hasOwnProperty.call(SPECIES_ADJACENCY, s);
+/** Would adding `candidate` to `others` still allow one spanning cluster? When
+ *  the graph doesn't cover these crops (e.g. a different dataset), don't prune. */
+const keepsClusterConnected = (others: string[], candidate: string): boolean => {
+  const o = others.filter(Boolean);
+  if (!o.every(adjacencyKnows) || !adjacencyKnows(candidate)) return true;
+  return speciesSetConnected([...o, candidate], SPECIES_ADJACENCY);
+};
 
 /**
  * Step 1 — load polygons and choose which ones to analyse.
@@ -96,11 +116,13 @@ export default function PolygonsStep(props: PolygonsStepProps) {
     });
   };
 
-  // Each dropdown offers every crop except the ones already chosen in the
-  // other slots, so a species can't be picked twice.
+  // Each dropdown offers crops that aren't already chosen elsewhere AND that
+  // keep the rest of the selection one connected cluster (so the spanning rule
+  // can still be satisfied).
   const validSpeciesForSlot = (i: number): string[] => {
-    const used = new Set(params.species.filter((_, j) => j !== i));
-    return species.filter(s => !used.has(s));
+    const others = params.species.filter((_, j) => j !== i).filter(Boolean);
+    const used = new Set(others);
+    return species.filter(s => !used.has(s) && keepsClusterConnected(others, s));
   };
 
   const connect = async () => {
@@ -142,8 +164,9 @@ export default function PolygonsStep(props: PolygonsStepProps) {
   const setSpeciesAt = (i: number, value: string) =>
     setParam('species', params.species.map((s, j) => (j === i ? value : s)));
   const addSpecies = () => {
-    const used = new Set(params.species);
-    const next = species.find(s => !used.has(s)) ?? '';
+    const others = params.species.filter(Boolean);
+    const used = new Set(others);
+    const next = species.find(s => !used.has(s) && keepsClusterConnected(others, s)) ?? '';
     setParam('species', [...params.species, next]);
   };
   const removeSpecies = (i: number) => setParam('species', params.species.filter((_, j) => j !== i));
@@ -266,6 +289,12 @@ export default function PolygonsStep(props: PolygonsStepProps) {
                   >
                     <Plus className="h-3 w-3" /> Add species
                   </button>
+                  {species.length > 0 && (
+                    <p className="text-[10px] leading-snug text-slate-500">
+                      Each menu lists only crops that can border your selection, so a pick can't
+                      come up empty.
+                    </p>
+                  )}
                 </div>
               </Field>
               <div className="grid grid-cols-2 gap-2">
