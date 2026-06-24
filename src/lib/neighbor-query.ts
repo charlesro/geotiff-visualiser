@@ -13,8 +13,8 @@ import { runLocalQuery } from '../services/local-server';
 
 export interface NeighborPairsParams {
   parquetPath: string;
-  species1: string;
-  species2: string;
+  /** The crop labels to study together (2 = pairs, 3 = triplets, …). */
+  species: string[];
   /** Max boundary-to-boundary distance, in degrees (0.0001 ≈ 11 m N–S). */
   neighborDistance: number;
   /** Keep only the N closest pairs. */
@@ -23,8 +23,7 @@ export interface NeighborPairsParams {
 
 export const DEFAULT_NEIGHBOR_PARAMS: NeighborPairsParams = {
   parquetPath: '/Users/charles/Documents/These/data_full_melted.parquet',
-  species1: 'Maïs ensilage',
-  species2: 'Luzerne',
+  species: ['Maïs ensilage', 'Luzerne'],
   neighborDistance: 0.0001,
   maxPairs: 100,
 };
@@ -34,20 +33,18 @@ const sqlString = (value: string): string => `'${value.replace(/'/g, "''")}'`;
 
 export function buildNeighborPairsQuery(p: NeighborPairsParams): string {
   const path = sqlString(p.parquetPath);
-  const s1 = sqlString(p.species1);
-  const s2 = sqlString(p.species2);
+  const species = (p.species || []).map(s => s.trim()).filter(Boolean);
+  if (species.length < 2) throw new Error('Pick at least two species.');
+  const speciesList = species.map(sqlString).join(', ');
   const distance = Number(p.neighborDistance);
   const maxPairs = Math.max(1, Math.floor(p.maxPairs));
   if (!isFinite(distance) || distance <= 0) throw new Error('Neighbour distance must be a positive number.');
-
-  // With a single species both directions of a pair would match; keep one.
-  const samePairGuard = p.species1 === p.species2 ? 'AND a.NewID < b.NewID' : 'AND a.NewID <> b.NewID';
 
   return `INSTALL spatial;
 LOAD spatial;
 SET threads TO 8;
 
--- One row per field of the two species
+-- One row per field of the chosen species
 CREATE OR REPLACE TABLE fields_unique AS
 SELECT
   NewID,
@@ -56,14 +53,16 @@ SELECT
   ST_GeomFromText(any_value(geometry)) AS geom
 FROM read_parquet(${path})
 WHERE geometry IS NOT NULL
-  AND crp_lbl IN (${s1}, ${s2})
+  AND crp_lbl IN (${speciesList})
 GROUP BY NewID;
 
 CREATE INDEX IF NOT EXISTS fields_unique_geom_idx
 ON fields_unique
 USING RTREE (geom);
 
--- Closest pairs species_1 <-> species_2 within the distance threshold
+-- Closest pairs of *different*-species fields among the chosen species, within
+-- the distance threshold. (The component filter in JS then keeps only fields
+-- whose connected cluster spans every chosen species.)
 CREATE OR REPLACE TABLE neighbor_pairs AS
 WITH candidate_pairs AS (
   SELECT
@@ -76,9 +75,8 @@ WITH candidate_pairs AS (
     b.geometry_wkt AS geometry_wkt_2
   FROM fields_unique a
   JOIN fields_unique b
-    ON a.crp_lbl = ${s1}
-   AND b.crp_lbl = ${s2}
-   ${samePairGuard}
+    ON a.crp_lbl <> b.crp_lbl
+   AND a.NewID < b.NewID
    AND ST_DWithin(a.geom, b.geom, ${distance})
 )
 SELECT *
@@ -109,6 +107,64 @@ SELECT
   geometry_wkt_2 AS geometry_wkt
 FROM neighbor_pairs
 ORDER BY pair_id, role_in_pair;`;
+}
+
+/**
+ * Keep only the fields whose connected cross-species cluster spans *every*
+ * chosen species. A field qualifies when it neighbours another chosen species,
+ * or is linked to it through a chain of cross-species neighbours that, together,
+ * touches all of them. For two species this is a no-op (every cross-species pair
+ * already spans both). Operates on the long-format rows (NewID / crp_lbl /
+ * neighbor_id edges) returned by the query, before they become polygons.
+ */
+export function filterToSpanningComponents(rows: any[], species: string[]): any[] {
+  const chosen = (species || []).map(s => s.trim()).filter(Boolean);
+  if (chosen.length <= 2) return rows;
+
+  // Union-find over the field ids, linked by each row's (field ↔ neighbour) edge.
+  const parent = new Map<string, string>();
+  const find = (x: string): string => {
+    let r = x;
+    while (parent.get(r) !== r) r = parent.get(r)!;
+    while (parent.get(x) !== r) {
+      const n = parent.get(x)!;
+      parent.set(x, r);
+      x = n;
+    }
+    return r;
+  };
+  const add = (x: string) => {
+    if (!parent.has(x)) parent.set(x, x);
+  };
+  const speciesOf = new Map<string, string>();
+  for (const row of rows) {
+    const id = String(row.NewID);
+    add(id);
+    speciesOf.set(id, String(row.crp_lbl));
+    if (row.neighbor_id != null) {
+      const nb = String(row.neighbor_id);
+      add(nb);
+      parent.set(find(id), find(nb));
+    }
+  }
+
+  // Species present in each connected component.
+  const compSpecies = new Map<string, Set<string>>();
+  for (const [id, sp] of speciesOf) {
+    const root = find(id);
+    let set = compSpecies.get(root);
+    if (!set) {
+      set = new Set();
+      compSpecies.set(root, set);
+    }
+    set.add(sp);
+  }
+  const need = chosen;
+  const keepRoot = new Set<string>();
+  for (const [root, sps] of compSpecies) {
+    if (need.every(s => sps.has(s))) keepRoot.add(root);
+  }
+  return rows.filter(row => keepRoot.has(find(String(row.NewID))));
 }
 
 /** Distinct crop labels in the parquet, for the species dropdowns. */

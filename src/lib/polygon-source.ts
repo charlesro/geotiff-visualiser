@@ -87,12 +87,22 @@ function normalizeFeatures(rawFeatures: { geometry: any; properties: Record<stri
 export async function loadPolygonsFromDatabase(
   baseUrl: string,
   sql: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  /** Optional post-query row filter (e.g. keep only spanning clusters). */
+  filterRows?: (rows: any[]) => any[]
 ): Promise<PolygonLoadResult> {
   const data = await runLocalQuery(baseUrl, sql, signal);
-  const rows: any[] = data.rows || [];
+  let rows: any[] = data.rows || [];
   if (rows.length === 0) {
     throw new Error('The query returned no rows.');
+  }
+  if (filterRows) {
+    rows = filterRows(rows);
+    if (rows.length === 0) {
+      throw new Error(
+        'No cluster spans every chosen species. Raise the neighbour distance / max pairs, or pick species that actually border each other.'
+      );
+    }
   }
 
   const geometryKey = findGeometryKey(rows[0]);

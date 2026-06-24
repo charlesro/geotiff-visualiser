@@ -329,12 +329,12 @@ export default function App() {
   );
 
   const loadFromDb = useCallback(
-    async (url: string, sql: string) => {
+    async (url: string, sql: string, filterRows?: (rows: any[]) => any[]) => {
       const op = beginOp();
       setPolygonsBusy(true);
       setPolygonsError(null);
       try {
-        const result = await loadPolygonsFromDatabase(url, sql, op.abort.signal);
+        const result = await loadPolygonsFromDatabase(url, sql, op.abort.signal, filterRows);
         onPolygonsLoaded(result, 'database');
       } catch (e) {
         if (!isCancelledError(e)) setPolygonsError(errorMessage(e));

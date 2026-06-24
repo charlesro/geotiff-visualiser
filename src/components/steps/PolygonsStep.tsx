@@ -4,21 +4,24 @@ import { Button, ErrorNote, Field, inputClass, NumberInput, StopButton } from '.
 import { polygonLabel } from '../../lib/polygon-source';
 import {
   buildNeighborPairsQuery,
+  filterToSpanningComponents,
   fetchSpeciesList,
   fetchDatasetDateRange,
   DatasetDateRange,
   DEFAULT_NEIGHBOR_PARAMS,
   NeighborPairsParams,
 } from '../../lib/neighbor-query';
+import { Plus, X } from 'lucide-react';
 import { checkLocalServerStatus } from '../../services/local-server';
 import { cn } from '../../lib/utils';
 
 /**
  * Step 1 — load polygons and choose which ones to analyse.
  *
- * Database mode runs the parametrised "neighbour pairs" analysis (closest
- * pairs of fields of two species) against the local DuckDB engine, or any
- * custom SQL. File mode accepts GeoJSON / zipped shapefiles.
+ * Database mode runs the parametrised neighbour analysis (closest touching
+ * fields of the chosen species, kept where their cluster spans all of them)
+ * against the local DuckDB engine, or any custom SQL. File mode accepts
+ * GeoJSON / zipped shapefiles.
  */
 
 const DEFAULT_CUSTOM_QUERY = `-- Return one row per polygon with a WKT geometry column
@@ -28,10 +31,8 @@ FROM read_parquet('polygons.parquet')`;
 const PARAM_INFO = {
   parquet:
     'The source dataset: a parquet file with one row per field (and date), containing at least NewID, crp_lbl and a WKT geometry column.',
-  species1:
-    'Crop label (crp_lbl) of the first field of each pair. Use "Connect" to list the species available in the parquet.',
-  species2:
-    'Crop label of the neighbouring field. Pairs are the closest fields of species 1 and species 2. Can be the same as species 1.',
+  species:
+    'The crop labels (crp_lbl) to study together — 2 for pairs, 3 for triplets, and so on. A field is kept when its connected cluster of touching, different-species fields spans every chosen species. Use "Connect" to list the species in the parquet.',
   distance:
     'Maximum boundary-to-boundary distance for two fields to count as neighbours, in degrees (the geometries are in lon/lat): 0.0001 ≈ 11 m. Larger values find more pairs but they are less adjacent.',
   maxPairs:
@@ -41,11 +42,23 @@ const PARAM_INFO = {
 function loadStoredParams(): NeighborPairsParams {
   try {
     const stored = localStorage.getItem('ppca_pair_params');
-    if (stored) return { ...DEFAULT_NEIGHBOR_PARAMS, ...JSON.parse(stored) };
+    if (stored) {
+      const raw = JSON.parse(stored);
+      // Migrate the old two-species shape (species1 / species2) → species[].
+      if (!Array.isArray(raw.species) && (raw.species1 || raw.species2)) {
+        raw.species = [raw.species1, raw.species2].filter(Boolean);
+      }
+      const { species1, species2, ...rest } = raw;
+      void species1;
+      void species2;
+      const merged = { ...DEFAULT_NEIGHBOR_PARAMS, ...rest };
+      if (!Array.isArray(merged.species) || merged.species.length < 2) merged.species = [...DEFAULT_NEIGHBOR_PARAMS.species];
+      return merged;
+    }
   } catch {
     /* fall through to defaults */
   }
-  return { ...DEFAULT_NEIGHBOR_PARAMS };
+  return { ...DEFAULT_NEIGHBOR_PARAMS, species: [...DEFAULT_NEIGHBOR_PARAMS.species] };
 }
 
 interface PolygonsStepProps {
@@ -54,7 +67,7 @@ interface PolygonsStepProps {
   selectedIds: Set<number>;
   busy: boolean;
   error: string | null;
-  onLoadFromDb: (url: string, sql: string) => void;
+  onLoadFromDb: (url: string, sql: string, filterRows?: (rows: any[]) => any[]) => void;
   onLoadFromFile: (file: File) => void;
   onCancel: () => void;
   onDatasetRange: (range: DatasetDateRange) => void;
@@ -111,11 +124,22 @@ export default function PolygonsStep(props: PolygonsStepProps) {
   const loadPairs = () => {
     localStorage.setItem('ppca_db_url', dbUrl);
     try {
-      props.onLoadFromDb(dbUrl, buildNeighborPairsQuery(params));
+      const sqlText = buildNeighborPairsQuery(params);
+      props.onLoadFromDb(dbUrl, sqlText, rows => filterToSpanningComponents(rows, params.species));
     } catch (e) {
       setConnectError(e instanceof Error ? e.message : String(e));
     }
   };
+
+  // ----- species list editor -----
+  const setSpeciesAt = (i: number, value: string) =>
+    setParam('species', params.species.map((s, j) => (j === i ? value : s)));
+  const addSpecies = () => {
+    const used = new Set(params.species);
+    const next = species.find(s => !used.has(s)) ?? '';
+    setParam('species', [...params.species, next]);
+  };
+  const removeSpecies = (i: number) => setParam('species', params.species.filter((_, j) => j !== i));
 
   const loadCustomSql = () => {
     localStorage.setItem('ppca_db_url', dbUrl);
@@ -123,11 +147,12 @@ export default function PolygonsStep(props: PolygonsStepProps) {
     props.onLoadFromDb(dbUrl, sql);
   };
 
-  const speciesField = (label: string, key: 'species1' | 'species2', info: string) => (
-    <Field label={label} info={info}>
+  const speciesRow = (value: string, i: number) => (
+    <div key={i} className="flex items-center gap-1.5">
       {species.length > 0 ? (
-        <select className={inputClass} value={params[key]} onChange={e => setParam(key, e.target.value)}>
-          {!species.includes(params[key]) && <option value={params[key]}>{params[key]}</option>}
+        <select className={inputClass} value={value} onChange={e => setSpeciesAt(i, e.target.value)}>
+          {value !== '' && !species.includes(value) && <option value={value}>{value}</option>}
+          {value === '' && <option value="">— pick a species —</option>}
           {species.map(s => (
             <option key={s} value={s}>
               {s}
@@ -135,9 +160,17 @@ export default function PolygonsStep(props: PolygonsStepProps) {
           ))}
         </select>
       ) : (
-        <input className={inputClass} value={params[key]} onChange={e => setParam(key, e.target.value)} />
+        <input className={inputClass} value={value} onChange={e => setSpeciesAt(i, e.target.value)} />
       )}
-    </Field>
+      <button
+        onClick={() => removeSpecies(i)}
+        disabled={params.species.length <= 2}
+        title={params.species.length <= 2 ? 'At least two species are required' : 'Remove this species'}
+        className="shrink-0 rounded p-1 text-slate-500 hover:text-rose-300 disabled:cursor-not-allowed disabled:opacity-30"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </div>
   );
 
   const features: any[] = props.polygons?.features || [];
@@ -213,8 +246,17 @@ export default function PolygonsStep(props: PolygonsStepProps) {
                   spellCheck={false}
                 />
               </Field>
-              {speciesField('Species 1', 'species1', PARAM_INFO.species1)}
-              {speciesField('Species 2', 'species2', PARAM_INFO.species2)}
+              <Field label={`Species (${params.species.length})`} info={PARAM_INFO.species}>
+                <div className="space-y-1.5">
+                  {params.species.map((s, i) => speciesRow(s, i))}
+                  <button
+                    onClick={addSpecies}
+                    className="flex items-center gap-1.5 rounded-md border border-white/10 px-2 py-1 text-[11px] text-slate-400 transition-colors hover:border-sky-400/40 hover:text-sky-300"
+                  >
+                    <Plus className="h-3 w-3" /> Add species
+                  </button>
+                </div>
+              </Field>
               <div className="grid grid-cols-2 gap-2">
                 <Field
                   label="Neighbour distance"
@@ -235,7 +277,7 @@ export default function PolygonsStep(props: PolygonsStepProps) {
               <div className="flex gap-2">
                 <Button onClick={loadPairs} busy={props.busy} className="flex-1">
                   <Search className="h-3.5 w-3.5" />
-                  Find neighbour pairs
+                  {params.species.length > 2 ? 'Find neighbour clusters' : 'Find neighbour pairs'}
                 </Button>
                 {props.busy && <StopButton onClick={props.onCancel} />}
               </div>
