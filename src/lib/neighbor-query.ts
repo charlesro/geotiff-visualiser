@@ -40,6 +40,14 @@ export function buildNeighborPairsQuery(p: NeighborPairsParams): string {
   const maxPairs = Math.max(1, Math.floor(p.maxPairs));
   if (!isFinite(distance) || distance <= 0) throw new Error('Neighbour distance must be a positive number.');
 
+  // With 3+ species a spanning cluster almost never sits among the globally
+  // closest pairs — the abundant, very-close pairs of the two commonest crops
+  // crowd them out, so a small maxPairs returns zero spanning clusters even
+  // though they exist. Cross-species pairs among the chosen crops are few, so
+  // for 3+ species we take them all and let the JS component filter find the
+  // clusters. maxPairs only caps the 2-species "closest pairs" view.
+  const pairLimit = species.length >= 3 ? 2_000_000 : maxPairs;
+
   return `INSTALL spatial;
 LOAD spatial;
 SET threads TO 8;
@@ -82,7 +90,7 @@ WITH candidate_pairs AS (
 SELECT *
 FROM candidate_pairs
 ORDER BY distance
-LIMIT ${maxPairs};
+LIMIT ${pairLimit};
 
 -- Long format: one row per field per pair
 SELECT

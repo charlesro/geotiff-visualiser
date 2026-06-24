@@ -291,8 +291,8 @@ export default function PolygonsStep(props: PolygonsStepProps) {
                   </button>
                   {species.length > 0 && (
                     <p className="text-[10px] leading-snug text-slate-500">
-                      Each menu lists only crops that can border your selection, so a pick can't
-                      come up empty.
+                      Menus hide crops that never border your selection. Common crops border most
+                      others, so the list often stays long.
                     </p>
                   )}
                 </div>
