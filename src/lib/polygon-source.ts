@@ -125,6 +125,34 @@ export async function loadPolygonsFromDatabase(
   return result;
 }
 
+/**
+ * Add `addition`'s features to an existing collection, de-duplicating by NewID
+ * (falling back to geometry). Existing features keep their `__pid` so any
+ * current selection stays valid; only genuinely new fields get fresh ids.
+ */
+export function mergePolygonCollections(
+  existing: any,
+  addition: PolygonLoadResult
+): { collection: any; addedCount: number } {
+  const keyOf = (feat: any): string => {
+    const id = feat?.properties?.NewID;
+    return id != null ? `id:${id}` : `geo:${JSON.stringify(feat?.geometry)}`;
+  };
+  const features: any[] = [...(existing?.features || [])];
+  const seen = new Set(features.map(keyOf));
+  let nextPid = features.reduce((m, f) => Math.max(m, (f.properties?.__pid ?? -1) + 1), features.length);
+  let addedCount = 0;
+  for (const feat of addition.collection.features) {
+    const key = keyOf(feat);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const pid = nextPid++;
+    features.push({ ...feat, id: pid, properties: { ...feat.properties, __pid: pid } });
+    addedCount++;
+  }
+  return { collection: { type: 'FeatureCollection', features }, addedCount };
+}
+
 /** Load polygons from a .geojson/.json file or a zipped shapefile. */
 export async function loadPolygonsFromFile(file: File): Promise<PolygonLoadResult> {
   let geojson: any;

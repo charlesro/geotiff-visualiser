@@ -6,6 +6,7 @@ import { Bbox, getGeoJsonBounds, bufferBboxMeters, getBboxIntersectionArea } fro
 import {
   loadPolygonsFromDatabase,
   loadPolygonsFromFile,
+  mergePolygonCollections,
   polygonLabel,
 } from './lib/polygon-source';
 import { summarizeExtraction, NdviInspection, NdviPixel } from './lib/ndvi-series';
@@ -343,6 +344,28 @@ export default function App() {
       }
     },
     [onPolygonsLoaded]
+  );
+
+  // Grow the current result by one ring of neighbouring fields (any species),
+  // merging them in rather than replacing — existing selection is preserved.
+  const mergeFromDb = useCallback(
+    async (url: string, sql: string) => {
+      const op = beginOp();
+      setPolygonsBusy(true);
+      setPolygonsError(null);
+      try {
+        const addition = await loadPolygonsFromDatabase(url, sql, op.abort.signal);
+        const { collection, addedCount } = mergePolygonCollections(polygons, addition);
+        setPolygons(collection);
+        setPolygonsError(addedCount === 0 ? 'No new bordering fields found.' : null);
+        requestFit(getGeoJsonBounds(collection));
+      } catch (e) {
+        if (!isCancelledError(e)) setPolygonsError(errorMessage(e));
+      } finally {
+        setPolygonsBusy(false);
+      }
+    },
+    [polygons, requestFit]
   );
 
   const loadFromFile = useCallback(
@@ -916,6 +939,7 @@ export default function App() {
           busy={polygonsBusy}
           error={polygonsError}
           onLoadFromDb={loadFromDb}
+          onMergeFromDb={mergeFromDb}
           onLoadFromFile={loadFromFile}
           onCancel={cancelOp}
           onDatasetRange={onDatasetRange}

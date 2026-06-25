@@ -118,6 +118,50 @@ ORDER BY pair_id, role_in_pair;`;
 }
 
 /**
+ * Every field of *any* crop that lies within `distance` of one of `targetIds`
+ * (the fields already loaded from the neighbour-clusters step). Used to grow a
+ * selection outward by one ring of neighbours, regardless of species. Returns
+ * the targets themselves too (a field is within 0 of itself). One row per field
+ * with a WKT geometry column, so it parses like any other polygon result.
+ */
+export function buildNeighborFieldsQuery(
+  parquetPath: string,
+  targetIds: (string | number)[],
+  distance: number
+): string {
+  const path = sqlString(parquetPath);
+  const ids = Array.from(new Set(targetIds.map(id => String(id).trim()).filter(id => /^-?\d+$/.test(id))));
+  if (ids.length === 0) throw new Error('No fields to grow from — run the neighbour step first.');
+  const d = Number(distance);
+  if (!isFinite(d) || d <= 0) throw new Error('Neighbour distance must be a positive number.');
+
+  return `INSTALL spatial;
+LOAD spatial;
+SET threads TO 8;
+
+-- One row per field, every crop, with a spatial index for the radius join.
+CREATE OR REPLACE TABLE fields_all AS
+SELECT
+  NewID,
+  any_value(crp_lbl) AS crp_lbl,
+  any_value(geometry) AS geometry_wkt,
+  ST_GeomFromText(any_value(geometry)) AS geom
+FROM read_parquet(${path})
+WHERE geometry IS NOT NULL
+GROUP BY NewID;
+
+CREATE INDEX IF NOT EXISTS fields_all_geom_idx ON fields_all USING RTREE (geom);
+
+CREATE OR REPLACE TABLE grow_targets AS
+SELECT geom FROM fields_all WHERE NewID IN (${ids.join(', ')});
+
+-- Any field within the distance of any target field.
+SELECT DISTINCT a.NewID, a.crp_lbl, a.geometry_wkt
+FROM fields_all a
+JOIN grow_targets t ON ST_DWithin(a.geom, t.geom, ${d});`;
+}
+
+/**
  * Keep only the fields whose connected cross-species cluster spans *every*
  * chosen species. A field qualifies when it neighbours another chosen species,
  * or is linked to it through a chain of cross-species neighbours that, together,
