@@ -57,6 +57,9 @@ export default function App() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [polygonsBusy, setPolygonsBusy] = useState(false);
   const [polygonsError, setPolygonsError] = useState<string | null>(null);
+  // Bordering fields of other species, hidden from the analysis but kept so the
+  // toggle can bring them back. Empty = nothing hidden.
+  const [stashedBordering, setStashedBordering] = useState<any[]>([]);
 
   // Step 2 — imagery
   const [scenes, setScenes] = useState<RasterLayer[]>([]);
@@ -160,6 +163,8 @@ export default function App() {
         }
         const sel = await cacheGet<number[]>('selection');
         if (sel?.length) setSelectedIds(prev => (prev.size > 0 ? prev : new Set(sel)));
+        const bordering = await cacheGet<any[]>('bordering');
+        if (bordering?.length) setStashedBordering(prev => (prev.length > 0 ? prev : bordering));
         const series = await cacheGet<any>('series');
         if (series?.scenes?.length) {
           const revived = reviveScenes(series.scenes);
@@ -191,6 +196,12 @@ export default function App() {
     if (polygons) cacheSet('polygons', { collection: polygons, sourceLabel });
     else cacheDelete('polygons');
   }, [polygons, sourceLabel]);
+
+  useEffect(() => {
+    if (!hydratedRef.current) return;
+    if (stashedBordering.length) cacheSet('bordering', stashedBordering);
+    else cacheDelete('bordering');
+  }, [stashedBordering]);
 
   useEffect(() => {
     if (!hydratedRef.current) return;
@@ -299,6 +310,7 @@ export default function App() {
     setSourceLabel('');
     setSelectedIds(new Set());
     setPolygonsError(null);
+    setStashedBordering([]);
     clearFromImagery();
   }, [clearFromImagery]);
 
@@ -366,6 +378,53 @@ export default function App() {
       }
     },
     [polygons, requestFit]
+  );
+
+  // Hide / restore the bordering fields of other species. Hiding stashes them
+  // (out of polygons and selection) so calculations ignore them; pressing again
+  // merges them back. `selectedSpecies` are the chosen crops — everything else
+  // loaded is a bordering field. Survives reloads (persisted).
+  const toggleBordering = useCallback(
+    (selectedSpecies: string[]) => {
+      if (stashedBordering.length > 0) {
+        // Restore — merge the stash back (fresh ids), re-selecting what was selected.
+        const { collection } = mergePolygonCollections(polygons, {
+          collection: { type: 'FeatureCollection', features: stashedBordering },
+          attributes: [],
+          skipped: 0,
+        });
+        setPolygons(collection);
+        const reselect = new Set(
+          stashedBordering.filter(f => f.properties?.__wasSelected).map(f => String(f.properties?.NewID))
+        );
+        if (reselect.size > 0) {
+          setSelectedIds(prev => {
+            const next = new Set(prev);
+            for (const f of collection.features) {
+              if (reselect.has(String(f.properties?.NewID))) next.add(f.properties.__pid);
+            }
+            return next;
+          });
+        }
+        setStashedBordering([]);
+      } else {
+        // Hide — stash every loaded field whose crop isn't one of the chosen ones.
+        const chosen = new Set(selectedSpecies.filter(Boolean));
+        const feats = polygons?.features || [];
+        const hide = feats.filter((f: any) => f.properties?.crp_lbl != null && !chosen.has(f.properties.crp_lbl));
+        if (hide.length === 0) return;
+        const hidePids = new Set(hide.map((f: any) => f.properties?.__pid));
+        setStashedBordering(
+          hide.map((f: any) => ({
+            ...f,
+            properties: { ...f.properties, __wasSelected: selectedIds.has(f.properties?.__pid) },
+          }))
+        );
+        setSelectedIds(prev => new Set([...prev].filter(pid => !hidePids.has(pid))));
+        setPolygons({ type: 'FeatureCollection', features: feats.filter((f: any) => !hidePids.has(f.properties?.__pid)) });
+      }
+    },
+    [polygons, selectedIds, stashedBordering]
   );
 
   const loadFromFile = useCallback(
@@ -940,6 +999,8 @@ export default function App() {
           error={polygonsError}
           onLoadFromDb={loadFromDb}
           onMergeFromDb={mergeFromDb}
+          onToggleBordering={toggleBordering}
+          hiddenBorderingCount={stashedBordering.length}
           onLoadFromFile={loadFromFile}
           onCancel={cancelOp}
           onDatasetRange={onDatasetRange}
