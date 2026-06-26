@@ -64,11 +64,25 @@ function normalizeFeatures(rawFeatures: { geometry: any; properties: Record<stri
   const features: any[] = [];
   let skipped = 0;
   const attributes = new Set<string>();
+  // The neighbour-pairs/clusters query emits long format — one row per field
+  // per pair — so a field bordering several cross-species fields arrives as
+  // several rows sharing one NewID and identical geometry. Collapse them to a
+  // single feature (keeping the first row, whose pair metadata — role_in_pair /
+  // neighbor_id / pair_id — is what the UI shows) so each field is fetched,
+  // extracted and projected exactly once. Features without a NewID (e.g. a
+  // generic GeoJSON/shapefile) carry no field identity and are all kept.
+  const seenIds = new Set<string>();
 
   for (const raw of rawFeatures) {
     if (!isPolygonal(raw.geometry)) {
       skipped++;
       continue;
+    }
+    const newId = raw.properties?.NewID;
+    if (newId != null && newId !== '') {
+      const key = String(newId);
+      if (seenIds.has(key)) continue;
+      seenIds.add(key);
     }
     const pid = features.length;
     const properties = { ...raw.properties, __pid: pid };

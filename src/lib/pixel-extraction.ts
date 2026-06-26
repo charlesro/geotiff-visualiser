@@ -146,67 +146,69 @@ export async function extractPixelTimeseriesOptions(
     });
   }
 
-  let validPixelsCache: { 
-    signature: string; 
+  // Per-grid pixel-location cache (keyed by grid signature): pixel positions are
+  // date-independent, so compute them once per grid and only read values per date.
+  const pixelCache = new Map<string, {
     pixels: {x: number, y: number, id: string, lng: number, lat: number}[];
     excludedPixels: {x: number, y: number, id: string, lng: number, lat: number}[];
-  } | null = null;
-  
+  }>();
+
   let pointsExtracted = false;
 
-  // When a layer carries per-cluster 10 m analysis grids, read the one that
-  // contains this feature instead of the (possibly downsampled) preview grid.
-  const centerLng = (minLng + maxLng) / 2;
-  const centerLat = (minLat + maxLat) / 2;
-  const gridForFeature = (layer: RasterLayer) => {
+  // A feature can straddle several per-cluster 10 m analysis grids, or extend
+  // past the one holding its centre. Read EVERY grid whose extent overlaps the
+  // feature, not just one — otherwise pixels in the overhang are silently
+  // dropped (the "no pixels at the image border" bug). All grids share the
+  // global 10 m lattice, so the same location yields the same pixel id in each;
+  // a per-date seen-set dedups the overlaps. Fall back to the preview grid only
+  // when no analysis grid covers the feature.
+  const gridsForFeature = (layer: RasterLayer): any[] => {
     if (layer.analysisGrids?.length) {
-      const g = layer.analysisGrids.find(g => {
+      const hits = layer.analysisGrids.filter(g => {
         const b = g.metadata.imageBbox;
-        return b && centerLng >= b[0] && centerLng <= b[2] && centerLat >= b[1] && centerLat <= b[3];
+        return b && !(maxLng < b[0] || minLng > b[2] || maxLat < b[1] || minLat > b[3]);
       });
-      if (g) return g;
+      if (hits.length) return hits;
     }
-    return layer.data;
+    return layer.data ? [layer.data] : [];
   };
 
   for (const layer of sortedLayers) {
-    const grid = gridForFeature(layer);
-    if (!grid || !grid.bandData || !grid.metadata) continue;
-
-    const { bandData, metadata } = grid;
-    const { width, height, crs, originalBbox, originalWidth, originalHeight, windowOffsetX, windowOffsetY } = metadata;
-
-    if (!originalBbox || !originalWidth || !originalHeight) continue;
-
-    const signature = `${width}-${height}-${crs}-${originalBbox.join(',')}-${originalWidth}-${originalHeight}-${windowOffsetX}-${windowOffsetY}`;
     const dateStr = layer.datetime ? layer.datetime.split('T')[0] : 'Unknown';
     const rowData: PixelTimeseriesData = { date: dateStr };
     const excludedRowData: PixelTimeseriesData = { date: dateStr };
+    // Pixels shared by overlapping grids carry the same id — take each once.
+    const seenIncluded = new Set<string>();
+    const seenExcluded = new Set<string>();
 
-    if (validPixelsCache && validPixelsCache.signature === signature) {
-      // Use cache for included
-      for (const p of validPixelsCache.pixels) {
-        const offset = p.y * width + p.x;
-        const val = getPixelValue(bandData, offset, indexType);
-        if (val !== null) {
-          rowData[p.id] = val;
+    for (const grid of gridsForFeature(layer)) {
+      if (!grid || !grid.bandData || !grid.metadata) continue;
+
+      const { bandData, metadata } = grid;
+      const { width, height, crs, originalBbox, originalWidth, originalHeight, windowOffsetX, windowOffsetY } = metadata;
+
+      if (!originalBbox || !originalWidth || !originalHeight) continue;
+
+      const signature = `${width}-${height}-${crs}-${originalBbox.join(',')}-${originalWidth}-${originalHeight}-${windowOffsetX}-${windowOffsetY}`;
+
+      const cached = pixelCache.get(signature);
+      if (cached) {
+        for (const p of cached.pixels) {
+          if (seenIncluded.has(p.id)) continue;
+          seenIncluded.add(p.id);
+          const val = getPixelValue(bandData, p.y * width + p.x, indexType);
+          if (val !== null) rowData[p.id] = val;
         }
-      }
-      timeseries.push(rowData);
-
-      // Use cache for excluded
-      for (const p of validPixelsCache.excludedPixels) {
-        const offset = p.y * width + p.x;
-        const val = getPixelValue(bandData, offset, indexType);
-        if (val !== null) {
-          excludedRowData[p.id] = val;
+        for (const p of cached.excludedPixels) {
+          if (seenExcluded.has(p.id)) continue;
+          seenExcluded.add(p.id);
+          const val = getPixelValue(bandData, p.y * width + p.x, indexType);
+          if (val !== null) excludedRowData[p.id] = val;
         }
+        continue;
       }
-      excludedTimeseries.push(excludedRowData);
-      continue;
-    }
 
-    // If no cache match, compute from scratch
+      // No cache for this grid yet — compute its pixel locations from scratch.
     const resX = (originalBbox[2] - originalBbox[0]) / originalWidth;
     const resY = (originalBbox[3] - originalBbox[1]) / originalHeight;
 
@@ -305,8 +307,10 @@ export async function extractPixelTimeseriesOptions(
           }
 
           if (isInsideCore) {
+            if (seenIncluded.has(pixelId)) continue; // already taken from another grid
+            seenIncluded.add(pixelId);
             computedPixels.push({ x: ux, y: uy, id: pixelId, lng, lat });
-            
+
             if (!pointsExtracted) {
               const parentProps = feature?.properties || {};
               const speciesVal = extractSpecies(parentProps);
@@ -314,7 +318,7 @@ export async function extractPixelTimeseriesOptions(
               pointFeatures.push({
                 type: "Feature",
                 geometry: { type: "Point", coordinates: [lng, lat] },
-                properties: { 
+                properties: {
                   ...parentProps,
                   ...(originalId !== undefined ? { polygon_id: originalId } : {}),
                   id: pixelId,
@@ -328,6 +332,8 @@ export async function extractPixelTimeseriesOptions(
             }
           } else {
             // Excluded/boundary pixels
+            if (seenExcluded.has(pixelId)) continue; // already taken from another grid
+            seenExcluded.add(pixelId);
             computedExcludedPixels.push({ x: ux, y: uy, id: pixelId, lng, lat });
 
             if (!pointsExtracted) {
@@ -337,7 +343,7 @@ export async function extractPixelTimeseriesOptions(
               excludedPointFeatures.push({
                 type: "Feature",
                 geometry: { type: "Point", coordinates: [lng, lat] },
-                properties: { 
+                properties: {
                   ...parentProps,
                   ...(originalId !== undefined ? { polygon_id: originalId } : {}),
                   id: pixelId,
@@ -354,12 +360,10 @@ export async function extractPixelTimeseriesOptions(
       }
     }
     
-    // Save to cache
-    validPixelsCache = { 
-      signature, 
-      pixels: computedPixels, 
-      excludedPixels: computedExcludedPixels 
-    };
+      // Cache this grid's pixel locations for the remaining dates.
+      pixelCache.set(signature, { pixels: computedPixels, excludedPixels: computedExcludedPixels });
+    }
+
     timeseries.push(rowData);
     excludedTimeseries.push(excludedRowData);
     pointsExtracted = true;
