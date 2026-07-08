@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { saveAs } from 'file-saver';
-import { Layers, RotateCcw } from 'lucide-react';
+import { Grid3x3, Layers, RotateCcw } from 'lucide-react';
 import { RasterLayer } from './types';
 import { Bbox, getGeoJsonBounds, bufferBboxMeters, getBboxIntersectionArea } from './lib/geo';
 import {
@@ -21,6 +21,7 @@ import { runPixelPca, pcaScoresToCsv, PcaRunResult } from './lib/pca';
 import { DrMethod } from './lib/projections';
 import { isCancelledError } from './lib/cancel';
 import { DatasetDateRange } from './lib/neighbor-query';
+import { fetchGrowingSeasonWindow } from './lib/phenology';
 import { cacheClear, cacheDelete, cacheGet, cacheSet, reviveScenes, serializeScenes } from './lib/persist';
 import MapPanel, { ScenePreview } from './components/MapPanel';
 import Sidebar, { StepDescriptor } from './components/Sidebar';
@@ -545,6 +546,24 @@ export default function App() {
 
   // ----- Step 2 handlers -----------------------------------------------------
 
+  // Detect the crops' shared growing window from NDVI so the series can skip the
+  // bare-soil / other-crop dates. Reads engine + parquet from the step-1 config.
+  const detectGrowingSeason = useCallback(async () => {
+    const url = localStorage.getItem('ppca_db_url') || 'http://localhost:8080';
+    let parquetPath = '';
+    try {
+      parquetPath = JSON.parse(localStorage.getItem('ppca_pair_params') || '{}').parquetPath || '';
+    } catch {
+      /* ignore */
+    }
+    if (!parquetPath) throw new Error('Load fields from the database first (needs the parquet path).');
+    const fields = selectedFeatures.map((f: any) => ({
+      NewID: f.properties?.NewID,
+      crp_lbl: f.properties?.crp_lbl,
+    }));
+    return fetchGrowingSeasonWindow(url, parquetPath, fields);
+  }, [selectedFeatures]);
+
   const fetchSeries = useCallback(
     async (params: SeriesFetchParams) => {
       const bounds = getGeoJsonBounds({ type: 'FeatureCollection', features: selectedFeatures });
@@ -1032,6 +1051,7 @@ export default function App() {
           selectionChanged={selectionChangedSinceFetch}
           onFetch={fetchSeries}
           onCancel={cancelOp}
+          onDetectSeason={detectGrowingSeason}
           datasetRange={datasetRange}
           previewSceneId={previewSceneId}
           onPreviewScene={setPreviewSceneId}
@@ -1163,12 +1183,20 @@ export default function App() {
           <h1 className="text-sm font-semibold tracking-tight">Polygon Time-Series PCA</h1>
           <span className="text-xs text-slate-600">Sentinel-2 · interior vs edge buffer analysis</span>
         </div>
-        <button
-          onClick={resetAll}
-          className="flex items-center gap-1.5 rounded-md border border-white/10 px-2.5 py-1 text-xs text-slate-400 transition-colors hover:text-slate-200"
-        >
-          <RotateCcw className="h-3 w-3" /> Reset
-        </button>
+        <div className="flex items-center gap-2">
+          <a
+            href="/pixel-grid.html"
+            className="flex items-center gap-1.5 rounded-md border border-sky-500/40 bg-sky-500/10 px-2.5 py-1 text-xs text-sky-300 transition-colors hover:bg-sky-500/20"
+          >
+            <Grid3x3 className="h-3 w-3" /> Pixel Grid Designer
+          </a>
+          <button
+            onClick={resetAll}
+            className="flex items-center gap-1.5 rounded-md border border-white/10 px-2.5 py-1 text-xs text-slate-400 transition-colors hover:text-slate-200"
+          >
+            <RotateCcw className="h-3 w-3" /> Reset
+          </button>
+        </div>
       </header>
 
       <div className="flex min-h-0 flex-1">
