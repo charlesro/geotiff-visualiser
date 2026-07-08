@@ -21,7 +21,7 @@ import { runPixelPca, pcaScoresToCsv, PcaRunResult } from './lib/pca';
 import { DrMethod } from './lib/projections';
 import { isCancelledError } from './lib/cancel';
 import { DatasetDateRange } from './lib/neighbor-query';
-import { fetchGrowingSeasonWindow } from './lib/phenology';
+import { fetchGrowingSeasonWindow, GrowingSeasonResult } from './lib/phenology';
 import { cacheClear, cacheDelete, cacheGet, cacheSet, reviveScenes, serializeScenes } from './lib/persist';
 import MapPanel, { ScenePreview } from './components/MapPanel';
 import Sidebar, { StepDescriptor } from './components/Sidebar';
@@ -101,6 +101,12 @@ export default function App() {
   const [pcaResult, setPcaResult] = useState<PcaRunResult | null>(null);
   const [pcaBusy, setPcaBusy] = useState(false);
   const [pcaError, setPcaError] = useState<string | null>(null);
+  // Restrict the PCA to the crops' growing season (detected from NDVI) while the
+  // fetch stays whole-year — extract the actual-plant dates at analysis time.
+  const [pcaSeasonOnly, setPcaSeasonOnly] = useState(false);
+  const [pcaSeason, setPcaSeason] = useState<GrowingSeasonResult | null>(null);
+  const [pcaSeasonBusy, setPcaSeasonBusy] = useState(false);
+  const [pcaSeasonError, setPcaSeasonError] = useState<string | null>(null);
   const [showPcaPanel, setShowPcaPanel] = useState(false);
   const [showBoundaryPanel, setShowBoundaryPanel] = useState(false);
   /** Edge·other pixels flagged as boundaries in the PCA-gap finder. */
@@ -908,6 +914,39 @@ export default function App() {
 
   // ----- Step 5 handlers -----------------------------------------------------
 
+  // Toggle the growing-season restriction; detect the window from NDVI the first
+  // time it's turned on. Falls back to off (whole year) if no shared window.
+  const toggleSeasonOnly = useCallback(
+    async (on: boolean) => {
+      setPcaSeasonError(null);
+      if (!on) {
+        setPcaSeasonOnly(false);
+        return;
+      }
+      if (pcaSeason?.window) {
+        setPcaSeasonOnly(true);
+        return;
+      }
+      setPcaSeasonBusy(true);
+      try {
+        const result = await detectGrowingSeason();
+        setPcaSeason(result);
+        if (result.window) {
+          setPcaSeasonOnly(true);
+        } else {
+          setPcaSeasonOnly(false);
+          setPcaSeasonError(result.note || 'No shared growing window across the selected crops.');
+        }
+      } catch (e) {
+        setPcaSeasonOnly(false);
+        setPcaSeasonError(errorMessage(e));
+      } finally {
+        setPcaSeasonBusy(false);
+      }
+    },
+    [detectGrowingSeason, pcaSeason]
+  );
+
   const runPca = useCallback(async () => {
     if (!zones) return;
     setPcaBusy(true);
@@ -929,10 +968,13 @@ export default function App() {
       if (pcaFields !== null) {
         pixels = pixels.filter(p => pcaFields.has(p.properties?.__pid));
       }
+      const season = pcaSeasonOnly ? pcaSeason?.window : null;
       const result = runPixelPca(pixels, zones.metric, {
         fitZones: pcaFitZones,
         projectZones: pcaProjectZones,
         method: pcaMethod,
+        dateStart: season?.start,
+        dateEnd: season?.end,
       });
       setPcaResult(result);
       setShowPcaPanel(true);
@@ -942,7 +984,7 @@ export default function App() {
     } finally {
       setPcaBusy(false);
     }
-  }, [zones, clustering, pcaScope, pcaFields, pcaFitZones, pcaProjectZones, pcaMethod]);
+  }, [zones, clustering, pcaScope, pcaFields, pcaFitZones, pcaProjectZones, pcaMethod, pcaSeasonOnly, pcaSeason]);
 
   // Changing the projected classes from the results panel re-runs the
   // projection live. Refs avoid re-firing when the run itself lands.
@@ -1051,7 +1093,6 @@ export default function App() {
           selectionChanged={selectionChangedSinceFetch}
           onFetch={fetchSeries}
           onCancel={cancelOp}
-          onDetectSeason={detectGrowingSeason}
           datasetRange={datasetRange}
           previewSceneId={previewSceneId}
           onPreviewScene={setPreviewSceneId}
@@ -1132,6 +1173,11 @@ export default function App() {
           busy={pcaBusy}
           error={pcaError}
           onRun={runPca}
+          seasonOnly={pcaSeasonOnly}
+          onToggleSeason={toggleSeasonOnly}
+          season={pcaSeason}
+          seasonBusy={pcaSeasonBusy}
+          seasonError={pcaSeasonError}
           onOpenResults={() => setShowPcaPanel(true)}
           onExportCsv={exportCsv}
         />

@@ -1,7 +1,8 @@
 import React from 'react';
-import { BarChart3, Download, ExternalLink } from 'lucide-react';
+import { BarChart3, Download, ExternalLink, Sprout } from 'lucide-react';
 import { PixelZone, ZoneExtraction } from '../../lib/zones';
 import { PcaRunResult } from '../../lib/pca';
+import { GrowingSeasonResult } from '../../lib/phenology';
 import { SpeciesClustering, CLUSTER_COLORS } from '../../lib/species-clusters';
 import { ZONE_CLASSES } from '../../lib/legend';
 import { Button, ErrorNote, Field, inputClass, PrereqNote, Stat } from '../ui';
@@ -98,6 +99,12 @@ interface PcaStepProps {
   busy: boolean;
   error: string | null;
   onRun: () => void;
+  /** Restrict the PCA to the crops' NDVI-detected growing season. */
+  seasonOnly: boolean;
+  onToggleSeason: (on: boolean) => void;
+  season: GrowingSeasonResult | null;
+  seasonBusy: boolean;
+  seasonError: string | null;
   onOpenResults: () => void;
   onExportCsv: () => void;
 }
@@ -260,6 +267,34 @@ export default function PcaStep(props: PcaStepProps) {
         </div>
       )}
 
+      <label className="flex cursor-pointer items-start gap-2 rounded-md border border-emerald-400/15 bg-emerald-400/[0.03] px-2.5 py-2 text-[11px] leading-snug text-slate-300">
+        <input
+          type="checkbox"
+          checked={props.seasonOnly}
+          disabled={props.seasonBusy}
+          onChange={e => props.onToggleSeason(e.target.checked)}
+          className="mt-0.5 accent-emerald-500"
+        />
+        <span className="flex-1">
+          <span className="flex items-center gap-1 text-slate-200">
+            <Sprout className="h-3 w-3 text-emerald-400" /> Growing season only
+          </span>
+          <span className="text-slate-500">
+            {props.seasonBusy
+              ? 'Reading NDVI…'
+              : 'Analyse only the dates each crop is actually in the field (keeps the whole-year fetch).'}
+          </span>
+          {props.seasonError && <span className="mt-0.5 block text-amber-300/90">{props.seasonError}</span>}
+          {props.seasonOnly && props.season?.window && (
+            <span className="mt-1 block text-emerald-300/90">
+              {props.season.perSpecies.map(p => `${p.species}: ${p.window.start}→${p.window.end}`).join(' · ')}
+              {' — using '}
+              {props.season.window.start} → {props.season.window.end}
+            </span>
+          )}
+        </span>
+      </label>
+
       <Button
         onClick={props.onRun}
         busy={props.busy}
@@ -269,6 +304,7 @@ export default function PcaStep(props: PcaStepProps) {
       >
         <BarChart3 className="h-3.5 w-3.5" />
         Run PCA{scoped ? ` · scenario ${scoped.cluster + 1}` : ''}
+        {props.seasonOnly && props.season?.window ? ' · growing season' : ''}
       </Button>
       <ErrorNote message={props.error} />
 

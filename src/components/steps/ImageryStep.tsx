@@ -1,9 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { Eye, EyeOff, Satellite, Sprout, Trash2 } from 'lucide-react';
+import { Eye, EyeOff, Satellite, Trash2 } from 'lucide-react';
 import { RasterLayer } from '../../types';
 import { SeriesFetchParams, SeriesProgress } from '../../lib/fetch-series';
 import { DatasetDateRange } from '../../lib/neighbor-query';
-import { GrowingSeasonResult } from '../../lib/phenology';
 import { Button, ErrorNote, Field, inputClass, NumberInput, PrereqNote, ProgressBar, StopButton } from '../ui';
 import { cn } from '../../lib/utils';
 
@@ -25,8 +24,6 @@ interface ImageryStepProps {
   selectionChanged: boolean;
   onFetch: (params: SeriesFetchParams) => void;
   onCancel: () => void;
-  /** Detect the selected crops' shared growing window from NDVI phenology. */
-  onDetectSeason: () => Promise<GrowingSeasonResult>;
   /** Acquisition span of the connected dataset — the default fetch period. */
   datasetRange: DatasetDateRange | null;
   previewSceneId: string | null;
@@ -53,28 +50,6 @@ export default function ImageryStep(props: ImageryStepProps) {
       setEndDate(props.datasetRange.end);
     }
   }, [props.datasetRange]);
-  const [seasonBusy, setSeasonBusy] = useState(false);
-  const [season, setSeason] = useState<GrowingSeasonResult | null>(null);
-  const [seasonError, setSeasonError] = useState<string | null>(null);
-
-  const detectSeason = async () => {
-    setSeasonBusy(true);
-    setSeasonError(null);
-    try {
-      const result = await props.onDetectSeason();
-      setSeason(result);
-      if (result.window) {
-        setStartDate(result.window.start);
-        setEndDate(result.window.end);
-      }
-    } catch (e) {
-      setSeason(null);
-      setSeasonError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSeasonBusy(false);
-    }
-  };
-
   const [maxCloud, setMaxCloud] = useState(20);
   const [count, setCount] = useState(12);
   const [fetchAll, setFetchAll] = useState(false);
@@ -106,36 +81,6 @@ export default function ImageryStep(props: ImageryStepProps) {
           <input type="date" className={inputClass} value={endDate} onChange={e => setEndDate(e.target.value)} />
         </Field>
       </div>
-      {props.selectedCount > 0 && (
-        <div className="space-y-1">
-          <button
-            onClick={detectSeason}
-            disabled={seasonBusy}
-            className="flex w-full items-center justify-center gap-1.5 rounded-md border border-emerald-400/20 bg-emerald-400/5 px-2 py-1.5 text-[11px] text-emerald-200/90 transition-colors hover:border-emerald-400/50 disabled:opacity-50"
-          >
-            <Sprout className="h-3 w-3" />
-            {seasonBusy ? 'Reading NDVI…' : 'Restrict to growing season'}
-          </button>
-          {seasonError && <p className="text-[10px] leading-snug text-red-300/90">{seasonError}</p>}
-          {season && (
-            <div className="rounded-md border border-white/5 px-2 py-1.5 text-[10px] leading-relaxed text-slate-400">
-              {season.perSpecies.map(p => (
-                <div key={p.species}>
-                  <span className="text-slate-300">{p.species}</span> · {p.window.start} → {p.window.end}{' '}
-                  <span className="text-slate-600">({p.fields})</span>
-                </div>
-              ))}
-              {season.window ? (
-                <div className="mt-0.5 text-emerald-300/90">
-                  Shared window applied: {season.window.start} → {season.window.end}
-                </div>
-              ) : (
-                <div className="mt-0.5 text-amber-300/90">{season.note}</div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
       <div className="grid grid-cols-2 gap-2">
         <Field label={`Max cloud cover · ${maxCloud}%`}>
           <input

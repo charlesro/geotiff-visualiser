@@ -30,6 +30,10 @@ export interface PcaFitOptions {
   projectZones?: PixelZone[];
   /** Dimensionality-reduction method. Default: 'pca'. */
   method?: DrMethod;
+  /** Keep only acquisition dates ≥ this (YYYY-MM-DD) — the growing-season start. */
+  dateStart?: string;
+  /** Keep only acquisition dates ≤ this (YYYY-MM-DD) — the growing-season end. */
+  dateEnd?: string;
 }
 
 export interface PcaPixelScore {
@@ -102,14 +106,23 @@ export function runPixelPca(pixelFeatures: any[], metric: string, options: PcaFi
       }
     }
   }
-  const dates = Array.from(obsCount.entries())
+  let dates = Array.from(obsCount.entries())
     .filter(([, c]) => c >= Math.max(5, pixels.length * 0.02))
     .map(([d]) => d)
     .sort();
 
+  // Growing-season window: keep only the dates when the crop is actually in the
+  // field (ISO date strings compare chronologically), dropping the bare-soil /
+  // other-crop parts of the year from the analysis while the fetch stays whole-year.
+  if (options.dateStart) dates = dates.filter(d => d >= options.dateStart!);
+  if (options.dateEnd) dates = dates.filter(d => d <= options.dateEnd!);
+
   if (dates.length < 3) {
+    const windowed = options.dateStart || options.dateEnd;
     throw new Error(
-      `Only ${dates.length} acquisition date(s) across the selection — at least 3 are needed. Fetch more scenes or widen the period.`
+      `Only ${dates.length} acquisition date(s) ${windowed ? 'in the growing-season window' : 'across the selection'} — at least 3 are needed. ${
+        windowed ? 'Fetch more dates across the year (the window keeps only the in-season ones).' : 'Fetch more scenes or widen the period.'
+      }`
     );
   }
   const axisT = dates.map(d => Date.parse(d));
