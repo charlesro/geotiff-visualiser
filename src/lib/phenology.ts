@@ -38,9 +38,17 @@ const median = (xs: number[]): number => {
 };
 
 /**
- * Contiguous half-max window around the peak of one field's NDVI series, as
- * [startIndex, endIndex] into the shared, sorted date list. Returns the full
- * span for an ~evergreen field (no real cycle) and null when too sparse.
+ * One field's growing window, as [startIndex, endIndex] into the shared, sorted
+ * date list. Two regimes, told apart by whether the field ever goes bare:
+ *
+ *  - Annual (a real off-season, NDVI → bare soil): the single canopy cycle
+ *    around the year's peak. Bounded by the half-max level and stopped at the
+ *    senescence trough, so the winter cover crop, spring bare soil and a fall
+ *    cover crop are all left out — just the crop's own green cycle.
+ *  - Perennial / grassland (never bare — luzerne, permanent pasture): the whole
+ *    green period, hopping over the brief cut-dips, not one regrowth cycle.
+ *
+ * Returns null when too sparse.
  */
 function detectFieldWindow(ndvi: (number | null)[]): [number, number] | null {
   const idx: number[] = [];
@@ -55,21 +63,42 @@ function detectFieldWindow(ndvi: (number | null)[]): [number, number] | null {
   let baseline = peak;
   for (const i of idx) baseline = Math.min(baseline, ndvi[i] as number);
 
-  // "Actively growing crop" threshold: an absolute green NDVI (~0.4), never
-  // above the peak's half-max so low-peaking crops still get a window. Anchored
-  // at the year's peak and expanded outward while NDVI stays green, hopping over
-  // a single below-threshold dip (a forage cut). This keeps a maize field's
-  // window to its summer cycle (bare soil / a sparse cover crop fall below the
-  // threshold) while a perennial like luzerne — green all year, briefly cut —
-  // spans the whole year instead of one regrowth cycle.
-  const threshold = Math.min(0.4, baseline + 0.5 * (peak - baseline));
-  const green = (k: number): boolean =>
-    k >= 0 && k < idx.length && (ndvi[idx[k]] as number) >= threshold;
+  // A real off-season: NDVI at bare-soil level (< 0.3) for ≥ 2 acquisitions.
+  let bare = false;
+  let run = 0;
+  for (const i of idx) {
+    run = (ndvi[i] as number) < 0.3 ? run + 1 : 0;
+    if (run >= 2) {
+      bare = true;
+      break;
+    }
+  }
 
   let s = peakPos;
-  while (s > 0 && (green(s - 1) || green(s - 2))) s -= green(s - 1) ? 1 : 2;
   let e = peakPos;
-  while (e < idx.length - 1 && (green(e + 1) || green(e + 2))) e += green(e + 1) ? 1 : 2;
+  if (!bare) {
+    // Perennial: keep the whole green span, hopping over a single cut-dip.
+    const green = (k: number): boolean => k >= 0 && k < idx.length && (ndvi[idx[k]] as number) >= 0.3;
+    while (s > 0 && (green(s - 1) || green(s - 2))) s -= green(s - 1) ? 1 : 2;
+    while (e < idx.length - 1 && (green(e + 1) || green(e + 2))) e += green(e + 1) ? 1 : 2;
+  } else {
+    // Annual: expand from the peak while above half-max, stopping once NDVI has
+    // fallen well below the peak and starts rising again (a neighbouring crop).
+    const threshold = baseline + 0.5 * (peak - baseline);
+    const low = 0.7 * peak;
+    while (e < idx.length - 1) {
+      const next = ndvi[idx[e + 1]] as number;
+      const cur = ndvi[idx[e]] as number;
+      if (next < threshold || (cur < low && next > cur + 0.03)) break;
+      e++;
+    }
+    while (s > 0) {
+      const prev = ndvi[idx[s - 1]] as number;
+      const cur = ndvi[idx[s]] as number;
+      if (prev < threshold || (cur < low && prev > cur + 0.03)) break;
+      s--;
+    }
+  }
   return [idx[s], idx[e]];
 }
 
