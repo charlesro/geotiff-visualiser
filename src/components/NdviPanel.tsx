@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { X, Loader2 } from 'lucide-react';
+import { X, Loader2, Sprout } from 'lucide-react';
 import {
   LineChart,
   Line,
@@ -39,6 +39,11 @@ interface NdviPanelProps {
   onHighlightPixel: (pixel: NdviPixel | null) => void;
   /** Growing-season window the PCA keeps — shaded on the time axis. */
   seasonWindow: { start: string; end: string } | null;
+  /** Growing-season restriction: toggled here, applied to the PCA. */
+  seasonOn: boolean;
+  onToggleSeason: (on: boolean) => void;
+  seasonBusy: boolean;
+  seasonError: string | null;
 }
 
 export default function NdviPanel({
@@ -50,6 +55,10 @@ export default function NdviPanel({
   highlightPixel,
   onHighlightPixel,
   seasonWindow,
+  seasonOn,
+  onToggleSeason,
+  seasonBusy,
+  seasonError,
 }: NdviPanelProps) {
   const [mode, setMode] = useState<'mean' | 'pixels'>('mean');
   const [selectedZone, setSelectedZone] = useState<string | null>(null);
@@ -178,6 +187,33 @@ export default function NdviPanel({
           </button>
         </div>
       </div>
+
+      {inspection && !busy && (
+        <button
+          onClick={() => onToggleSeason(!seasonOn)}
+          disabled={seasonBusy}
+          title="Analyse only the dates each crop is actually in the field (drops the off-season). Applies to the PCA too."
+          className={cn(
+            'mb-2 flex w-full items-center gap-1.5 rounded-md border px-2 py-1.5 text-[11px] transition-colors disabled:opacity-60',
+            seasonOn
+              ? 'border-emerald-400/40 bg-emerald-400/10 text-emerald-200'
+              : 'border-white/10 text-slate-400 hover:border-emerald-400/30 hover:text-emerald-200'
+          )}
+        >
+          <Sprout className="h-3 w-3 shrink-0" />
+          <span className="truncate">
+            {seasonBusy
+              ? 'Detecting growing season…'
+              : seasonOn && seasonWindow
+                ? `Growing season only · ${seasonWindow.start} → ${seasonWindow.end}`
+                : 'Growing season only'}
+          </span>
+          <span className="ml-auto shrink-0 rounded px-1.5 text-[10px] uppercase tracking-wide text-slate-500">
+            {seasonOn ? 'on' : 'off'}
+          </span>
+        </button>
+      )}
+      {seasonError && <div className="mb-2 text-[10px] leading-snug text-amber-300/90">{seasonError}</div>}
 
       {busy && (
         <div className="flex h-48 items-center justify-center text-slate-500">
