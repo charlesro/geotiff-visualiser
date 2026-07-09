@@ -1282,6 +1282,7 @@ export default function App() {
             onSelectDate={previewDate}
             highlightPixel={highlightPixel}
             onHighlightPixel={setHighlightPixel}
+            seasonWindow={pcaSeasonOnly ? pcaSeason?.window ?? null : null}
           />
           {showPcaPanel && pcaResult && (
             <PcaPanel

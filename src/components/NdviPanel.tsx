@@ -8,6 +8,7 @@ import {
   Tooltip,
   Legend,
   CartesianGrid,
+  ReferenceArea,
   ResponsiveContainer,
 } from 'recharts';
 import { NdviInspection, NdviPixel } from '../lib/ndvi-series';
@@ -36,6 +37,8 @@ interface NdviPanelProps {
   /** The pixel selected in the chart or on the map (shared with the map). */
   highlightPixel: NdviPixel | null;
   onHighlightPixel: (pixel: NdviPixel | null) => void;
+  /** Growing-season window the PCA keeps — shaded on the time axis. */
+  seasonWindow: { start: string; end: string } | null;
 }
 
 export default function NdviPanel({
@@ -46,6 +49,7 @@ export default function NdviPanel({
   onSelectDate,
   highlightPixel,
   onHighlightPixel,
+  seasonWindow,
 }: NdviPanelProps) {
   const [mode, setMode] = useState<'mean' | 'pixels'>('mean');
   const [selectedZone, setSelectedZone] = useState<string | null>(null);
@@ -80,6 +84,26 @@ export default function NdviPanel({
       return row;
     });
   }, [inspection, shownPixels]);
+
+  // The fetched dates the growing-season window keeps — what the PCA analyses.
+  const seasonBand = useMemo(() => {
+    if (!seasonWindow || !inspection) return null;
+    const kept = inspection.dates.filter(d => d >= seasonWindow.start && d <= seasonWindow.end);
+    return kept.length ? { x1: kept[0], x2: kept[kept.length - 1], count: kept.length } : null;
+  }, [seasonWindow, inspection]);
+
+  // Emerald band marking the retained window, drawn behind the lines in both charts.
+  const seasonArea = seasonBand ? (
+    <ReferenceArea
+      x1={seasonBand.x1}
+      x2={seasonBand.x2}
+      fill="#34d399"
+      fillOpacity={0.12}
+      stroke="#34d399"
+      strokeOpacity={0.35}
+      label={{ value: `growing season · ${seasonBand.count} dates`, position: 'insideTop', fill: '#6ee7b7', fontSize: 10 }}
+    />
+  ) : null;
 
   if (!inspection && !busy && !error) return null;
 
@@ -167,6 +191,7 @@ export default function NdviPanel({
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={inspection.series} margin={{ top: 4, right: 8, bottom: 0, left: -16 }} onClick={chartClick}>
               <CartesianGrid stroke="#ffffff14" strokeDasharray="3 3" />
+              {seasonArea}
               <XAxis dataKey="date" tickFormatter={(d: string) => d.slice(5)} {...axisProps} />
               <YAxis domain={[-0.2, 1]} {...axisProps} />
               <Tooltip
@@ -199,6 +224,7 @@ export default function NdviPanel({
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={pixelData} margin={{ top: 4, right: 8, bottom: 0, left: -16 }} onClick={chartClick}>
                 <CartesianGrid stroke="#ffffff14" strokeDasharray="3 3" />
+                {seasonArea}
                 <XAxis dataKey="date" tickFormatter={(d: string) => d.slice(5)} {...axisProps} />
                 <YAxis domain={[-0.2, 1]} {...axisProps} />
                 <Tooltip content={() => null} cursor={{ stroke: '#ffffff33' }} />
