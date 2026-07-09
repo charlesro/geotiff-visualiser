@@ -54,12 +54,22 @@ function detectFieldWindow(ndvi: (number | null)[]): [number, number] | null {
   const peak = ndvi[idx[peakPos]] as number;
   let baseline = peak;
   for (const i of idx) baseline = Math.min(baseline, ndvi[i] as number);
-  if (peak - baseline < 0.15) return [idx[0], idx[idx.length - 1]]; // ~flat: treat as in-season all span
-  const threshold = baseline + 0.5 * (peak - baseline);
+
+  // "Actively growing crop" threshold: an absolute green NDVI (~0.4), never
+  // above the peak's half-max so low-peaking crops still get a window. Anchored
+  // at the year's peak and expanded outward while NDVI stays green, hopping over
+  // a single below-threshold dip (a forage cut). This keeps a maize field's
+  // window to its summer cycle (bare soil / a sparse cover crop fall below the
+  // threshold) while a perennial like luzerne — green all year, briefly cut —
+  // spans the whole year instead of one regrowth cycle.
+  const threshold = Math.min(0.4, baseline + 0.5 * (peak - baseline));
+  const green = (k: number): boolean =>
+    k >= 0 && k < idx.length && (ndvi[idx[k]] as number) >= threshold;
+
   let s = peakPos;
-  while (s > 0 && (ndvi[idx[s - 1]] as number) >= threshold) s--;
+  while (s > 0 && (green(s - 1) || green(s - 2))) s -= green(s - 1) ? 1 : 2;
   let e = peakPos;
-  while (e < idx.length - 1 && (ndvi[idx[e + 1]] as number) >= threshold) e++;
+  while (e < idx.length - 1 && (green(e + 1) || green(e + 2))) e += green(e + 1) ? 1 : 2;
   return [idx[s], idx[e]];
 }
 
