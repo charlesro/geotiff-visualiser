@@ -78,10 +78,14 @@ function detectFieldWindow(ndvi: (number | null)[]): [number, number] | null {
     while (s > 0 && (green(s - 1) || green(s - 2))) s -= green(s - 1) ? 1 : 2;
     while (e < idx.length - 1 && (green(e + 1) || green(e + 2))) e += green(e + 1) ? 1 : 2;
   } else {
-    // Annual: expand from the peak while above half-max, stopping once NDVI has
-    // fallen well below the peak and starts rising again (a neighbouring crop).
-    const threshold = baseline + 0.5 * (peak - baseline);
-    const low = 0.7 * peak;
+    // Annual: cover the full canopy cycle — green-up through senescence — not
+    // just the top of the peak. Expand from the peak down each limb to a low
+    // fraction of the amplitude (0.35, well below half-max so the rising and
+    // falling shoulders are included), stopping early only once NDVI has fallen
+    // well below the peak and starts rising again — a neighbouring crop (winter
+    // or fall cover crop) rather than this one.
+    const threshold = baseline + 0.35 * (peak - baseline);
+    const low = 0.75 * peak;
     while (e < idx.length - 1) {
       const next = ndvi[idx[e + 1]] as number;
       const cur = ndvi[idx[e]] as number;
