@@ -4,6 +4,7 @@ import { LineChart, Line, XAxis, YAxis, ResponsiveContainer } from 'recharts';
 import { ZoneExtraction } from '../../lib/zones';
 import { SpeciesClustering, CLUSTER_COLORS } from '../../lib/species-clusters';
 import { Button, ErrorNote, Field, NumberInput, PrereqNote } from '../ui';
+import { cn } from '../../lib/utils';
 
 /**
  * Step 4 — cluster the fields of each species by their growth curve, to
@@ -16,6 +17,9 @@ interface ClusterStepProps {
   busy: boolean;
   error: string | null;
   onRun: (k: number) => void;
+  /** Keep only the N most-represented scenarios per species downstream (Infinity = all). */
+  topScenarios: number;
+  onTopScenariosChange: (n: number) => void;
 }
 
 export default function ClusterStep(props: ClusterStepProps) {
@@ -49,6 +53,17 @@ export default function ClusterStep(props: ClusterStepProps) {
             {props.clustering.droppedFields > 0 && ` · ${props.clustering.droppedFields} field(s) dropped (incomplete series)`}{' '}
             · fields on the map are coloured by scenario
           </div>
+          <Field
+            label="Keep top scenarios per species"
+            hint="Most-represented first — drops small outlier scenarios from the growing season and the PCA scope."
+          >
+            <NumberInput
+              min={1}
+              max={props.clustering.k}
+              value={Math.min(props.topScenarios, props.clustering.k)}
+              onChange={n => props.onTopScenariosChange(n >= props.clustering!.k ? Infinity : n)}
+            />
+          </Field>
           <div className="max-h-80 space-y-3 overflow-y-auto pr-1">
             {props.clustering.groups.map(group => {
               const chartData = props.clustering!.dates.map((date, di) => {
@@ -63,18 +78,25 @@ export default function ClusterStep(props: ClusterStepProps) {
                     <span className="shrink-0 text-[10px] text-slate-600">{group.fields.length} fields</span>
                   </div>
                   <div className="mb-1.5 flex flex-wrap gap-1">
-                    {group.sizes.map((size, ci) => (
-                      <span
-                        key={ci}
-                        className="flex items-center gap-1 rounded-full border border-white/10 px-1.5 py-0.5 text-[10px] text-slate-400"
-                      >
+                    {group.sizes.map((size, ci) => {
+                      const dropped = ci >= props.topScenarios;
+                      return (
                         <span
-                          className="h-1.5 w-1.5 rounded-full"
-                          style={{ background: CLUSTER_COLORS[ci % CLUSTER_COLORS.length] }}
-                        />
-                        scenario {ci + 1} · {size}
-                      </span>
-                    ))}
+                          key={ci}
+                          title={dropped ? 'Filtered out by "keep top scenarios"' : undefined}
+                          className={cn(
+                            'flex items-center gap-1 rounded-full border border-white/10 px-1.5 py-0.5 text-[10px] text-slate-400',
+                            dropped && 'opacity-30 line-through'
+                          )}
+                        >
+                          <span
+                            className="h-1.5 w-1.5 rounded-full"
+                            style={{ background: CLUSTER_COLORS[ci % CLUSTER_COLORS.length] }}
+                          />
+                          scenario {ci + 1} · {size}
+                        </span>
+                      );
+                    })}
                   </div>
                   <div className="h-20">
                     <ResponsiveContainer width="100%" height="100%">

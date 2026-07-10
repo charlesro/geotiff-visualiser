@@ -90,6 +90,8 @@ export default function App() {
 
   // Step 5 — PCA
   const [pcaScope, setPcaScope] = useState<string>(PCA_SCOPE_ALL);
+  // Keep only the N most-represented growth scenarios per species (Infinity = all).
+  const [topScenarios, setTopScenarios] = useState<number>(Infinity);
   /** Subset of extracted fields (pids) the PCA runs on; null = all, empty = none.
    *  Defaults to none so the user picks the fields/groups deliberately. */
   const [pcaFields, setPcaFields] = useState<Set<number> | null>(new Set());
@@ -559,8 +561,8 @@ export default function App() {
     if (!clustering) {
       throw new Error('Cluster the fields first (step 4) — the season is read from each scenario’s growth curve.');
     }
-    return growingSeasonFromClusters(clustering);
-  }, [clustering]);
+    return growingSeasonFromClusters(clustering, topScenarios);
+  }, [clustering, topScenarios]);
 
   const fetchSeries = useCallback(
     async (params: SeriesFetchParams) => {
@@ -1141,6 +1143,8 @@ export default function App() {
           busy={clusteringBusy}
           error={clusteringError}
           onRun={runClustering}
+          topScenarios={topScenarios}
+          onTopScenariosChange={setTopScenarios}
         />
       ),
     },
@@ -1160,6 +1164,7 @@ export default function App() {
           clustering={clustering}
           scope={pcaScope}
           onScopeChange={setPcaScope}
+          topScenarios={topScenarios}
           fields={pcaFields}
           onFieldsChange={setPcaFields}
           fieldGroups={pcaFieldGroups}

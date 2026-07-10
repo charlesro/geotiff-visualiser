@@ -164,10 +164,15 @@ const OBVIOUS_AMPLITUDE = 0.25;
  * each kept scenario gets its own window (per-cluster), and the kept scenarios
  * are pooled per crop into the shared overlap for a joint run.
  */
-export function growingSeasonFromClusters(clustering: {
-  groups: { species: string; centroids: number[][]; sizes: number[] }[];
-  dates: string[];
-}): GrowingSeasonResult {
+export function growingSeasonFromClusters(
+  clustering: {
+    groups: { species: string; centroids: number[][]; sizes: number[] }[];
+    dates: string[];
+  },
+  /** Keep only the N most-represented scenarios per species (they're sorted
+   *  biggest-first). Default: all. */
+  maxPerSpecies = Infinity
+): GrowingSeasonResult {
   const dates = clustering.dates;
   if (dates.length < 3) {
     return { window: null, perSpecies: [], fieldsUsed: 0, perCluster: [], note: 'Too few dates in the fetched series — fetch more dates across the year.' };
@@ -175,7 +180,8 @@ export function growingSeasonFromClusters(clustering: {
   const perField: { species: string; win: [number, number] }[] = [];
   const perCluster: NonNullable<GrowingSeasonResult['perCluster']> = [];
   for (const group of clustering.groups) {
-    for (let c = 0; c < group.centroids.length; c++) {
+    const keep = Math.min(group.centroids.length, maxPerSpecies);
+    for (let c = 0; c < keep; c++) {
       const centroid = group.centroids[c];
       let peak = -Infinity;
       let base = Infinity;

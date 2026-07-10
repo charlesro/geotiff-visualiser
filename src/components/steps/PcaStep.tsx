@@ -83,6 +83,8 @@ interface PcaStepProps {
   clustering: SpeciesClustering | null;
   scope: string;
   onScopeChange: (scope: string) => void;
+  /** Only offer the N most-represented scenarios per species (Infinity = all). */
+  topScenarios: number;
   /** Subset of extracted fields (pids) the PCA runs on; null = all. */
   fields: Set<number> | null;
   onFieldsChange: (fields: Set<number> | null) => void;
@@ -159,11 +161,14 @@ export default function PcaStep(props: PcaStepProps) {
           >
             <option value={PCA_SCOPE_ALL}>All scenarios</option>
             {props.clustering?.groups.map(group =>
-              group.sizes.map((size, ci) => (
-                <option key={pcaScopeValue(group.species, ci)} value={pcaScopeValue(group.species, ci)}>
-                  {group.species} — scenario {ci + 1} ({size} field{size === 1 ? '' : 's'})
-                </option>
-              ))
+              group.sizes
+                .map((size, ci) => ({ size, ci }))
+                .filter(({ ci }) => ci < props.topScenarios)
+                .map(({ size, ci }) => (
+                  <option key={pcaScopeValue(group.species, ci)} value={pcaScopeValue(group.species, ci)}>
+                    {group.species} — scenario {ci + 1} ({size} field{size === 1 ? '' : 's'})
+                  </option>
+                ))
             )}
           </select>
         </Field>
