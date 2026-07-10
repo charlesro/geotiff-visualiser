@@ -21,7 +21,7 @@ import { runPixelPca, pcaScoresToCsv, PcaRunResult } from './lib/pca';
 import { DrMethod } from './lib/projections';
 import { isCancelledError } from './lib/cancel';
 import { DatasetDateRange } from './lib/neighbor-query';
-import { fetchGrowingSeasonWindow, GrowingSeasonResult } from './lib/phenology';
+import { growingSeasonFromInterior, GrowingSeasonResult } from './lib/phenology';
 import { cacheClear, cacheDelete, cacheGet, cacheSet, reviveScenes, serializeScenes } from './lib/persist';
 import MapPanel, { ScenePreview } from './components/MapPanel';
 import Sidebar, { StepDescriptor } from './components/Sidebar';
@@ -552,23 +552,15 @@ export default function App() {
 
   // ----- Step 2 handlers -----------------------------------------------------
 
-  // Detect the crops' shared growing window from NDVI so the series can skip the
-  // bare-soil / other-crop dates. Reads engine + parquet from the step-1 config.
+  // Detect the crops' shared growing window from the interior pixels' NDVI, so
+  // the analysis can skip the bare-soil / other-crop dates. Interior only — the
+  // edge pixels are mixed with the neighbour and would blur each crop's season.
   const detectGrowingSeason = useCallback(async () => {
-    const url = localStorage.getItem('ppca_db_url') || 'http://localhost:8080';
-    let parquetPath = '';
-    try {
-      parquetPath = JSON.parse(localStorage.getItem('ppca_pair_params') || '{}').parquetPath || '';
-    } catch {
-      /* ignore */
+    if (!zones) {
+      throw new Error('Extract the buffer zones first (step 3) — the season is read from the interior pixels.');
     }
-    if (!parquetPath) throw new Error('Load fields from the database first (needs the parquet path).');
-    const fields = selectedFeatures.map((f: any) => ({
-      NewID: f.properties?.NewID,
-      crp_lbl: f.properties?.crp_lbl,
-    }));
-    return fetchGrowingSeasonWindow(url, parquetPath, fields);
-  }, [selectedFeatures]);
+    return growingSeasonFromInterior(zones.interior.features, zones.metric);
+  }, [zones]);
 
   const fetchSeries = useCallback(
     async (params: SeriesFetchParams) => {

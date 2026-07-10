@@ -1,19 +1,16 @@
-import { runLocalQuery } from '../services/local-server';
-
 /**
- * Growing-season detection from field-level NDVI phenology.
+ * Growing-season detection from NDVI phenology of the interior pixels.
  *
  * The whole-year Sentinel-2 series mixes the declared crop with whatever else
  * occupied the field before/after it (a cover crop, bare soil). The crop code
  * is a constant annual declaration and can't separate them, but the NDVI curve
  * can: the declared crop is the year's main green-up→senescence cycle.
  *
- * For each selected field we read its NDVI series (from the parquet's
- * s2_mean_ndvi_<date> columns) and take the contiguous window around the year's
- * peak where NDVI stays above the half-max level — that isolates the main crop
- * cycle and drops separate off-season peaks. Per-field windows are pooled to a
- * robust (median) window per crop, and the crops' windows are intersected into
- * one shared date range where every selected field is in its main season.
+ * We read that curve from the extracted INTERIOR pixels (the pure single-crop
+ * signal, without the edge pixels' neighbour contamination), averaged per field.
+ * `detectFieldWindow` then finds each field's window; per-field windows are
+ * pooled to a robust (median) window per crop, and the crops' windows are
+ * intersected into one shared date range where every field is in its main season.
  */
 
 export interface SeasonWindow {
@@ -30,7 +27,6 @@ export interface GrowingSeasonResult {
   note?: string;
 }
 
-const sqlString = (value: string): string => `'${value.replace(/'/g, "''")}'`;
 const median = (xs: number[]): number => {
   const s = [...xs].sort((a, b) => a - b);
   const m = s.length >> 1;
@@ -102,100 +98,95 @@ function detectFieldWindow(ndvi: (number | null)[]): [number, number] | null {
   return [idx[s], idx[e]];
 }
 
-/**
- * Pure core: turn NDVI query rows into the shared growing window. Each row has a
- * NewID and the s2_mean_ndvi_<date> columns; `fields` supplies the crop label per
- * NewID. Exported for testing without the engine.
- */
-export function computeGrowingSeason(
-  rows: any[],
-  fields: { NewID: number | string; crp_lbl?: string }[]
-): GrowingSeasonResult {
-  if (rows.length === 0) throw new Error('No NDVI data found for the selected fields.');
-
-  // Shared, sorted date axis from the NDVI column names.
-  const dateCols = Object.keys(rows[0])
-    .filter(k => /^s2_mean_ndvi_\d{4}-\d{2}-\d{2}$/.test(k))
-    .sort();
-  const dates = dateCols.map(c => c.slice('s2_mean_ndvi_'.length));
-  if (dates.length < 3) throw new Error('The dataset has too few NDVI dates to detect a season.');
-
-  const speciesOf = new Map<string, string>();
-  for (const f of fields) speciesOf.set(String(f.NewID), f.crp_lbl || 'Unknown');
-
-  // Per-species pools of window start/end indices.
+/** Pool per-field windows (indices into `dates`) into per-crop medians and the
+ *  shared overlap across crops. */
+function aggregate(perField: { species: string; win: [number, number] }[], dates: string[]): GrowingSeasonResult {
   const starts = new Map<string, number[]>();
   const ends = new Map<string, number[]>();
-  let used = 0;
-  for (const row of rows) {
-    const series = dateCols.map(c => {
-      const v = row[c];
-      return typeof v === 'number' ? v : v == null ? null : Number(v);
-    });
-    const win = detectFieldWindow(series);
-    if (!win) continue;
-    used++;
-    const sp = speciesOf.get(String(row.NewID)) || 'Unknown';
-    if (!starts.has(sp)) {
-      starts.set(sp, []);
-      ends.set(sp, []);
+  for (const { species, win } of perField) {
+    if (!starts.has(species)) {
+      starts.set(species, []);
+      ends.set(species, []);
     }
-    starts.get(sp)!.push(win[0]);
-    ends.get(sp)!.push(win[1]);
+    starts.get(species)!.push(win[0]);
+    ends.get(species)!.push(win[1]);
   }
-
   const perSpecies = [...starts.keys()].map(sp => ({
     species: sp,
     sIdx: median(starts.get(sp)!),
     eIdx: median(ends.get(sp)!),
     fields: starts.get(sp)!.length,
   }));
-
   const stripped = perSpecies.map(p => ({
     species: p.species,
     window: { start: dates[p.sIdx], end: dates[p.eIdx] },
     fields: p.fields,
   }));
-
   if (perSpecies.length === 0) {
-    return { window: null, perSpecies: [], fieldsUsed: used, note: 'Could not detect a growing season from NDVI.' };
+    return { window: null, perSpecies: [], fieldsUsed: 0, note: 'Could not detect a growing season.' };
   }
-
-  // Shared overlap: latest species-start to earliest species-end.
   const sharedStart = Math.max(...perSpecies.map(p => p.sIdx));
   const sharedEnd = Math.min(...perSpecies.map(p => p.eIdx));
   if (sharedStart > sharedEnd) {
     return {
       window: null,
       perSpecies: stripped,
-      fieldsUsed: used,
+      fieldsUsed: perField.length,
       note: 'The selected crops’ seasons don’t overlap — no shared window.',
     };
   }
-  return { window: { start: dates[sharedStart], end: dates[sharedEnd] }, perSpecies: stripped, fieldsUsed: used };
+  return { window: { start: dates[sharedStart], end: dates[sharedEnd] }, perSpecies: stripped, fieldsUsed: perField.length };
 }
 
 /**
- * Detect the shared growing-season window for a set of fields. `fields` pairs a
- * numeric NewID with its crop label (for the per-crop aggregation).
+ * Detect the shared growing window from the extracted INTERIOR pixels — the pure
+ * single-crop signal, free of the edge pixels' neighbour contamination. Each
+ * interior pixel carries <metric>_<date> values, a polygon_id and a species; we
+ * average them per field into a clean NDVI curve, detect that field's window and
+ * pool per crop. Uses only the dates actually fetched.
  */
-export async function fetchGrowingSeasonWindow(
-  baseUrl: string,
-  parquetPath: string,
-  fields: { NewID: number | string; crp_lbl?: string }[],
-  signal?: AbortSignal
-): Promise<GrowingSeasonResult> {
-  const ids = Array.from(
-    new Set(fields.map(f => String(f.NewID).trim()).filter(id => /^-?\d+$/.test(id)))
-  );
-  if (ids.length === 0) throw new Error('No fields with a numeric id to read NDVI for.');
-
-  const data = await runLocalQuery(
-    baseUrl,
-    `SELECT NewID, COLUMNS('s2_mean_ndvi_[0-9]{4}-[0-9]{2}-[0-9]{2}')
-     FROM read_parquet(${sqlString(parquetPath)})
-     WHERE NewID IN (${ids.join(', ')});`,
-    signal
-  );
-  return computeGrowingSeason(data.rows || [], fields);
+export function growingSeasonFromInterior(features: any[], metric: string): GrowingSeasonResult {
+  const prefix = `${metric}_`;
+  const perFieldAgg = new Map<string, { species: string; sum: Map<string, number>; cnt: Map<string, number> }>();
+  const allDates = new Set<string>();
+  for (const f of features) {
+    const p = f?.properties || {};
+    if (p.type === 'buffer_boundary') continue;
+    const key = String(p.polygon_id ?? p.__pid ?? p.NewID ?? '');
+    if (key === '') continue;
+    let agg = perFieldAgg.get(key);
+    if (!agg) {
+      agg = { species: String(p.species ?? p.crp_lbl ?? 'Unknown'), sum: new Map(), cnt: new Map() };
+      perFieldAgg.set(key, agg);
+    }
+    for (const k of Object.keys(p)) {
+      if (!k.startsWith(prefix)) continue;
+      const d = k.slice(prefix.length);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) continue;
+      const v = p[k];
+      if (typeof v !== 'number' || !isFinite(v)) continue;
+      agg.sum.set(d, (agg.sum.get(d) || 0) + v);
+      agg.cnt.set(d, (agg.cnt.get(d) || 0) + 1);
+      allDates.add(d);
+    }
+  }
+  const dates = [...allDates].sort();
+  if (dates.length < 3) {
+    return {
+      window: null,
+      perSpecies: [],
+      fieldsUsed: 0,
+      note: 'Too few dates in the fetched series — fetch more dates across the year.',
+    };
+  }
+  const perField: { species: string; win: [number, number] }[] = [];
+  for (const agg of perFieldAgg.values()) {
+    const series = dates.map(d => (agg.cnt.get(d) ? agg.sum.get(d)! / agg.cnt.get(d)! : null));
+    const win = detectFieldWindow(series);
+    if (win) perField.push({ species: agg.species, win });
+  }
+  if (perField.length === 0) {
+    return { window: null, perSpecies: [], fieldsUsed: 0, note: 'Could not detect a growing season from the interior pixels.' };
+  }
+  return aggregate(perField, dates);
 }
