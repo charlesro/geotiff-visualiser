@@ -281,15 +281,27 @@ export default function PcaStep(props: PcaStepProps) {
           </span>
           <span className="text-slate-500">
             {props.seasonBusy
-              ? 'Reading NDVI…'
-              : 'Analyse only the dates each crop is actually in the field (keeps the whole-year fetch).'}
+              ? 'Reading scenario curves…'
+              : 'Detected per growth scenario (step 4); scenarios with no clear cycle are skipped. Scope to a scenario to use its own window.'}
           </span>
           {props.seasonError && <span className="mt-0.5 block text-amber-300/90">{props.seasonError}</span>}
-          {props.seasonOnly && props.season?.window && (
-            <span className="mt-1 block text-emerald-300/90">
-              {props.season.perSpecies.map(p => `${p.species}: ${p.window.start}→${p.window.end}`).join(' · ')}
-              {' — using '}
-              {props.season.window.start} → {props.season.window.end}
+          {props.seasonOnly && props.season?.perCluster && (
+            <span className="mt-1 block space-y-0.5">
+              {props.season.perCluster.map(p => (
+                <span key={`${p.species}-${p.cluster}`} className="block">
+                  <span className="text-slate-400">{p.species} · scenario {p.cluster + 1}</span>{' '}
+                  {p.window ? (
+                    <span className="text-emerald-300/90">{p.window.start} → {p.window.end}</span>
+                  ) : (
+                    <span className="text-slate-600">no clear growth — skipped</span>
+                  )}
+                </span>
+              ))}
+              {props.season.window && (
+                <span className="block text-emerald-300">
+                  Shared window (unscoped): {props.season.window.start} → {props.season.window.end}
+                </span>
+              )}
             </span>
           )}
         </span>

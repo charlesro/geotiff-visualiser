@@ -21,7 +21,7 @@ import { runPixelPca, pcaScoresToCsv, PcaRunResult } from './lib/pca';
 import { DrMethod } from './lib/projections';
 import { isCancelledError } from './lib/cancel';
 import { DatasetDateRange } from './lib/neighbor-query';
-import { growingSeasonFromInterior, GrowingSeasonResult } from './lib/phenology';
+import { growingSeasonFromClusters, GrowingSeasonResult } from './lib/phenology';
 import { cacheClear, cacheDelete, cacheGet, cacheSet, reviveScenes, serializeScenes } from './lib/persist';
 import MapPanel, { ScenePreview } from './components/MapPanel';
 import Sidebar, { StepDescriptor } from './components/Sidebar';
@@ -552,15 +552,15 @@ export default function App() {
 
   // ----- Step 2 handlers -----------------------------------------------------
 
-  // Detect the crops' shared growing window from the interior pixels' NDVI, so
-  // the analysis can skip the bare-soil / other-crop dates. Interior only — the
-  // edge pixels are mixed with the neighbour and would blur each crop's season.
+  // Detect the growing window per growth scenario (step-4 cluster), from each
+  // scenario's clean mean interior curve — robust where individual fields are
+  // unidentifiable. Scenarios with no obvious growth cycle are dropped.
   const detectGrowingSeason = useCallback(async () => {
-    if (!zones) {
-      throw new Error('Extract the buffer zones first (step 3) — the season is read from the interior pixels.');
+    if (!clustering) {
+      throw new Error('Cluster the fields first (step 4) — the season is read from each scenario’s growth curve.');
     }
-    return growingSeasonFromInterior(zones.interior.features, zones.metric);
-  }, [zones]);
+    return growingSeasonFromClusters(clustering);
+  }, [clustering]);
 
   const fetchSeries = useCallback(
     async (params: SeriesFetchParams) => {
@@ -960,7 +960,13 @@ export default function App() {
       if (pcaFields !== null) {
         pixels = pixels.filter(p => pcaFields.has(p.properties?.__pid));
       }
-      const season = pcaSeasonOnly ? pcaSeason?.window : null;
+      // Growing-season window: the scoped scenario's own window when a scenario
+      // is chosen, else the crops' shared overlap.
+      let season = pcaSeasonOnly ? pcaSeason?.window ?? null : null;
+      if (pcaSeasonOnly && scoped && pcaSeason?.perCluster) {
+        const pc = pcaSeason.perCluster.find(p => p.species === scoped.species && p.cluster === scoped.cluster);
+        if (pc) season = pc.window; // may be null → that scenario has no obvious season
+      }
       const result = runPixelPca(pixels, zones.metric, {
         fitZones: pcaFitZones,
         projectZones: pcaProjectZones,

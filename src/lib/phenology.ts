@@ -1,16 +1,16 @@
 /**
- * Growing-season detection from NDVI phenology of the interior pixels.
+ * Growing-season detection from NDVI phenology of the growth scenarios.
  *
  * The whole-year Sentinel-2 series mixes the declared crop with whatever else
  * occupied the field before/after it (a cover crop, bare soil). The crop code
  * is a constant annual declaration and can't separate them, but the NDVI curve
  * can: the declared crop is the year's main green-up→senescence cycle.
  *
- * We read that curve from the extracted INTERIOR pixels (the pure single-crop
- * signal, without the edge pixels' neighbour contamination), averaged per field.
- * `detectFieldWindow` then finds each field's window; per-field windows are
- * pooled to a robust (median) window per crop, and the crops' windows are
- * intersected into one shared date range where every field is in its main season.
+ * We read that curve from the step-4 clusters — each scenario's mean interior
+ * curve (its centroid) is a denoised signal, so a window is found where noisy
+ * individual fields aren't identifiable. `detectFieldWindow` finds each
+ * scenario's window; scenarios with no clear cycle are dropped, and the rest are
+ * pooled per crop into the shared overlap (or used per-scenario when scoped).
  */
 
 export interface SeasonWindow {
@@ -24,6 +24,9 @@ export interface GrowingSeasonResult {
   /** Median growing window per crop (for display / the no-overlap message). */
   perSpecies: { species: string; window: SeasonWindow; fields: number }[];
   fieldsUsed: number;
+  /** Window per growth scenario (cluster). `obvious` is false when the scenario's
+   *  mean curve has no clear growth cycle and was dropped from the aggregate. */
+  perCluster?: { species: string; cluster: number; window: SeasonWindow | null; obvious: boolean; size: number }[];
   note?: string;
 }
 
@@ -149,48 +152,53 @@ function aggregate(perField: { species: string; win: [number, number] }[], dates
  * average them per field into a clean NDVI curve, detect that field's window and
  * pool per crop. Uses only the dates actually fetched.
  */
-export function growingSeasonFromInterior(features: any[], metric: string): GrowingSeasonResult {
-  const prefix = `${metric}_`;
-  const perFieldAgg = new Map<string, { species: string; sum: Map<string, number>; cnt: Map<string, number> }>();
-  const allDates = new Set<string>();
-  for (const f of features) {
-    const p = f?.properties || {};
-    if (p.type === 'buffer_boundary') continue;
-    const key = String(p.polygon_id ?? p.__pid ?? p.NewID ?? '');
-    if (key === '') continue;
-    let agg = perFieldAgg.get(key);
-    if (!agg) {
-      agg = { species: String(p.species ?? p.crp_lbl ?? 'Unknown'), sum: new Map(), cnt: new Map() };
-      perFieldAgg.set(key, agg);
-    }
-    for (const k of Object.keys(p)) {
-      if (!k.startsWith(prefix)) continue;
-      const d = k.slice(prefix.length);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) continue;
-      const v = p[k];
-      if (typeof v !== 'number' || !isFinite(v)) continue;
-      agg.sum.set(d, (agg.sum.get(d) || 0) + v);
-      agg.cnt.set(d, (agg.cnt.get(d) || 0) + 1);
-      allDates.add(d);
-    }
-  }
-  const dates = [...allDates].sort();
+/** Minimum peak-to-baseline amplitude for a scenario's mean curve to count as
+ *  having an obvious growth cycle (below this it's flat noise, unidentifiable). */
+const OBVIOUS_AMPLITUDE = 0.25;
+
+/**
+ * Detect the growing season from the per-species k-means CLUSTERS instead of
+ * per field. Each scenario's mean interior curve (the cluster centroid) is a
+ * clean, denoised signal, so a window can be found where individual fields are
+ * unidentifiable. Scenarios whose curve has no clear growth cycle are dropped;
+ * each kept scenario gets its own window (per-cluster), and the kept scenarios
+ * are pooled per crop into the shared overlap for a joint run.
+ */
+export function growingSeasonFromClusters(clustering: {
+  groups: { species: string; centroids: number[][]; sizes: number[] }[];
+  dates: string[];
+}): GrowingSeasonResult {
+  const dates = clustering.dates;
   if (dates.length < 3) {
-    return {
-      window: null,
-      perSpecies: [],
-      fieldsUsed: 0,
-      note: 'Too few dates in the fetched series — fetch more dates across the year.',
-    };
+    return { window: null, perSpecies: [], fieldsUsed: 0, perCluster: [], note: 'Too few dates in the fetched series — fetch more dates across the year.' };
   }
   const perField: { species: string; win: [number, number] }[] = [];
-  for (const agg of perFieldAgg.values()) {
-    const series = dates.map(d => (agg.cnt.get(d) ? agg.sum.get(d)! / agg.cnt.get(d)! : null));
-    const win = detectFieldWindow(series);
-    if (win) perField.push({ species: agg.species, win });
+  const perCluster: NonNullable<GrowingSeasonResult['perCluster']> = [];
+  for (const group of clustering.groups) {
+    for (let c = 0; c < group.centroids.length; c++) {
+      const centroid = group.centroids[c];
+      let peak = -Infinity;
+      let base = Infinity;
+      for (const v of centroid) {
+        if (isFinite(v)) {
+          if (v > peak) peak = v;
+          if (v < base) base = v;
+        }
+      }
+      const hasGrowth = isFinite(peak) && peak - base >= OBVIOUS_AMPLITUDE;
+      const win = hasGrowth ? detectFieldWindow(centroid) : null;
+      perCluster.push({
+        species: group.species,
+        cluster: c,
+        window: win ? { start: dates[win[0]], end: dates[win[1]] } : null,
+        obvious: !!win,
+        size: group.sizes[c] ?? 0,
+      });
+      if (win) perField.push({ species: group.species, win });
+    }
   }
   if (perField.length === 0) {
-    return { window: null, perSpecies: [], fieldsUsed: 0, note: 'Could not detect a growing season from the interior pixels.' };
+    return { window: null, perSpecies: [], fieldsUsed: 0, perCluster, note: 'No scenario has an obvious growth cycle — cluster the fields (step 4) with a denser series.' };
   }
-  return aggregate(perField, dates);
+  return { ...aggregate(perField, dates), perCluster };
 }
