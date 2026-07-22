@@ -18,6 +18,48 @@ export interface SeasonWindow {
   end: string;
 }
 
+/** Known cultural calendar for a crop (from the researched knowledge base). The
+ *  green window is the NDVI-visible canopy period; "none" for crops with no
+ *  defined cycle (fallow, buffer strips, admin categories). */
+export interface CropCalendar {
+  regime: string;
+  greenStart: string; // MM-DD or "none"
+  greenEnd: string; // MM-DD or "none"
+  peakStart?: string;
+  peakEnd?: string;
+}
+export type CropCalendars = Record<string, CropCalendar>;
+
+/** Day-of-year (1–365, non-leap) for an "MM-DD" or "YYYY-MM-DD" string. */
+function toDoy(date: string): number | null {
+  const m = /(\d{2})-(\d{2})$/.exec(date);
+  if (!m) return null;
+  const mm = Number(m[1]);
+  const dd = Number(m[2]);
+  if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return null;
+  const cum = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+  return cum[mm - 1] + dd;
+}
+
+/**
+ * Does a detected NDVI window [start,end] (YYYY-MM-DD) match the crop's known
+ * green window? A scenario matches when the two windows overlap by at least half
+ * of the shorter one — i.e. the scenario's growth genuinely falls in the crop's
+ * expected season. Crops with no calendar (fallow, strips, "none") always match
+ * (nothing to check against).
+ */
+export function matchesCropCalendar(detectedStart: string, detectedEnd: string, cal: CropCalendar | undefined): boolean {
+  if (!cal || cal.greenStart === 'none' || cal.greenEnd === 'none') return true;
+  const ks = toDoy(cal.greenStart);
+  const ke = toDoy(cal.greenEnd);
+  const ds = toDoy(detectedStart);
+  const de = toDoy(detectedEnd);
+  if (ks == null || ke == null || ds == null || de == null || ke < ks || de < ds) return true;
+  const overlap = Math.max(0, Math.min(de, ke) - Math.max(ds, ks));
+  const shorter = Math.max(1, Math.min(de - ds, ke - ks));
+  return overlap / shorter >= 0.5;
+}
+
 export interface GrowingSeasonResult {
   /** Shared overlap window across the selected crops, or null if they don't overlap. */
   window: SeasonWindow | null;
@@ -25,8 +67,17 @@ export interface GrowingSeasonResult {
   perSpecies: { species: string; window: SeasonWindow; fields: number }[];
   fieldsUsed: number;
   /** Window per growth scenario (cluster). `obvious` is false when the scenario's
-   *  mean curve has no clear growth cycle and was dropped from the aggregate. */
-  perCluster?: { species: string; cluster: number; window: SeasonWindow | null; obvious: boolean; size: number }[];
+   *  mean curve has no clear growth cycle. `matchesCalendar` compares the detected
+   *  window to the crop's known calendar (`expected`); false = off-calendar. */
+  perCluster?: {
+    species: string;
+    cluster: number;
+    window: SeasonWindow | null;
+    obvious: boolean;
+    size: number;
+    expected?: SeasonWindow | null;
+    matchesCalendar?: boolean;
+  }[];
   note?: string;
 }
 
@@ -169,10 +220,18 @@ export function growingSeasonFromClusters(
     groups: { species: string; centroids: number[][]; sizes: number[] }[];
     dates: string[];
   },
-  /** Keep only the N most-represented scenarios per species (they're sorted
-   *  biggest-first). Default: all. */
-  maxPerSpecies = Infinity
+  opts: {
+    /** Keep only the N most-represented scenarios per species (sorted biggest-
+     *  first). Default: all. */
+    maxPerSpecies?: number;
+    /** Known crop calendars, keyed by crp_lbl, to flag/drop off-calendar scenarios. */
+    calendars?: CropCalendars;
+    /** When true, scenarios whose detected window doesn't match the known
+     *  calendar are excluded from the aggregate (but still reported). */
+    matchOnly?: boolean;
+  } = {}
 ): GrowingSeasonResult {
+  const maxPerSpecies = opts.maxPerSpecies ?? Infinity;
   const dates = clustering.dates;
   if (dates.length < 3) {
     return { window: null, perSpecies: [], fieldsUsed: 0, perCluster: [], note: 'Too few dates in the fetched series — fetch more dates across the year.' };
@@ -180,6 +239,8 @@ export function growingSeasonFromClusters(
   const perField: { species: string; win: [number, number] }[] = [];
   const perCluster: NonNullable<GrowingSeasonResult['perCluster']> = [];
   for (const group of clustering.groups) {
+    const cal = opts.calendars?.[group.species];
+    const expected = cal && cal.greenStart !== 'none' ? { start: cal.greenStart, end: cal.greenEnd } : null;
     const keep = Math.min(group.centroids.length, maxPerSpecies);
     for (let c = 0; c < keep; c++) {
       const centroid = group.centroids[c];
@@ -193,18 +254,25 @@ export function growingSeasonFromClusters(
       }
       const hasGrowth = isFinite(peak) && peak - base >= OBVIOUS_AMPLITUDE;
       const win = hasGrowth ? detectFieldWindow(centroid) : null;
+      const window = win ? { start: dates[win[0]], end: dates[win[1]] } : null;
+      const matchesCalendar = window ? matchesCropCalendar(window.start, window.end, cal) : true;
       perCluster.push({
         species: group.species,
         cluster: c,
-        window: win ? { start: dates[win[0]], end: dates[win[1]] } : null,
+        window,
         obvious: !!win,
         size: group.sizes[c] ?? 0,
+        expected,
+        matchesCalendar,
       });
-      if (win) perField.push({ species: group.species, win });
+      if (win && (!opts.matchOnly || matchesCalendar)) perField.push({ species: group.species, win });
     }
   }
   if (perField.length === 0) {
-    return { window: null, perSpecies: [], fieldsUsed: 0, perCluster, note: 'No scenario has an obvious growth cycle — cluster the fields (step 4) with a denser series.' };
+    const note = opts.matchOnly
+      ? 'No scenario matches its crop’s known calendar — loosen the filter or check the clustering.'
+      : 'No scenario has an obvious growth cycle — cluster the fields (step 4) with a denser series.';
+    return { window: null, perSpecies: [], fieldsUsed: 0, perCluster, note };
   }
   return { ...aggregate(perField, dates), perCluster };
 }

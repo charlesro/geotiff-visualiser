@@ -561,7 +561,7 @@ export default function App() {
     if (!clustering) {
       throw new Error('Cluster the fields first (step 4) — the season is read from each scenario’s growth curve.');
     }
-    return growingSeasonFromClusters(clustering, topScenarios);
+    return growingSeasonFromClusters(clustering, { maxPerSpecies: topScenarios });
   }, [clustering, topScenarios]);
 
   const fetchSeries = useCallback(
