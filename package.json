@@ -4,12 +4,16 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --port=3000 --host=0.0.0.0",
+    "dev": "vite --host=0.0.0.0",
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "engine": "python3 server/engine.py"
+    "test:phenology": "node scripts/phenology-regress.mjs",
+    "engine": "python3 server/engine.py",
+    "test:clustering": "node scripts/clustering-regress.mjs",
+    "test:pixel-grid": "node scripts/pixel-grid-regress.mjs",
+    "test": "npm run test:phenology && npm run test:clustering && npm run test:pixel-grid"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",

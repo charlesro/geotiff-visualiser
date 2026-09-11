@@ -169,12 +169,20 @@ export function simulate(
 }
 
 export const cultureForCell = (r: number, c: number, mode: PatternType): number => {
+  // Positive modulo, because JavaScript's % keeps the sign of the dividend:
+  // -1 % 2 is -1, not 1. The pattern is periodic over ALL integers, and the map
+  // overlay indexes strips from a rotated frame whose origin sits inside the
+  // field — so r and c go negative there. A returned -1 matched neither crop id
+  // and painted the strip bare-soil brown, which is what made crop B vanish at
+  // large rotations. Identical to the old expression for r, c >= 0, which is the
+  // only range `aggregate` uses.
+  const alt = (n: number) => ((n % 2) + 2) % 2;
   switch (mode) {
-    case 'row': return r % 2;
-    case 'col': return c % 2;
-    case 'checker': return (r + c) % 2;
-    case 'strip-row-2': return Math.floor(r / 2) % 2;
-    case 'strip-col-2': return Math.floor(c / 2) % 2;
+    case 'row': return alt(r);
+    case 'col': return alt(c);
+    case 'checker': return alt(r + c);
+    case 'strip-row-2': return alt(Math.floor(r / 2));
+    case 'strip-col-2': return alt(Math.floor(c / 2));
     default: return 0;
   }
 };
