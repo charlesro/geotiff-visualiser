@@ -11,7 +11,16 @@ import {
 } from './lib/polygon-source';
 import { summarizeExtraction, NdviInspection, NdviPixel } from './lib/ndvi-series';
 import NdviPanel from './components/NdviPanel';
-import { fetchSentinelSeries, SeriesFetchParams, SeriesProgress } from './lib/fetch-series';
+import {
+  fetchSentinelSeries,
+  searchSceneCandidates,
+  downloadSceneCandidates,
+  readSceneClarity,
+  SceneCandidate,
+  SceneClarity,
+  SeriesFetchParams,
+  SeriesProgress,
+} from './lib/fetch-series';
 import { clusterFeatureBboxes } from './lib/cluster';
 import { GeoTIFFData } from './lib/geotiff-utils';
 import { extractZones, featureKey, fieldGapMeters, PixelZone, ZoneExtraction, ZoneProgress } from './lib/zones';
@@ -21,7 +30,16 @@ import { runPixelPca, pcaScoresToCsv, PcaRunResult } from './lib/pca';
 import { DrMethod } from './lib/projections';
 import { isCancelledError } from './lib/cancel';
 import { DatasetDateRange } from './lib/neighbor-query';
-import { growingSeasonFromClusters, GrowingSeasonResult } from './lib/phenology';
+import {
+  growingSeasonFromClusters,
+  seasonFromPicks,
+  pickKey,
+  remapSeasonPicks,
+  SeasonPicks,
+  GrowingSeasonResult,
+  dayIndex,
+} from './lib/phenology';
+import { loadCropCalendars, CropCalendarBook } from './lib/crop-calendars';
 import { cacheClear, cacheDelete, cacheGet, cacheSet, reviveScenes, serializeScenes } from './lib/persist';
 import MapPanel, { ScenePreview } from './components/MapPanel';
 import Sidebar, { StepDescriptor } from './components/Sidebar';
@@ -34,6 +52,8 @@ import BoundaryStep from './components/steps/BoundaryStep';
 import BoundaryPredictStep from './components/steps/BoundaryPredictStep';
 import { computeBoundaryPrediction, renderPredictionOverlay, BoundaryPrediction, PredictMethod } from './lib/boundary-detect';
 import PcaPanel from './components/PcaPanel';
+import ClusterSeasonPanel from './components/cluster/ClusterSeasonPanel';
+import { KEEP_TOP_DEFAULT } from './components/cluster/model';
 import BoundaryProfilePanel from './components/BoundaryProfilePanel';
 
 /**
@@ -50,6 +70,30 @@ const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : S
 /** PCA defaults: fit on the pure interior, show interior vs different-species edge. */
 const PCA_DEFAULT_FIT: PixelZone[] = ['interior'];
 const PCA_DEFAULT_PROJECT: PixelZone[] = ['interior', 'edge_other_species'];
+
+/**
+ * A first guess at each scenario's growth period, from the shape of its curve.
+ *
+ * Deliberately a starting point rather than an answer: on a month-gapped series
+ * the green-up is not identifiable, which is why the window is a human input at
+ * all. But an approximately-right window that the user drags into place beats an
+ * empty chart, and the fit drawn over it says immediately whether it is close.
+ */
+function proposePicks(clustering: SpeciesClustering, maxPerSpecies: number): SeasonPicks {
+  const guessed = growingSeasonFromClusters(clustering, { maxPerSpecies });
+  const base = Number(clustering.dates[0]?.slice(0, 4)) || 2021;
+  const out: SeasonPicks = {};
+  for (const pc of guessed.perCluster ?? []) {
+    if (!pc.window) continue;
+    const start = dayIndex(pc.window.start, base);
+    const end = dayIndex(pc.window.end, base);
+    if (start != null && end != null && end > start) out[pickKey(pc.species, pc.cluster)] = { start, end };
+  }
+  return out;
+}
+
+/** The Planetary Computer key, if the user saved one — anonymous access otherwise. */
+const mpcToken = () => localStorage.getItem('mpc_token') || undefined;
 
 export default function App() {
   // Step 1 — polygons & selection
@@ -83,15 +127,32 @@ export default function App() {
   /** Selection the zones were extracted from — to flag (not wipe) staleness. */
   const [zonesSelectionKey, setZonesSelectionKey] = useState<string | null>(null);
 
-  // Step 4 — species clustering (growth scenarios)
+  // Step 4 — growth scenarios: species clustering + the growing season read from
+  // it. Both live in the Growth-scenarios window (ClusterSeasonPanel).
   const [clustering, setClustering] = useState<SpeciesClustering | null>(null);
   const [clusteringBusy, setClusteringBusy] = useState(false);
   const [clusteringError, setClusteringError] = useState<string | null>(null);
+  /** Keep only the N most-represented scenarios per species (Infinity = all). */
+  // Keeping only the best-represented scenarios is a goal of this step, not an
+  // afterthought: k is deliberately generous so the clustering separates sowing
+  // dates finely, and then the small outlier scenarios are dropped. Starting at
+  // "keep everything" put twenty curves in front of the user to mark by hand.
+  const [topScenarios, setTopScenarios] = useState<number>(KEEP_TOP_DEFAULT);
+  /** Drop scenarios whose detected window is off the crop's known Wallonia
+   *  calendar (likely a mislabel / a different actual crop). */
+  const [matchCalendarOnly, setMatchCalendarOnly] = useState(false);
+  /** Growing season marked by the user on each scenario's curve, keyed by
+   *  species+cluster. Detecting it automatically from a month-gapped series is
+   *  unreliable, so the window is an input rather than an inference. */
+  const [seasonPicks, setSeasonPicks] = useState<SeasonPicks>({});
+  /** The season built from those picks — shared by the scenario charts, the NDVI
+   *  band and the PCA date filter. Null until at least one scenario is marked. */
+  const [season, setSeason] = useState<GrowingSeasonResult | null>(null);
+  const [seasonBusy, setSeasonBusy] = useState(false);
+  const [seasonError, setSeasonError] = useState<string | null>(null);
 
   // Step 5 — PCA
   const [pcaScope, setPcaScope] = useState<string>(PCA_SCOPE_ALL);
-  // Keep only the N most-represented growth scenarios per species (Infinity = all).
-  const [topScenarios, setTopScenarios] = useState<number>(Infinity);
   /** Subset of extracted fields (pids) the PCA runs on; null = all, empty = none.
    *  Defaults to none so the user picks the fields/groups deliberately. */
   const [pcaFields, setPcaFields] = useState<Set<number> | null>(new Set());
@@ -103,13 +164,11 @@ export default function App() {
   const [pcaResult, setPcaResult] = useState<PcaRunResult | null>(null);
   const [pcaBusy, setPcaBusy] = useState(false);
   const [pcaError, setPcaError] = useState<string | null>(null);
-  // Restrict the PCA to the crops' growing season (detected from NDVI) while the
-  // fetch stays whole-year — extract the actual-plant dates at analysis time.
-  const [pcaSeasonOnly, setPcaSeasonOnly] = useState(false);
-  const [pcaSeason, setPcaSeason] = useState<GrowingSeasonResult | null>(null);
-  const [pcaSeasonBusy, setPcaSeasonBusy] = useState(false);
-  const [pcaSeasonError, setPcaSeasonError] = useState<string | null>(null);
+  /** Restrict the PCA to the growing season while the fetch stays whole-year —
+   *  the actual-plant dates are extracted at analysis time. */
+  const [restrictPcaToSeason, setRestrictPcaToSeason] = useState(false);
   const [showPcaPanel, setShowPcaPanel] = useState(false);
+  const [showClusterPanel, setShowClusterPanel] = useState(false);
   const [showBoundaryPanel, setShowBoundaryPanel] = useState(false);
   /** Edge·other pixels flagged as boundaries in the PCA-gap finder. */
   const [pcaBoundaryPixels, setPcaBoundaryPixels] = useState<{ id: string; lng: number; lat: number }[]>([]);
@@ -129,6 +188,25 @@ export default function App() {
   const onPcaPanelWidth = useCallback((w: number) => {
     setPcaPanelWidth(w);
     localStorage.setItem('ppca_panel_w', String(w));
+  }, []);
+  /** Width of the growth-scenarios drawer (its own persisted key). */
+  const [clusterPanelWidth, setClusterPanelWidth] = useState(() => {
+    const saved = Number(localStorage.getItem('ppca_cluster_panel_w'));
+    return saved >= 440 ? saved : 620;
+  });
+  const onClusterPanelWidth = useCallback((w: number) => {
+    setClusterPanelWidth(w);
+    localStorage.setItem('ppca_cluster_panel_w', String(w));
+  }, []);
+  // One right-side drawer at a time — opening one closes the other.
+  const openClusterPanel = useCallback(() => {
+    setShowPcaPanel(false);
+    setShowClusterPanel(true);
+  }, []);
+  const closeClusterPanel = useCallback(() => setShowClusterPanel(false), []);
+  const openPcaPanel = useCallback(() => {
+    setShowClusterPanel(false);
+    setShowPcaPanel(true);
   }, []);
 
   const [activeStep, setActiveStep] = useState(1);
@@ -280,17 +358,86 @@ export default function App() {
     if (bounds) setFitRequest({ bounds, token: Date.now(), ...opts });
   }, []);
 
+  /** Newest detection wins: a slow earlier run must not clobber a newer one when
+   *  the filters are changed in quick succession, nor republish after a reset. */
+  const seasonRunId = useRef(0);
+  /** Filters the currently-published season was computed with. */
+  const seasonFilterRef = useRef<string | null>(null);
+  /**
+   * The crop calendars, loaded once for display. The season computation loads
+   * them itself (it must fail loudly when the calendar filter is on); this copy
+   * only feeds the guide drawn behind each curve, which has to be there before
+   * any season has been computed. A failure here just means no guide.
+   */
+  const [cropCalendars, setCropCalendars] = useState<CropCalendarBook | null>(null);
+  /** Set when a re-clustering could not carry every mark over — see `insertScenes`. */
+  const [pickCarryNote, setPickCarryNote] = useState<string | null>(null);
+  /**
+   * Acquisition days dropped from a scenario's fit, keyed like the periods.
+   * A cloudy or snow-covered date can sit far off the curve and drag the whole
+   * model; excluding it is a judgement about the image, not about the crop.
+   */
+  const [excludedDays, setExcludedDays] = useState<Record<string, number[]>>({});
+  const toggleExcluded = useCallback((species: string, cluster: number, day: number) => {
+    setExcludedDays(prev => {
+      const key = pickKey(species, cluster);
+      const cur = prev[key] ?? [];
+      const next = cur.includes(day) ? cur.filter(d => d !== day) : [...cur, day];
+      return { ...prev, [key]: next };
+    });
+  }, []);
+  useEffect(() => {
+    let live = true;
+    loadCropCalendars().then(
+      book => live && setCropCalendars(book),
+      () => {}
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  /**
+   * Drop everything derived from a clustering. The season's window and its
+   * per-scenario entries are computed from specific clusters, and "keep top N"
+   * and the PCA scope are indexed by cluster position — once the clustering
+   * changes or goes away they are all meaningless, and leaving the restriction
+   * armed would silently keep filtering the PCA by a window of clusters that no
+   * longer exist. `matchCalendarOnly` deliberately survives: it is a preference
+   * about how to judge scenarios, not something derived from these clusters.
+   * Called both when re-clustering and when the clustering is cleared.
+   */
+  const resetScenarioDerivedState = useCallback(() => {
+    setSeasonPicks({});
+    setExcludedDays({});
+    // Invalidate any detection still in flight: without this it would publish
+    // after the reset and resurrect a season for a clustering that is gone.
+    seasonRunId.current++;
+    seasonFilterRef.current = null;
+    setSeason(null);
+    setRestrictPcaToSeason(false);
+    setSeasonError(null);
+    // The run invalidated just above can no longer clear this itself — its
+    // `finally` only clears the flag when it is still the current run — so
+    // without this the spinner and the disabled calendar filter never come back.
+    setSeasonBusy(false);
+    setTopScenarios(KEEP_TOP_DEFAULT);
+    setSettledTopScenarios(KEEP_TOP_DEFAULT);
+    setPcaScope(PCA_SCOPE_ALL);
+  }, []);
+
   const clearFromClustering = useCallback(() => {
     setClustering(null);
     setClusteringError(null);
-    setPcaScope(PCA_SCOPE_ALL);
+    resetScenarioDerivedState();
     setPcaFields(new Set());
     setPcaFitZones(PCA_DEFAULT_FIT);
     setPcaProjectZones(PCA_DEFAULT_PROJECT);
     setPcaResult(null);
     setPcaError(null);
     setShowPcaPanel(false);
-  }, []);
+    setShowClusterPanel(false);
+  }, [resetScenarioDerivedState]);
 
   const clearFromZones = useCallback(() => {
     setZones(null);
@@ -557,22 +704,63 @@ export default function App() {
   // Detect the growing window per growth scenario (step-4 cluster), from each
   // scenario's clean mean interior curve — robust where individual fields are
   // unidentifiable. Scenarios with no obvious growth cycle are dropped.
+  // "Keep top N" is typed digit by digit, and the intermediate values are not the
+  // user's intent — widening 3 -> 10 passes through 1. Detection is a few hundred
+  // ms of synchronous curve fitting and the scope clamp below is destructive, so
+  // both follow a settled value; the charts keep using the live one for feedback.
+  const [settledTopScenarios, setSettledTopScenarios] = useState(topScenarios);
+  useEffect(() => {
+    const id = setTimeout(() => setSettledTopScenarios(topScenarios), 250);
+    return () => clearTimeout(id);
+  }, [topScenarios]);
+
   const detectGrowingSeason = useCallback(async () => {
     if (!clustering) {
-      throw new Error('Cluster the fields first (step 4) — the season is read from each scenario’s growth curve.');
+      throw new Error('Cluster the fields first (step 4) — the season is marked on each scenario’s growth curve.');
     }
-    return growingSeasonFromClusters(clustering, { maxPerSpecies: topScenarios });
-  }, [clustering, topScenarios]);
+    // Known Wallonia calendars flag off-calendar scenarios. A fetch failure is
+    // non-fatal for the season itself, but it would turn "match the crop
+    // calendar" into a silent no-op, so surface it rather than drop the filter.
+    let calendars;
+    try {
+      calendars = await loadCropCalendars();
+    } catch {
+      if (matchCalendarOnly) {
+        throw new Error('Could not load the crop calendars — the calendar filter can’t be applied.');
+      }
+    }
+    return seasonFromPicks(clustering, seasonPicks, {
+      maxPerSpecies: settledTopScenarios,
+      calendars,
+      matchOnly: matchCalendarOnly,
+    });
+  }, [clustering, seasonPicks, settledTopScenarios, matchCalendarOnly]);
+
+  /**
+   * The footprint every download and every catalogue read works from: one padded
+   * bbox around the whole selection, plus one per polygon cluster so the analysis
+   * grids are read at native 10 m only where there are fields.
+   */
+  /** Stable identity of the current selection, for "is this step still current?". */
+  const selectionKey = useMemo(
+    () => Array.from(selectedIds).sort((a, b) => a - b).join('.'),
+    [selectedIds]
+  );
+
+  const seriesGeometry = useCallback(() => {
+    const bounds = getGeoJsonBounds({ type: 'FeatureCollection', features: selectedFeatures });
+    if (!bounds) return null;
+    return { bbox: bufferBboxMeters(bounds, 120), clusters: clusterFeatureBboxes(selectedFeatures) };
+  }, [selectedFeatures]);
 
   const fetchSeries = useCallback(
     async (params: SeriesFetchParams) => {
-      const bounds = getGeoJsonBounds({ type: 'FeatureCollection', features: selectedFeatures });
-      if (!bounds) {
+      const geom = seriesGeometry();
+      if (!geom) {
         setSeriesError('Select at least one polygon first.');
         return;
       }
-      // Margin so edge pixels just outside the polygons are covered too.
-      const bbox = bufferBboxMeters(bounds, 120);
+      const { bbox } = geom;
 
       const op = beginOp();
       setSeriesBusy(true);
@@ -582,13 +770,12 @@ export default function App() {
       try {
         // One padded bbox per polygon cluster — fetched at native 10 m for
         // the analysis even when the preview mosaic is downsampled.
-        const clusters = clusterFeatureBboxes(selectedFeatures);
-        const result = await fetchSentinelSeries(bbox, params, setSeriesProgress, () => op.cancelled, clusters);
+        const result = await fetchSentinelSeries(bbox, params, setSeriesProgress, () => op.cancelled, geom.clusters);
         setScenes(result.layers);
         setFailedDates(result.failedDates);
         setPartialDates(result.partialDates);
         setHeterogeneous(result.heterogeneous);
-        setFetchedSelectionKey(Array.from(selectedIds).sort((a, b) => a - b).join('.'));
+        setFetchedSelectionKey(selectionKey);
         setPreviewSceneId(result.layers[result.layers.length - 1]?.id ?? null);
         requestFit(bbox);
       } catch (e) {
@@ -599,7 +786,7 @@ export default function App() {
         setSeriesProgress(null);
       }
     },
-    [selectedFeatures, selectedIds, clearFromZones, requestFit]
+    [seriesGeometry, selectedIds, clearFromZones, requestFit]
   );
 
   const deleteScene = useCallback(
@@ -622,13 +809,13 @@ export default function App() {
   /** True when polygons were (de)selected after the series was fetched. */
   const selectionChangedSinceFetch = useMemo(() => {
     if (scenes.length === 0 || fetchedSelectionKey === null) return false;
-    return Array.from(selectedIds).sort((a, b) => a - b).join('.') !== fetchedSelectionKey;
+    return selectionKey !== fetchedSelectionKey;
   }, [scenes, fetchedSelectionKey, selectedIds]);
 
   /** Zones were extracted from a different selection than is now active. */
   const zonesStale = useMemo(() => {
     if (!zones || zonesSelectionKey === null) return false;
-    return Array.from(selectedIds).sort((a, b) => a - b).join('.') !== zonesSelectionKey;
+    return selectionKey !== zonesSelectionKey;
   }, [zones, zonesSelectionKey, selectedIds]);
 
   /** Ground pixel size the analysis runs at (m). The 10 m cluster grids win over the preview mosaic. */
@@ -685,7 +872,7 @@ export default function App() {
         setZones(result);
         // Staleness only tracks the selection in selected-mode; covered-mode
         // follows the imagery, so a selection change doesn't invalidate it.
-        setZonesSelectionKey(allCovered ? null : Array.from(selectedIds).sort((a, b) => a - b).join('.'));
+        setZonesSelectionKey(allCovered ? null : selectionKey);
         // Scenarios and PCA were computed from the previous extraction.
         clearFromClustering();
       } catch (e) {
@@ -819,7 +1006,7 @@ export default function App() {
         // Let the spinner paint before the synchronous k-means work.
         await new Promise(r => setTimeout(r, 30));
         setClustering(clusterBySpecies(zones, k));
-        setPcaScope(PCA_SCOPE_ALL);
+        resetScenarioDerivedState();
       } catch (e) {
         setClustering(null);
         setClusteringError(errorMessage(e));
@@ -827,7 +1014,7 @@ export default function App() {
         setClusteringBusy(false);
       }
     },
-    [zones]
+    [zones, resetScenarioDerivedState]
   );
 
   /**
@@ -897,49 +1084,349 @@ export default function App() {
   }, [zones, polygons]);
 
   /** Field key → scenario index, for the map coloring. */
+  /**
+   * Field → scenario colour for the map. "Keep top N" drops scenarios from every
+   * chart, the season and the PCA scope, so it has to drop them here too: the
+   * panel points the user at the map to read the clustering, and a scenario that
+   * is no longer in play must not still be coloured in as if it were.
+   */
   const clusterAssignment = useMemo(() => {
     if (!clustering) return null;
     const m = new Map<string, number>();
     for (const group of clustering.groups) {
-      for (const f of group.fields) m.set(f.key, f.cluster);
+      for (const f of group.fields) {
+        if (f.cluster < settledTopScenarios) m.set(f.key, f.cluster);
+      }
     }
     return m;
-  }, [clustering]);
+  }, [clustering, settledTopScenarios]);
 
-  // ----- Step 5 handlers -----------------------------------------------------
+  /**
+   * The fields belonging to one growth scenario, as analysis bboxes. A gap the
+   * user clicked is a gap in ONE scenario's curve, so how much of THAT
+   * scenario a swath images is the number that decides — a scene clipping the
+   * far side of the selection can image most fields and miss this one entirely.
+   */
+  const scenarioBboxes = useCallback(
+    (scope: { species: string; cluster: number } | null): Bbox[] => {
+      if (!scope || !clustering) return [];
+      const group = clustering.groups.find(g => g.species === scope.species);
+      const keys = new Set((group?.fields ?? []).filter(f => f.cluster === scope.cluster).map(f => f.key));
+      if (keys.size === 0) return [];
+      const features = selectedFeatures.filter(f => keys.has(featureKey(f)));
+      return features.length > 0 ? clusterFeatureBboxes(features) : [];
+    },
+    [clustering, selectedFeatures]
+  );
 
-  // Toggle the growing-season restriction; detect the window from NDVI the first
-  // time it's turned on. Falls back to off (whole year) if no shared window.
-  const toggleSeasonOnly = useCallback(
-    async (on: boolean) => {
-      setPcaSeasonError(null);
-      if (!on) {
-        setPcaSeasonOnly(false);
-        return;
-      }
-      if (pcaSeason?.window) {
-        setPcaSeasonOnly(true);
-        return;
-      }
-      setPcaSeasonBusy(true);
+  /**
+   * What the catalogue holds inside the gap the user pointed at, with cloud cover
+   * and field coverage, so they can judge before spending a download. The cloud
+   * limit is a search filter only: a scene 60% cloudy over the tile can still be
+   * clear over the fields, so the number is shown rather than used to decide.
+   *
+   * `range` is already bounded by the acquisitions either side of the click. The
+   * `have` filter still runs on top: a date can sit inside a gap on the chart and
+   * yet be in the series, because the clustering drops dates too few fields saw,
+   * and offering to download something already downloaded is never useful.
+   */
+  const findSceneCandidates = useCallback(
+    async (
+      range: { start: string; end: string },
+      maxCloud: number,
+      scope: { species: string; cluster: number } | null = null
+    ): Promise<SceneCandidate[]> => {
+      const geom = seriesGeometry();
+      if (!geom) throw new Error('Select at least one polygon first.');
+      if (range.end < range.start) return []; // adjacent acquisitions leave no room
+      const have = new Set(scenes.map(l => l.datetime?.slice(0, 10)));
+      const found = await searchSceneCandidates(
+        geom.bbox,
+        {
+          startDate: range.start,
+          endDate: range.end,
+          maxCloudCover: maxCloud,
+          token: mpcToken(),
+        },
+        geom.clusters,
+        scenarioBboxes(scope)
+      );
+      return found.filter(c => !have.has(c.date));
+    },
+    [seriesGeometry, scenes, scenarioBboxes]
+  );
+
+  /**
+   * How much of the fields the scene actually saw, from the Scene Classification
+   * band. The tile-wide `eo:cloud_cover` cannot answer this — SCL is read at
+   * 20 m over the field windows only, so it is a small read per candidate and is
+   * done on demand rather than for every search result.
+   */
+  const checkSceneClarity = useCallback(
+    async (candidate: SceneCandidate): Promise<SceneClarity | null> => {
+      const geom = seriesGeometry();
+      if (!geom) return null;
+      return readSceneClarity(
+        candidate.item,
+        geom.bbox,
+        geom.clusters,
+        mpcToken()
+      );
+    },
+    [seriesGeometry]
+  );
+
+  /**
+   * Insert chosen acquisitions into the series and redo everything that was done
+   * for the existing ones: the pixels are re-extracted with the same zone
+   * settings and the scenarios re-clustered with the same k, so every chart and
+   * the season come back including the new date.
+   *
+   * Nothing is committed until the whole replay has succeeded — a half-applied
+   * insert would leave the series holding a date the zones and the clustering
+   * have never seen, with nothing on screen to say so. The marks are carried
+   * across by field membership (`remapSeasonPicks`), because both halves of a
+   * mark are relative to the old clustering: k-means renumbers scenarios by
+   * size, and an inserted date earlier than the series start moves the day axis.
+   */
+  const insertScenes = useCallback(
+    async (chosen: SceneCandidate[]): Promise<boolean> => {
+      const geom = seriesGeometry();
+      if (!geom || chosen.length === 0) return false;
+      const op = beginOp();
+      setSeriesBusy(true);
+      setSeriesError(null);
+      setSeriesProgress(null);
       try {
-        const result = await detectGrowingSeason();
-        setPcaSeason(result);
-        if (result.window) {
-          setPcaSeasonOnly(true);
-        } else {
-          setPcaSeasonOnly(false);
-          setPcaSeasonError(result.note || 'No shared growing window across the selected crops.');
+        const seriesId = scenes[0]?.seriesId ?? crypto.randomUUID();
+        const { layers, failedDates } = await downloadSceneCandidates(
+          chosen,
+          geom.bbox,
+          seriesId,
+          setSeriesProgress,
+          mpcToken(),
+          () => op.cancelled,
+          geom.clusters
+        );
+        if (layers.length === 0) {
+          setSeriesError(`Could not download ${failedDates.join(', ') || 'the chosen scene(s)'}.`);
+          return false;
         }
+        const merged = [...scenes, ...layers].sort(
+          (a, b) => new Date(a.datetime || 0).getTime() - new Date(b.datetime || 0).getTime()
+        );
+
+        // Replay the downstream steps over the longer series. The extraction
+        // records the settings it was made with, so they survive a reload.
+        let nextZones: ZoneExtraction | null = null;
+        let nextClustering: SpeciesClustering | null = null;
+        let nextPicks: SeasonPicks | null = null;
+        if (zones) {
+          setSeriesProgress({ stage: 'downloading', current: 1, total: 1, message: 'Re-extracting pixels…' });
+          // A null selection key means the extraction covered every imaged field.
+          const features = zonesSelectionKey === null ? coveredFeatures : selectedFeatures;
+          nextZones = await extractZones(
+            features,
+            merged,
+            zones.distance,
+            zones.metric,
+            zones.includeOutside,
+            setZonesProgress,
+            () => op.cancelled,
+            polygons?.features || [],
+            zones.neighbourGap
+          );
+          nextZones.unmixing = computeUnmixing(nextZones);
+          if (clustering) {
+            setSeriesProgress({ stage: 'downloading', current: 1, total: 1, message: 'Re-clustering scenarios…' });
+            nextClustering = clusterBySpecies(nextZones, clustering.k);
+            nextPicks = remapSeasonPicks(clustering, nextClustering, seasonPicks);
+            const lost = Object.keys(seasonPicks).length - Object.keys(nextPicks).length;
+            // A date the fields mostly missed repartitions the clustering, and a
+            // mark whose scenario dissolved is dropped rather than reassigned to
+            // whatever now sits at that index. Say so — silently losing marks the
+            // user placed by hand is worse than the stale fit this replaced.
+            setPickCarryNote(
+              lost > 0
+                ? `${lost} of ${Object.keys(seasonPicks).length} marks could not follow the new clustering — their scenarios changed too much. Re-mark them below.`
+                : null
+            );
+          }
+        }
+
+        // Commit as one batch, now that every step has succeeded.
+        setScenes(merged);
+        // Keep earlier failures visible, minus any date this insert recovered.
+        const added = new Set(layers.map(l => l.datetime?.slice(0, 10)));
+        setFailedDates(prev =>
+          Array.from(new Set([...prev.filter(d => !added.has(d)), ...failedDates])).sort()
+        );
+        if (nextZones) setZones(nextZones);
+        if (nextClustering) {
+          setClustering(nextClustering);
+          if (nextPicks) setSeasonPicks(nextPicks);
+          // The season was fitted to the shorter series; the whole point of the
+          // insert is that it should now be fitted to this one.
+          seasonFilterRef.current = null;
+        }
+        return true;
       } catch (e) {
-        setPcaSeasonOnly(false);
-        setPcaSeasonError(errorMessage(e));
+        if (isCancelledError(e)) {
+          setSeriesError('Stopped — the scene was not added and nothing was re-extracted.');
+        } else {
+          setSeriesError(errorMessage(e));
+        }
+        return false;
       } finally {
-        setPcaSeasonBusy(false);
+        setSeriesBusy(false);
+        setSeriesProgress(null);
+        setZonesProgress(null);
       }
     },
-    [detectGrowingSeason, pcaSeason]
+    [seriesGeometry, scenes, zones, zonesSelectionKey, clustering, coveredFeatures, selectedFeatures, polygons, beginOp]
   );
+
+  // ----- Growing-season handlers ---------------------------------------------
+
+  /**
+   * Everything the published season depends on, as one string. `createdAt`
+   * stands for the clustering itself: an insert re-clusters over a longer
+   * series, and a season fitted to the old one has to be recomputed even though
+   * no filter and no mark changed. Written once and used by both the effect that
+   * detects staleness and the run that clears it, so the two cannot drift apart.
+   */
+  const seasonFilterKey = `${clustering?.createdAt ?? 0}|${settledTopScenarios}|${matchCalendarOnly}|${JSON.stringify(seasonPicks)}`;
+
+  /**
+   * Run the detection and publish the result — the single place that writes the
+   * season state. `enableRestriction` additionally switches the PCA's
+   * growing-season restriction on when a shared window was found (the toggle
+   * path); display-only callers leave the restriction untouched.
+   */
+  const detectAndPublishSeason = useCallback(
+    async (enableRestriction: boolean) => {
+      const runId = ++seasonRunId.current;
+      // The inputs THIS run reads. Stamped at publish time so an input changed
+      // mid-flight is not mistaken for one the published season already reflects.
+      const launchedWith = seasonFilterKey;
+      setSeasonBusy(true);
+      try {
+        const result = await detectGrowingSeason();
+        if (runId !== seasonRunId.current) return null; // superseded by a newer run
+        seasonFilterRef.current = launchedWith;
+        setSeason(result);
+        if (result.window) {
+          if (enableRestriction) setRestrictPcaToSeason(true);
+          setSeasonError(null);
+        } else {
+          setRestrictPcaToSeason(false);
+          setSeasonError(result.note || 'No shared growing window across the selected crops.');
+        }
+        return result;
+      } catch (e) {
+        if (runId === seasonRunId.current) setSeasonError(errorMessage(e));
+        return null;
+      } finally {
+        if (runId === seasonRunId.current) setSeasonBusy(false);
+      }
+    },
+    [detectGrowingSeason, seasonFilterKey]
+  );
+
+  // Toggle the growing-season restriction; detect the window the first time it's
+  // turned on. Falls back to off (whole year) if there's no shared window.
+  const toggleSeasonOnly = useCallback(
+    async (on: boolean) => {
+      setSeasonError(null);
+      if (!on) {
+        setRestrictPcaToSeason(false);
+        return;
+      }
+      if (season?.window) {
+        setRestrictPcaToSeason(true); // already detected — just re-arm the restriction
+        return;
+      }
+      await detectAndPublishSeason(true);
+    },
+    [season, detectAndPublishSeason]
+  );
+
+  /**
+   * Record (or clear) the growing season the user marked on one scenario's
+   * curve. Bounds are absolute day indices, taken from the chart's own axis.
+   */
+  const setSeasonPick = useCallback((species: string, cluster: number, pick: { start: number; end: number } | null) => {
+    setPickCarryNote(null);
+    setSeasonPicks(prev => {
+      const key = pickKey(species, cluster);
+      if (!pick) {
+        if (!(key in prev)) return prev;
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      }
+      const start = Math.min(pick.start, pick.end);
+      const end = Math.max(pick.start, pick.end);
+      if (prev[key]?.start === start && prev[key]?.end === end) return prev;
+      return { ...prev, [key]: { start, end } };
+    });
+  }, []);
+
+  const clearSeasonPicks = useCallback(() => setSeasonPicks({}), []);
+
+  /**
+   * Pre-fill every unmarked scenario with the curve-shape heuristic, as a
+   * starting point to correct rather than an answer to trust — reading the
+   * season off a month-gapped series is exactly what turned out to be
+   * unreliable. Scenarios already marked are left alone.
+   */
+  const suggestSeasonPicks = useCallback(() => {
+    if (!clustering) return;
+    const guessed = proposePicks(clustering, settledTopScenarios);
+    // Never overwrite a window the user placed or adjusted by hand.
+    setSeasonPicks(prev => ({ ...guessed, ...prev }));
+  }, [clustering, settledTopScenarios]);
+
+  // Keep a detected season in sync with its inputs. The ref records which ones
+  // the current season was computed with, so the season merely *appearing*
+  // doesn't trigger a redundant second pass (the fit is the expensive part) —
+  // only a genuine change re-runs it.
+  const hasPicks = Object.keys(seasonPicks).length > 0;
+  useEffect(() => {
+    // Recompute when the marks or the filters change. Also fires on the FIRST
+    // mark, when no season exists yet.
+    if (!season && !hasPicks) return;
+    if (seasonFilterRef.current === seasonFilterKey) return; // already reflects this input
+    void detectAndPublishSeason(false);
+  }, [season, hasPicks, seasonFilterKey, detectAndPublishSeason]);
+
+  // A scenario dropped by "keep top N" must not stay the PCA scope: the step's
+  // select filters its options by the same rule, so the control would go blank
+  // while the run still silently targeted the now-hidden scenario.
+  //
+  // "Keep top N" is typed digit by digit, so widening 3 -> 10 passes through 1
+  // and would clear the scope on the way. The cleared scope is remembered and
+  // put back once the field is wide enough to hold it again.
+  const shelvedPcaScope = useRef<string | null>(null);
+  useEffect(() => {
+    const scoped = parsePcaScope(pcaScope);
+    if (scoped && scoped.cluster >= settledTopScenarios) {
+      shelvedPcaScope.current = pcaScope;
+      setPcaScope(PCA_SCOPE_ALL);
+      return;
+    }
+    if (pcaScope !== PCA_SCOPE_ALL) {
+      shelvedPcaScope.current = null; // the user chose something else meanwhile
+      return;
+    }
+    const remembered = shelvedPcaScope.current;
+    if (!remembered) return;
+    const shelved = parsePcaScope(remembered);
+    if (shelved && shelved.cluster < settledTopScenarios) {
+      setPcaScope(remembered);
+      shelvedPcaScope.current = null;
+    }
+  }, [pcaScope, settledTopScenarios]);
 
   const runPca = useCallback(async () => {
     if (!zones) return;
@@ -964,27 +1451,27 @@ export default function App() {
       }
       // Growing-season window: the scoped scenario's own window when a scenario
       // is chosen, else the crops' shared overlap.
-      let season = pcaSeasonOnly ? pcaSeason?.window ?? null : null;
-      if (pcaSeasonOnly && scoped && pcaSeason?.perCluster) {
-        const pc = pcaSeason.perCluster.find(p => p.species === scoped.species && p.cluster === scoped.cluster);
-        if (pc) season = pc.window; // may be null → that scenario has no obvious season
+      let seasonWindow = restrictPcaToSeason ? season?.window ?? null : null;
+      if (restrictPcaToSeason && scoped && season?.perCluster) {
+        const pc = season.perCluster.find(p => p.species === scoped.species && p.cluster === scoped.cluster);
+        if (pc) seasonWindow = pc.window; // may be null → that scenario has no obvious season
       }
       const result = runPixelPca(pixels, zones.metric, {
         fitZones: pcaFitZones,
         projectZones: pcaProjectZones,
         method: pcaMethod,
-        dateStart: season?.start,
-        dateEnd: season?.end,
+        dateStart: seasonWindow?.start,
+        dateEnd: seasonWindow?.end,
       });
       setPcaResult(result);
-      setShowPcaPanel(true);
+      openPcaPanel();
     } catch (e) {
       setPcaResult(null);
       setPcaError(errorMessage(e));
     } finally {
       setPcaBusy(false);
     }
-  }, [zones, clustering, pcaScope, pcaFields, pcaFitZones, pcaProjectZones, pcaMethod, pcaSeasonOnly, pcaSeason]);
+  }, [zones, clustering, pcaScope, pcaFields, pcaFitZones, pcaProjectZones, pcaMethod, restrictPcaToSeason, season, openPcaPanel]);
 
   // Changing the projected classes from the results panel re-runs the
   // projection live. Refs avoid re-firing when the run itself lands.
@@ -1128,10 +1615,10 @@ export default function App() {
     },
     {
       id: 4,
-      title: 'Species clustering',
+      title: 'Growth scenarios',
       summary: clustering
         ? `${clustering.groups.length} species · up to ${clustering.k} scenarios each`
-        : 'Isolate growth scenarios within each species',
+        : 'Cluster fields & pick the growing season',
       enabled: zones !== null,
       done: clustering !== null,
       onReset: clearFromClustering,
@@ -1141,10 +1628,9 @@ export default function App() {
           zones={zones}
           clustering={clustering}
           busy={clusteringBusy}
-          error={clusteringError}
-          onRun={runClustering}
-          topScenarios={topScenarios}
-          onTopScenariosChange={setTopScenarios}
+          season={season}
+          seasonOnly={restrictPcaToSeason}
+          onOpen={openClusterPanel}
         />
       ),
     },
@@ -1176,12 +1662,10 @@ export default function App() {
           busy={pcaBusy}
           error={pcaError}
           onRun={runPca}
-          seasonOnly={pcaSeasonOnly}
-          onToggleSeason={toggleSeasonOnly}
-          season={pcaSeason}
-          seasonBusy={pcaSeasonBusy}
-          seasonError={pcaSeasonError}
-          onOpenResults={() => setShowPcaPanel(true)}
+          seasonOnly={restrictPcaToSeason}
+          season={season}
+          onOpenClusterWindow={openClusterPanel}
+          onOpenResults={openPcaPanel}
           onExportCsv={exportCsv}
         />
       ),
@@ -1234,7 +1718,7 @@ export default function App() {
         </div>
         <div className="flex items-center gap-2">
           <a
-            href="/pixel-grid.html"
+            href="./pixel-grid.html"
             className="flex items-center gap-1.5 rounded-md border border-sky-500/40 bg-sky-500/10 px-2.5 py-1 text-xs text-sky-300 transition-colors hover:bg-sky-500/20"
           >
             <Grid3x3 className="h-3 w-3" /> Pixel Grid Designer
@@ -1259,7 +1743,7 @@ export default function App() {
             onClearSelection={clearSelection}
             zones={zones}
             clusterAssignment={clusterAssignment}
-            clusterVersion={clustering?.createdAt ?? 0}
+            clusterVersion={(clustering?.createdAt ?? 0) + settledTopScenarios}
             preview={preview}
             clusterGrids={clusterGrids}
             boundaryPixels={pcaBoundaryPixels}
@@ -1285,12 +1769,40 @@ export default function App() {
             onSelectDate={previewDate}
             highlightPixel={highlightPixel}
             onHighlightPixel={setHighlightPixel}
-            seasonWindow={pcaSeasonOnly ? pcaSeason?.window ?? null : null}
-            seasonOn={pcaSeasonOnly}
+            seasonWindow={restrictPcaToSeason ? season?.window ?? null : null}
+            seasonOn={restrictPcaToSeason}
             onToggleSeason={toggleSeasonOnly}
-            seasonBusy={pcaSeasonBusy}
-            seasonError={pcaSeasonError}
+            seasonBusy={seasonBusy}
+            seasonError={seasonError}
           />
+          {showClusterPanel && (
+            <ClusterSeasonPanel
+              width={clusterPanelWidth}
+              onWidthChange={onClusterPanelWidth}
+              onClose={closeClusterPanel}
+              zones={zones}
+              clustering={clustering}
+              // An insert re-clusters underneath; re-clustering on top of that
+              // would race the rebuild.
+              busy={clusteringBusy || seriesBusy}
+              error={clusteringError}
+              onRun={runClustering}
+              topScenarios={topScenarios}
+              onTopScenariosChange={setTopScenarios}
+              periods={seasonPicks}
+              onPeriodChange={setSeasonPick}
+              excludedDays={excludedDays}
+              onToggleExcluded={toggleExcluded}
+              canAddScenes={selectedFeatures.length > 0 && zones !== null}
+              onFindScenes={findSceneCandidates}
+              onCheckClarity={checkSceneClarity}
+              onInsertScenes={insertScenes}
+              onStopInsert={cancelOp}
+              seriesBusy={seriesBusy}
+              seriesProgress={seriesProgress}
+              seriesError={seriesError}
+            />
+          )}
           {showPcaPanel && pcaResult && (
             <PcaPanel
               result={pcaResult}

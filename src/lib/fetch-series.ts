@@ -11,7 +11,7 @@ import { fetchSceneMosaic, MosaicTile } from './mosaic';
 import { createRasterLayer, DEFAULT_OPTIONS } from './layer-factory';
 import { getBboxIntersectionArea, Bbox } from './geo';
 import { CancelCheck, throwIfCancelled } from './cancel';
-import { GeoTIFFData, clearTiffCache } from './geotiff-utils';
+import { GeoTIFFData, clearTiffCache, evictTiff } from './geotiff-utils';
 
 /**
  * Sentinel-2 time-series acquisition for the workflow.
@@ -22,7 +22,7 @@ import { GeoTIFFData, clearTiffCache } from './geotiff-utils';
  * of every MGRS tile of each date so the full area is present in each scene.
  */
 
-export const SERIES_ASSETS = ['B02', 'B03', 'B04', 'B08'];
+const SERIES_ASSETS = ['B02', 'B03', 'B04', 'B08'];
 
 /** A date gives a clean, all-fields scene when it covers at least this share. */
 const MIN_COVERAGE = 0.98;
@@ -32,7 +32,7 @@ const MIN_COVERAGE = 0.98;
  * overpasses): keep dates imaging at least this share, so each scene is still
  * worthwhile and the heterogeneous series has a well-covered core to settle on.
  */
-const PARTIAL_COVERAGE = 0.3;
+export const PARTIAL_COVERAGE = 0.3;
 
 export interface SeriesFetchParams {
   startDate: string;
@@ -56,7 +56,6 @@ export interface SeriesFetchResult {
   /** Acquisition dates that matched but failed to download. */
   failedDates: string[];
   /** Number of distinct acquisition dates available in the period. */
-  availableDates: number;
   /** Dates dropped because their swath images too little of the selection. */
   partialDates: number;
   /**
@@ -158,7 +157,7 @@ export async function fetchSentinelSeries(
   if (layers.length === 0) {
     throw new Error('All matching scenes failed to download. Check your network and try again.');
   }
-  return { layers, failedDates, availableDates: byDate.length, partialDates, heterogeneous };
+  return { layers, failedDates, partialDates, heterogeneous };
 }
 
 const tilesOf = (item: STACItem): STACItem[] => (item.groupItems?.length ? item.groupItems : [item]);
@@ -206,6 +205,28 @@ function dateCoverage(item: STACItem, aoiBboxes: Bbox[]): number {
   return total > 0 ? covered / total : 0;
 }
 
+/**
+ * The tiles of one acquisition that matter for a selection, and the CRS to
+ * mosaic them in. Tiles can straddle a UTM zone boundary while the mosaic grid
+ * needs a single CRS, so the zone covering the most of the selection wins and
+ * the others are dropped.
+ */
+function tilesForSelection(item: STACItem, bbox: Bbox): { tiles: STACItem[]; crs: string } {
+  const touching = tilesOf(item).filter(t => intersectsBbox(t, bbox));
+  const tiles = touching.length > 0 ? touching : [tilesOf(item)[0]];
+  const overlapByEpsg = new Map<number, number>();
+  for (const tile of tiles) {
+    const epsg = tile.properties['proj:epsg'] ?? 0;
+    const overlap = tile.bbox ? getBboxIntersectionArea(tile.bbox as Bbox, bbox) : 0;
+    overlapByEpsg.set(epsg, (overlapByEpsg.get(epsg) || 0) + overlap);
+  }
+  const bestEpsg = Array.from(overlapByEpsg.entries()).sort((a, b) => b[1] - a[1])[0][0];
+  return {
+    tiles: tiles.filter(t => (t.properties['proj:epsg'] ?? 0) === bestEpsg),
+    crs: bestEpsg ? `EPSG:${bestEpsg}` : 'EPSG:4326',
+  };
+}
+
 async function downloadScene(
   item: STACItem,
   bbox: Bbox,
@@ -215,20 +236,7 @@ async function downloadScene(
   analysisBboxes: Bbox[] = [],
   onWindows?: (done: number, total: number) => void
 ): Promise<RasterLayer> {
-  // All tiles of the overpass that touch the selection take part in the
-  // mosaic. Tiles can sit in different UTM zones near a zone boundary; the
-  // mosaic grid needs one CRS, so keep the zone that covers the most area.
-  const candidates = tilesOf(item).filter(t => intersectsBbox(t, bbox));
-  const tiles = candidates.length > 0 ? candidates : [tilesOf(item)[0]];
-
-  const overlapByEpsg = new Map<number, number>();
-  for (const tile of tiles) {
-    const epsg = tile.properties['proj:epsg'] ?? 0;
-    const overlap = tile.bbox ? getBboxIntersectionArea(tile.bbox as Bbox, bbox) : 0;
-    overlapByEpsg.set(epsg, (overlapByEpsg.get(epsg) || 0) + overlap);
-  }
-  const bestEpsg = Array.from(overlapByEpsg.entries()).sort((a, b) => b[1] - a[1])[0][0];
-  const sameZone = tiles.filter(t => (t.properties['proj:epsg'] ?? 0) === bestEpsg);
+  const { tiles: sameZone, crs } = tilesForSelection(item, bbox);
 
   const mosaicTiles: MosaicTile[] = await Promise.all(
     sameZone.map(async tile => {
@@ -245,7 +253,6 @@ async function downloadScene(
     })
   );
 
-  const crs = bestEpsg ? `EPSG:${bestEpsg}` : 'EPSG:4326';
   const date = item.properties.datetime.split('T')[0];
   const data = await fetchSceneMosaic(mosaicTiles, bbox, crs, DEFAULT_OPTIONS, isCancelled);
 
@@ -298,4 +305,203 @@ async function fetchAnalysisGrids(
     })
   );
   return grids;
+}
+
+// ---------------------------------------------------------------------------
+// Filling a hole in an existing series
+//
+// `fetchSentinelSeries` searches and downloads in one go, choosing dates for
+// you. Filling a gap is the opposite: the user points at a hole and needs to
+// see what the catalogue actually holds there — dates, how cloudy, how much of
+// the fields they image — before spending a download on one. So the two halves
+// are also exposed separately.
+// ---------------------------------------------------------------------------
+
+/** One acquisition the catalogue offers, before deciding whether to download it. */
+export interface SceneCandidate {
+  date: string;
+  /** Scene cloud cover (%), worst of the tiles making up the date. */
+  cloudCover: number | null;
+  /** Share of the analysed fields the date's swath actually images (0–1). */
+  coverage: number;
+  /**
+   * The same share, restricted to the growth scenario the picker was opened
+   * from (0–1), or null when it was not opened from one. A gap is a gap in ONE
+   * scenario's curve, and a swath clipping the far side of the selection can
+   * image most of the fields while missing every field in that scenario.
+   */
+  scopeCoverage: number | null;
+  item: STACItem;
+}
+
+/**
+ * What the catalogue holds between two dates, newest information first: every
+ * acquisition with its cloud cover and how much of the fields it images.
+ * Nothing is downloaded. `maxCloudCover` is deliberately a search filter only —
+ * a date that is 60% cloudy over the tile may still be clear over the fields,
+ * so the caller is shown the number and decides.
+ */
+export async function searchSceneCandidates(
+  bbox: Bbox,
+  params: { startDate: string; endDate: string; maxCloudCover: number; token?: string },
+  analysisBboxes: Bbox[] = [],
+  scopeBboxes: Bbox[] = []
+): Promise<SceneCandidate[]> {
+  const items = await searchSentinel2Chunked(
+    bbox,
+    params.startDate,
+    params.endDate,
+    params.maxCloudCover,
+    params.token || undefined
+  );
+  if (items.length === 0) return [];
+  const aoi = analysisBboxes.length > 0 ? analysisBboxes : [bbox];
+  return groupItemsByDate(items)
+    .map(item => {
+      const tiles = tilesOf(item);
+      const clouds = tiles
+        .map(t => t.properties?.['eo:cloud_cover'])
+        .filter((c): c is number => typeof c === 'number');
+      return {
+        date: item.properties.datetime.split('T')[0],
+        cloudCover: clouds.length ? Math.max(...clouds) : null,
+        coverage: dateCoverage(item, aoi),
+        scopeCoverage: scopeBboxes.length > 0 ? dateCoverage(item, scopeBboxes) : null,
+        item,
+      };
+    })
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+
+/**
+ * Download specific acquisitions the caller chose from `searchSceneCandidates`.
+ * `seriesId` should be the one the existing scenes already carry, so the new
+ * layers belong to the same series.
+ */
+export async function downloadSceneCandidates(
+  candidates: SceneCandidate[],
+  bbox: Bbox,
+  seriesId: string,
+  onProgress: (p: SeriesProgress) => void,
+  token?: string,
+  isCancelled?: CancelCheck,
+  analysisBboxes: Bbox[] = []
+): Promise<{ layers: RasterLayer[]; failedDates: string[] }> {
+  const layers: RasterLayer[] = [];
+  const failedDates: string[] = [];
+  for (let i = 0; i < candidates.length; i++) {
+    throwIfCancelled(isCancelled);
+    const { item, date } = candidates[i];
+    try {
+      const onWindows = (done: number, total: number) =>
+        onProgress({
+          stage: 'downloading',
+          current: i,
+          total: candidates.length,
+          message: `Scene ${i + 1}/${candidates.length} (${date}) — 10 m window ${done}/${total}…`,
+        });
+      onProgress({ stage: 'downloading', current: i, total: candidates.length, message: `Downloading ${date}…` });
+      layers.push(await downloadScene(item, bbox, seriesId, token, isCancelled, analysisBboxes, onWindows));
+    } catch (e) {
+      throwIfCancelled(isCancelled);
+      console.error(`Failed to download scene ${date}:`, e);
+      failedDates.push(date);
+    } finally {
+      clearTiffCache();
+    }
+  }
+  return { layers, failedDates };
+}
+
+// ---------------------------------------------------------------------------
+// Is the scene actually clear over THESE fields?
+//
+// `eo:cloud_cover` is a whole-tile figure — 110 x 110 km — so it says almost
+// nothing about a handful of fields inside it: a 70%-cloudy tile can be
+// perfectly clear over them, and a 10%-cloudy one can have the single cloud
+// parked right on top. Sentinel-2 L2A ships a per-pixel Scene Classification
+// (SCL, 20 m) that labels cloud, cirrus and cloud shadow, so the question can
+// be answered properly by reading it over the fields alone.
+// ---------------------------------------------------------------------------
+
+/** SCL classes that mean "ground was seen": vegetation, bare soil, water. */
+const SCL_CLEAR = new Set([4, 5, 6]);
+/** SCL classes that mean "obscured": shadow, cloud medium/high, thin cirrus. */
+const SCL_OBSCURED = new Set([3, 8, 9, 10]);
+
+export interface SceneClarity {
+  /** Share of the fields' pixels where the ground was seen (0–1). */
+  clear: number;
+  /** Share obscured by cloud, cirrus or cloud shadow (0–1). */
+  obscured: number;
+  /**
+   * Share that is neither: snow/ice, cast shadow, saturated or unclassified.
+   * The ground was not seen there either, but the reason is not cloud — folding
+   * these into `obscured` would overstate cloud, and leaving them out of the
+   * denominator would let a snow-covered scene report as fully clear.
+   */
+  unusable: number;
+  /** Pixels the swath actually covered — 0 means the fields were outside it. */
+  covered: number;
+}
+
+/**
+ * Read the Scene Classification band over the analysed field windows and report
+ * how much of the ground was actually visible. Only the SCL asset is fetched,
+ * at 20 m, over the polygon-cluster bboxes — a far smaller read than the four
+ * 10 m bands a full scene download pulls.
+ *
+ * Returns null when the item has no SCL asset (older or non-L2A products).
+ */
+export async function readSceneClarity(
+  item: STACItem,
+  bbox: Bbox,
+  analysisBboxes: Bbox[],
+  token?: string,
+  isCancelled?: CancelCheck
+): Promise<SceneClarity | null> {
+  const { tiles: sameZone, crs } = tilesForSelection(item, bbox);
+
+  const mosaicTiles: MosaicTile[] = [];
+  for (const tile of sameZone) {
+    const signed = await signSTACItem(tile, token);
+    const href = signed.assets['SCL']?.href;
+    if (href) mosaicTiles.push({ bandUrls: { SCL: href } });
+  }
+  if (mosaicTiles.length === 0) return null;
+
+  // The fields' own windows, not the whole selection rectangle — the empty land
+  // between clusters must not dilute the answer.
+  const windows = analysisBboxes.length > 0 ? analysisBboxes : [bbox];
+
+  let clear = 0;
+  let obscured = 0;
+  let covered = 0;
+  try {
+    for (const win of windows) {
+      throwIfCancelled(isCancelled);
+      const grid = await fetchSceneMosaic(mosaicTiles, win, crs, DEFAULT_OPTIONS, isCancelled, { skipCanvas: true });
+      const scl = grid.bandData?.['SCL'];
+      if (!scl) continue;
+      for (let i = 0; i < scl.length; i++) {
+        const v = Math.round(scl[i]);
+        if (v === 0) continue; // no data — outside the swath, not a verdict
+        covered++;
+        if (SCL_CLEAR.has(v)) clear++;
+        else if (SCL_OBSCURED.has(v)) obscured++;
+      }
+    }
+  } finally {
+    // Evict only what this read added. A full `clearTiffCache()` would also drop
+    // the 10 m bands an insert running alongside it is still reading, forcing a
+    // re-fetch of every remaining window.
+    for (const t of mosaicTiles) evictTiff(t.bandUrls.SCL);
+  }
+  if (covered === 0) return null;
+  return {
+    clear: clear / covered,
+    obscured: obscured / covered,
+    unusable: (covered - clear - obscured) / covered,
+    covered,
+  };
 }

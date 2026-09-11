@@ -1,0 +1,1091 @@
+{
+  "Prairie permanente (taux de couverture > 90%), hors rotation depuis 5 ans": {
+    "regime": "grassland-permanent",
+    "greenStart": "03-01",
+    "greenEnd": "11-30",
+    "practice": "Permanent grassland is not sown within a rotation (out of rotation ≥5 years); it is a semi-permanent grass/clover sward managed by grazing and mowing. In Wallonia the first cut (silage/hay) is typically taken from late April to early June, followed by several regrowth cuts and/or grazing rotations through October–November.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://agriculture.wallonie.be/home/recherche-developpement/adaptations-a-la-secheresse/resilience-fourragere/apprehender-la-croissance-de-lherbe.html",
+      "https://www.paturage.be/paturage/gestion_pre/gestion_pre.html",
+      "https://www.fourragesmieux.be/Documents_telechargeables/Cours%20A%20et%20B%202019-2020.pdf",
+      "https://www.sciencedirect.com/science/article/pii/S0034425723001281"
+    ]
+  },
+  "Froment dhiver": {
+    "regime": "winter-cereal",
+    "greenStart": "03-01",
+    "greenEnd": "08-05",
+    "peakStart": "05-10",
+    "peakEnd": "06-15",
+    "practice": "In Wallonia, winter wheat (froment d'hiver) is sown mainly from mid-October to early November (optimal ~15 Oct–5 Nov; earliest sowings from ~20 Sept), establishing a thin autumn canopy that overwinters. Growth resumes in early spring; physiological maturity (BBCH 89) is reached around mid-July and harvest runs from late July into the first half of August depending on weather and variety.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://livre-blanc-cereales.be/thematiques/semis/date-de-semis/",
+      "https://etat-agriculture.wallonie.be/contents/indicatorsheets/EAW-C_III_b_2.html",
+      "https://livre-blanc-cereales.be/wp-content/uploads/2025/09/2.-LB2025-09-Qualite.pdf",
+      "https://www.dockmoulin.be/cultures/froment/"
+    ]
+  },
+  "Maïs ensilage": {
+    "regime": "summer-row-crop",
+    "greenStart": "05-15",
+    "greenEnd": "10-20",
+    "peakStart": "07-01",
+    "peakEnd": "08-20",
+    "practice": "Silage (forage) maize is a spring-sown summer row crop in Wallonia: sowing mid-April to mid-May (sometimes into early June) once soils are warm and well-drained, as the crop is cold-sensitive. With wide ~75 cm rows, ground cover stays low in spring and the canopy closes only in June; whole-plant silage harvest runs mid-September to late October at ~30-35% dry matter, earlier than grain maize (Oct-Dec).",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://cipf.be/fr/mais/mais-en-wallonie",
+      "https://lgseeds.be/fr/la-majorite-des-recoltes-de-mais-ensilage-attendue-fin-octobre/",
+      "https://www.dockmoulin.be/cultures/mais/"
+    ]
+  },
+  "Prairie temporaire ( plus de 50 % graminées)": {
+    "regime": "grassland-temporary",
+    "greenStart": "03-01",
+    "greenEnd": "11-15",
+    "practice": "Sown grass-dominant ley (ryegrass Lolium, Dactylis, Festuca, Phleum, ± clover) kept 1-5 years in rotation; established preferentially late summer/autumn or in spring (~April). Exploited by repeated mowing (typically 3-4 silage cuts) and/or grazing of regrowth from spring through late autumn (~mid-Oct to early Nov), giving a multi-cut sawtooth NDVI rather than a single seasonal peak.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://www.fourragesmieux.be/Documents_telechargeables/Cours%20A%20et%20B%202019-2020.pdf",
+      "https://agriculture.wallonie.be/home/recherche-developpement/adaptations-a-la-secheresse/resilience-fourragere/apprehender-la-croissance-de-lherbe.html",
+      "https://biodiversite.wallonie.be/fr/ia-prairies-temporaires-de-fauche.html?IDC=1134",
+      "https://centredemichamps.be/wp-content/uploads/2019/03/Cours_A_Prairie_Cremer_S_2015_2016.pdf"
+    ]
+  },
+  "Pomme de terre (non hâtives)": {
+    "regime": "summer-row-crop",
+    "greenStart": "05-10",
+    "greenEnd": "10-05",
+    "peakStart": "06-25",
+    "peakEnd": "08-25",
+    "practice": "In Wallonia, maincrop (non-early) conservation potatoes are planted mid-April to early May (late plantings into June), emerge in late May, close their canopy by mid-June and hold full green foliage through August; haulm destruction/senescence (défanage) occurs in September, with harvest from mid-September into October.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://www.cra.wallonie.be/fr/la-culture-de-la-pomme-de-terre-en-wallonie",
+      "https://fiwap.be/wp-content/uploads/2024/09/Fiwap-Rdt-qual-2024-comm-4-240923.pdf",
+      "https://etat-agriculture.wallonie.be/contents/indicatorsheets/EAW-C_III_b_8.html",
+      "https://agriculture.wallonie.be/home/politique-economie/organisation-commune-des-marches/pommes-de-terre.html"
+    ]
+  },
+  "Betterave sucrière": {
+    "regime": "summer-row-crop",
+    "greenStart": "04-15",
+    "greenEnd": "11-15",
+    "peakStart": "07-01",
+    "peakEnd": "09-30",
+    "practice": "In Wallonia sugar beet is spring-sown as early as the soil is workable, typically mid-March to mid-April (earlier sowing maximises the growing period and yield); after emergence the canopy closes around mid-June and stays green until lifting. Harvest (\"campagne betteravière\"/arrachage) runs from mid-September through November, often into December.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://www.irbab-kbivb.be/fr/commencez-le-semis-de-betteraves-sucriere-au-bon-moment/",
+      "https://etat-agriculture.wallonie.be/contents/indicatorsheets/EAW-C_III_b_5.html",
+      "https://www.kws.com/be/fr/expertise/semis/date-de-semis/betteraves-a-sucre/",
+      "https://www.yara.co.uk/crop-nutrition/sugar-beet/growth-and-development-of-sugar-beet/"
+    ]
+  },
+  "Orge dhiver": {
+    "regime": "winter-cereal",
+    "greenStart": "03-01",
+    "greenEnd": "07-25",
+    "peakStart": "05-01",
+    "peakEnd": "06-10",
+    "practice": "Winter barley: sown late Sept–Oct, harvested early–mid July (before winter wheat). NDVI peak May–early June.",
+    "confidence": "medium",
+    "source": "agronomic-knowledge"
+  },
+  "Epeautre d'hiver": {
+    "regime": "winter-cereal",
+    "greenStart": "03-15",
+    "greenEnd": "08-10",
+    "peakStart": "05-01",
+    "peakEnd": "06-15",
+    "practice": "Winter spelt is sown in Wallonia from late September through October (occasionally into November/December), managed essentially like winter wheat, and harvested from late July into August. Sentinel-2 NDVI shows thin autumn establishment, winter dormancy, then strong spring regrowth from March, a dense canopy peaking at heading/flowering in May–June, and senescence to bare soil by the August harvest.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://livre-blanc-cereales.be/thematiques/semis/date-de-semis/",
+      "https://www.gembloux.ulg.ac.be/phytotechnie-temperee/pic/pdf/autres%20especes/Epeautre.pdf",
+      "https://www.livre-blanc-cereales.be/wp-content/uploads/2021/10/2.-Implantation-des-cultures.pdf",
+      "https://reseauwallonpac.be/fr/ressources/livre-blanc-cereales-2026"
+    ]
+  },
+  "Tournière enherbée": {
+    "regime": "cover-fallow",
+    "greenStart": "03-01",
+    "greenEnd": "11-15",
+    "practice": "A \"tournière enherbée\" is not a harvested crop but a grassed headland/buffer strip (10–20 m wide) sown on arable field edges under the Walloon MAEC MB5 agri-environmental measure — a permanent grass+legume cover held over the multi-year commitment. It is managed low-intensity without inputs, with a single late-summer mowing (typically not before mid-July/August) and an unmown refuge zone, so NDVI stays green across the whole growing season (early spring to late autumn) with a mid-season dip at the mowing event rather than a single crop harvest.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://agriculture.wallonie.be/home/aides/pac-2023-2027-description-des-interventions/mesures-agro-environnementales-et-climatiques/maec-tournieres-enherbees---mb5.html",
+      "https://agriculture.wallonie.be/maec-tournieres-enherbees",
+      "https://www.natagriwal.be/projet/tourniere-enherbee/",
+      "https://culturalite.be/bandes-et-tournieres-enherbees/"
+    ]
+  },
+  "Bande/parcelle aménagée MAE - MC7, MC8, MB5": {
+    "regime": "cover-fallow",
+    "greenStart": "03-01",
+    "greenEnd": "11-15",
+    "practice": "Not a harvested crop but a Walloon agri-environmental measure (MAEC): permanent grass/legume covers on arable land (MC7 \"parcelle aménagée\", its former strip variant MC8 \"bande aménagée\" merged into MC7 in 2023) or 10-20 m grassed field margins (MB5 \"tournière enherbée\"). Sown once by 31 May and kept for a 5-year commitment without fertiliser or pesticides; mowing restricted to 16 July-31 October with a permanent unmown refuge strip, so the sward stays green across the whole season rather than being sown/harvested annually.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://agriculture.wallonie.be/home/aides/pac-2023-2027-description-des-interventions/mesures-agro-environnementales-et-climatiques/maec-parcelles-amenagees---mc7.html",
+      "https://agriculture.wallonie.be/home/aides/pac-2023-2027-description-des-interventions/mesures-agro-environnementales-et-climatiques/maec-tournieres-enherbees---mb5.html",
+      "https://www.natagriwal.be/projet/parcelle-amenagee/",
+      "https://etat.environnement.wallonie.be/contents/indicatorsheets/AGRI%2010.html"
+    ]
+  },
+  "Maïs grain": {
+    "regime": "summer-row-crop",
+    "greenStart": "05-15",
+    "greenEnd": "10-15",
+    "peakStart": "07-10",
+    "peakEnd": "08-31",
+    "practice": "In Wallonia grain maize is spring-sown from about 15 April to 15 May; it emerges in May, closes the canopy by late June-July, tassels/flowers in mid-July to early August, then fills grain and dries down through September-October. Unlike silage maize (cut Sept-Oct), grain maize is left standing to dry and is combined much later — as dry grain at ~25-38% moisture, from roughly 20 October into late November.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://cipf.be/fr/mais/mais-en-wallonie",
+      "https://cipf.be/shared/files/fr/ititecgrain.pdf",
+      "https://cipf.be/fr/mais",
+      "https://livre-blanc-cereales.be/wp-content/uploads/2023/10/2023-09-LivreBlanc.pdf"
+    ]
+  },
+  "Luzerne": {
+    "regime": "forage-perennial",
+    "greenStart": "03-20",
+    "greenEnd": "11-10",
+    "practice": "Luzerne (lucerne/alfalfa) is a perennial forage legume sown either in spring (April, often under an oat/cereal cover once the soil warms) or in late summer after cereals (by mid-September at the latest), and kept as a 3-4 year stand. In Wallonia it yields typically 3-4 cuts per year: first cut at the bud/button stage around mid-to-late May, then regrowth harvested every ~30-40 days (5-6 weeks) through summer and autumn, with the last cut in October and at least one cut left to early flowering to rebuild root reserves.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://www.cra.wallonie.be/fr/la-luzerne",
+      "https://www.cra.wallonie.be/uploads/2020/08/fiches-autonomie-fourragere-la-luzerne.pdf",
+      "https://www.protecteau.be/sites/default/files/uploads/Contrat%20captage/0224_Article_Culture%20de%20la%20luzerne%20et%20ses%20nombreux%20avantages.pdf",
+      "https://www.arvalis.fr/infos-techniques/exploitation-des-luzernes-bien-rythmer-les-coupes-dans-une-luzerniere"
+    ]
+  },
+  "Lin textile": {
+    "regime": "fibre",
+    "greenStart": "04-15",
+    "greenEnd": "07-20",
+    "peakStart": "05-25",
+    "peakEnd": "06-20",
+    "practice": "Fibre flax (Linum usitatissimum) is spring-sown in Wallonia from mid-March to mid-April (typical target around 15 April), with a fast ~100-day cycle: emergence in April, rapid \"grande croissance\" through May, brief flowering in mid-June, and pulling (arrachage, not mowing) at maturity around 900-1000°C GDD, generally mid-July. Pulled straw is then dew-retted flat on the field (rouissage) from July into September, appearing as low-NDVI brown straw rather than a green canopy.",
+    "confidence": "medium",
+    "source": "researched",
+    "sources": [
+      "https://www.cra.wallonie.be/fr/la-verticilliose-une-maladie-qui-touche-le-lin-textile-en-wallonie",
+      "https://www.wavalin.be/fr/la-culture-du-lin",
+      "https://www.arvalis.fr/infos-techniques/lin-les-clefs-de-la-reussite",
+      "https://www.safilin.fr/culture-du-lin/"
+    ]
+  },
+  "Autres fourrages": {
+    "regime": "forage-annual",
+    "greenStart": "05-15",
+    "greenEnd": "10-31",
+    "practice": "In the Walloon SIGeC/PAC nomenclature \"Autres fourrages\" is a residual fodder-crop code covering species without a dedicated code (forage maize, temporary grassland, luzerne, clover and fodder beet each have their own) — chiefly warm-season annuals such as fodder sorghum, millet/moha, fodder kale/rape and cereal-legume forage mixtures, often grown as drought-buffer or catch forages. The typical summer forages (e.g. sorghum) are sown from mid-May (~May 15-20) once soils reach ~12 C and cut/harvested from late September to late October; the category is heterogeneous, so the green window is approximate.",
+    "confidence": "medium",
+    "source": "researched",
+    "sources": [
+      "https://cipf.be/fr/sorgho",
+      "https://agriculture.wallonie.be/home/recherche-developpement/adaptations-a-la-secheresse/resilience-fourragere/transition-avec-de-nouvelles-especes/le-sorgho.html",
+      "https://agriculture.wallonie.be/files/20182/135227/Choisir%20la%20vari%C3%A9t%C3%A9%20de%20sorgho%20fourrager%20en%20Wallonie%20(3).pdf",
+      "https://centredemichamps.be/wp-content/uploads/2020/02/Texte-Lambert-R.pdf"
+    ]
+  },
+  "Colza dhiver": {
+    "regime": "oilseed",
+    "greenStart": "03-01",
+    "greenEnd": "07-25",
+    "peakStart": "04-05",
+    "peakEnd": "05-20",
+    "practice": "Winter oilseed rape (Brassica napus) in Wallonia is sown mid-to-late August (optimum ~20-25 Aug, window ~mid-Jul to ~25 Aug), establishing a leafy rosette (8-leaf target) before winter. Growth resumes early, in late February to March; yellow flowering runs mid-April to mid-May (first flowers ~6 Apr), pod fill in May-June, and combine harvest at ~9% grain moisture in the second half of July.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://livre-blanc-cereales.be/thematiques/semis/date-de-semis/",
+      "https://www.cra.wallonie.be/fr/website-livre-blanc-cereales",
+      "https://www.dockmoulin.be/cultures/colza/",
+      "https://www.semae-pedagogie.org/sujet/la-culture-du-colza-dhiver/"
+    ]
+  },
+  "Chicorée à inuline": {
+    "regime": "summer-row-crop",
+    "greenStart": "05-01",
+    "greenEnd": "11-15",
+    "peakStart": "07-01",
+    "peakEnd": "08-31",
+    "practice": "Spring-sown industrial root crop (Cichorium intybus var. sativum, grown for inulin, processed at Beneo-Orafti Oreye). Sown late March–April in warmed, finely tilled dry soil to avoid bolting; emergence early–mid May, leafy rosette closing the rows by June; roots lifted (arrachage) from early September to end November for the inulin campaign.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://etat-agriculture.wallonie.be/contents/indicatorsheets/EAW-C_III_b_7.html",
+      "https://www.dockmoulin.be/cultures/chicorees/",
+      "https://www.irbab-kbivb.be/wp-content/uploads/2015/10/guide_bonnes_pratiques.pdf",
+      "https://www.irbab-kbivb.be/fr/la-recolte-de-la-chicoree-un-savoir-faire/"
+    ]
+  },
+  "Céréales ET légumineuses": {
+    "regime": "mixture",
+    "greenStart": "03-01",
+    "greenEnd": "07-31",
+    "peakStart": "05-01",
+    "peakEnd": "06-15",
+    "practice": "In Wallonia this is a cereal + legume mixture (méteil / mélange céréales-protéagineux, e.g. triticale + pois fourrager/féverole/vesce), most often autumn-sown in October (the protéagineux component around early November), with the legume ideally >50% to qualify for the CAP 2023-2027 coupled protein aid; spring-sown mixtures (March-April) also occur. Stands are harvested immature as whole-crop silage from mid-May to mid-June, or left to mature and combine-harvested for grain in July, so both establishment date and harvest timing vary within the category.",
+    "confidence": "medium",
+    "source": "researched",
+    "sources": [
+      "https://agriculture.wallonie.be/home/aides/pac-2023-2027-description-des-interventions/soutien-couple/soutien-couple-aux-cultures-de-proteines-vegetales.html",
+      "https://www.cap-proteines-elevage.fr/article/les-meteils-grains-allient-cereales-et-proteagineux",
+      "https://wiki.tripleperformance.fr/wiki/M%C3%A9teil",
+      "https://geco.ecophytopic.fr/geco/Concept/Recolter_Des_Associations_Cereale(s)-proteagineux_A_Un_Stade_Immature"
+    ]
+  },
+  "Pois récoltés à l'état frais, pois de conserverie": {
+    "regime": "vegetable",
+    "greenStart": "04-01",
+    "greenEnd": "08-05",
+    "peakStart": "05-20",
+    "peakEnd": "06-30",
+    "practice": "Green (vining/canning) peas in Wallonia — mainly Hesbaye, grown under contract for processors (Bonduelle, Ardo, Hesbaye Frost) at high density (~100 seeds/m²) — are drilled in staggered spring sowings from late February–March through early/mid-May to spread factory intake. The short (~90–100 day) crop is machine-harvested green at a target tenderometer index from mid-June to early August (cut fresh, not dried in-field), so the NDVI canopy collapses abruptly at harvest while still green.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://www.cra.wallonie.be/uploads/2024/05/lepoisproteagineux-a5-web.pdf",
+      "https://wikiagri.fr/articles/semis-de-pois-de-conserve-toute-une-organisation/1050/",
+      "https://lpcbio.org/PDF/fiche-lpc-ITK-pois.pdf",
+      "https://legumes-info.fr/nos-legumes/petits-pois/"
+    ]
+  },
+  "Prairie permanente (50%<taux de couverture <= 90%), hors rotation depuis 5 ans": {
+    "regime": "grassland-permanent",
+    "greenStart": "03-01",
+    "greenEnd": "11-30",
+    "practice": "Permanent grassland out of rotation for ≥5 years (a moderate-quality sward, 50-90% productive cover). In Wallonia the grass resumes growth in early spring (March) as soils warm; the first silage/hay cut is typically early-to-mid May, followed by successive regrowth cycles exploited by mowing and/or grazing through summer and autumn, with a late-season cut or grazing around mid-to-late October and a winter rest of ~2-3 months. It is not sown or harvested on an annual crop cycle — the NDVI signal is a perennial, multi-cut sawtooth that stays green nearly year-round.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://agriculture.wallonie.be/home/recherche-developpement/adaptations-a-la-secheresse/resilience-fourragere/apprehender-la-croissance-de-lherbe.html",
+      "https://www.cra.wallonie.be/fr/wllherbe-pour-suivre-la-pousse-et-la-qualite-de-lherbe",
+      "https://www.bioceres.be/fiche/exploitation-des-prairies-larriere-saison-fauche-ou-paturage",
+      "https://www.fourragesmieux.be/Documents_telechargeables/Le_paturage_des_prairies_permanentes_Cremer_2015.pdf"
+    ]
+  },
+  "Avoine de printemps": {
+    "regime": "spring-cereal",
+    "greenStart": "04-01",
+    "greenEnd": "08-05",
+    "peakStart": "05-25",
+    "peakEnd": "06-30",
+    "practice": "Spring oats in Wallonia are sown from mid-February to early April (optimally before the first days of April), emerge and close canopy through late spring, and are harvested from the end of July into early-to-mid August, similar to other spring cereals.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://livre-blanc-cereales.be/thematiques/semis/date-de-semis/",
+      "https://livre-blanc-cereales.be/wp-content/uploads/2024/03/3.3.-Cereales-de-printemps-avoine.pdf",
+      "https://www.livre-blanc-cereales.be/wp-content/uploads/2020/02/LBFEV2020-8.-C%C3%A9r%C3%A9ales-de-printemps.pdf",
+      "https://www.cra.wallonie.be/fr/website-livre-blanc-cereales"
+    ]
+  },
+  "jachère herbacée": {
+    "regime": "cover-fallow",
+    "greenStart": "03-01",
+    "greenEnd": "11-15",
+    "practice": "A \"jachère herbacée\" is set-aside/fallow land carrying a herbaceous cover (spontaneous vegetation or a sown grass mix), not sown to a harvested crop; in Wallonia it must be maintained without valorisation from 15 February to 15 August, with mowing/mulching/grazing allowed only from 16 July onward and no fertiliser or pesticides. Established in autumn or spring, it is never harvested for grain, so the satellite sees a grassland-like green cover from early spring to late autumn with a possible mid-summer mowing dip.",
+    "confidence": "medium",
+    "source": "researched",
+    "sources": [
+      "https://agriculture.wallonie.be/home/aides/pac-2023-2027-description-des-interventions/eco-regimes/eco-regime-maillage-ecologique.html",
+      "https://collegedesproducteurs.be/wp-content/uploads/2025/04/Jachere.pdf",
+      "https://agriculture.wallonie.be/surface-agricole"
+    ]
+  },
+  "Triticale d'hiver": {
+    "regime": "winter-cereal",
+    "greenStart": "03-05",
+    "greenEnd": "07-31",
+    "peakStart": "05-01",
+    "peakEnd": "06-10",
+    "practice": "In Wallonia winter triticale is sown in October (preferably early October, sowing window ~20 Sept to end October), overwinters as a thin canopy, then regrows in spring. Grain harvest is mainly in July, chiefly late July to early August; whole-crop forage silage is cut earlier at the milk-dough stage (~June).",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://livre-blanc-cereales.be/thematiques/semis/date-de-semis/",
+      "https://www.cra.wallonie.be/fr/varietes-en-triticale-et-seigle-2023",
+      "https://livre-blanc-cereales.be/wp-content/uploads/2023/10/2023-09-II.6-Choix-varietal-Triticale-et-seigle.pdf",
+      "https://www.cra.wallonie.be/fr/website-livre-blanc-cereales"
+    ]
+  },
+  "Autres légumes de plein air": {
+    "regime": "vegetable",
+    "greenStart": "04-15",
+    "greenEnd": "11-15",
+    "practice": "Catch-all SIGeC code for miscellaneous open-field vegetables in Wallonia (leeks, cabbages/Brussels sprouts, celeriac, courgettes/squash, lettuces, salsify, spinach, etc.), distinct from the dedicated pea/green-bean/carrot/onion codes. Most are sown or transplanted from April to June, with staggered harvests from mid-summer through autumn; hardy brassicas and winter leeks stay green in the field into late autumn and early winter, so the aggregate NDVI signal is broad and multi-peak.",
+    "confidence": "low",
+    "source": "researched",
+    "sources": [
+      "https://sytra.be/wp-content/uploads/2023/03/2-fiche-legumes.pdf",
+      "https://agriculture.wallonie.be/files/20182/21867/UCLouvain_Etude_le%C2%B4gumes_Rapport_200131.pdf",
+      "https://www.apaqw.be/sites/default/files/uploads/Bibliotheque/calfrulegwal0623.pdf",
+      "https://www.biowallonie.com/wp-content/uploads/2019/11/CalendrierA4-FruitsLegumes-VF.pdf"
+    ]
+  },
+  "Mélange d'hiver de légumineuses prépondérantes  (plus de 50%) et de céréales ou autres espèces": {
+    "regime": "mixture",
+    "greenStart": "03-01",
+    "greenEnd": "07-15",
+    "peakStart": "04-20",
+    "peakEnd": "05-31",
+    "practice": "Winter-sown legume-cereal mixture (méteil hivernal, legumes predominant >50%: vesce/pois/féverole with a nurse cereal such as triticale/avoine/froment), drilled late September–October in Wallonia. It overwinters as a thin cover (low autumn NDVI), then bulks up in spring; harvested green for silage at the cereal milk-to-dough stage in late May–June, or as a grain méteil around July.",
+    "confidence": "medium",
+    "source": "researched",
+    "sources": [
+      "https://agriculture.wallonie.be/home/aides/pac-2023-2027-description-des-interventions/eco-regimes/eco-regime-culture-favorable-a-l-environnement.html",
+      "https://www.agri-mutuel.com/elevage-peche/du-semis-a-la-recolte-reussir-son-meteil-fourrager/",
+      "https://www.arvalis.fr/infos-techniques/un-guide-pour-composer-ses-melanges-cereales-legumineuses",
+      "https://livre-blanc-cereales.be/thematiques/semis/date-de-semis/"
+    ]
+  },
+  "Mélange de printemps de légumineuses prépondérantes  (plus de 50%) et  de céréales ou autres espèces": {
+    "regime": "legume-grain",
+    "greenStart": "04-05",
+    "greenEnd": "08-15",
+    "peakStart": "05-25",
+    "peakEnd": "06-30",
+    "practice": "Spring-sown companion crop (typically sown late February–early April, mostly March in Wallonia) in which grain legumes — protein pea, fava bean, lupin, lentil, etc. — are predominant (>50% by standard seeding density) and grown with an associated cereal (e.g. spring wheat/barley/oat) or other species. The stand emerges in April, flowers late May–June, and is harvested dry at grain maturity from late July (peas) into August (fava bean/cereal); Walloon coupled-support rules assess mixture composition on 31 May and require harvest after 15 June.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://agriculture.wallonie.be/home/aides/pac-2023-2027-description-des-interventions/soutien-couple/soutien-couple-aux-cultures-de-proteines-vegetales.html",
+      "https://www.cra.wallonie.be/fr/association-froment-pois-proteagineux",
+      "https://livre-blanc-cereales.be/wp-content/uploads/2024/12/3.-Cultures-associees-couleurs-1.pdf",
+      "https://www.gembloux.ulg.ac.be/phytotechnie-temperee/appo/Menu/conduite_des_cultures/Pois/INFO/2018/varpoisprintemps2018.pdf"
+    ]
+  },
+  "Prairie à vocation à devenir permanente": {
+    "regime": "grassland-permanent",
+    "greenStart": "03-01",
+    "greenEnd": "11-15",
+    "practice": "Perennial sown grass sward with no annual sowing/harvest cycle: this is a temporary meadow declared as \"intended to become permanent\" (Walloon 5-year rule) and managed like permanent grassland. In Wallonia grass growth resumes in late February–March, peaks in May, and is exploited by 3–5 mowing cuts and/or grazing through the season, with the last exploitation typically mid-to-late October followed by a winter rest.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://agriculture.wallonie.be/home/aides/pac-2023-2027-description-des-interventions/eco-regimes/eco-regime-prairies-permanentes-conditionnee-a-la-charge-en-betail.html",
+      "https://agriculture.wallonie.be/home/recherche-developpement/adaptations-a-la-secheresse/resilience-fourragere/apprehender-la-croissance-de-lherbe.html",
+      "https://www.fourragesmieux.be/Documents_telechargeables/Le_paturage_des_prairies_permanentes_Cremer_2015.pdf",
+      "https://www.reussir.fr/lait/prairies-la-wallonie-propose-une-application-gratuite-pour-gerer-la-pousse-de-lherbe"
+    ]
+  },
+  "Betterave fourragère": {
+    "regime": "summer-row-crop",
+    "greenStart": "05-05",
+    "greenEnd": "11-05",
+    "peakStart": "07-01",
+    "peakEnd": "09-20",
+    "practice": "Fodder beet is spring-sown in Wallonia between roughly 1 and 20 April once soil reaches ~5°C (~120,000 seeds/ha in rows), emerging in late April and closing its canopy by mid-June. It is a root crop lifted late, ideally late October to early November after ~6 months, held in the ground longer than sugar beet to build root mass.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://lgseeds.be/fr/culture-de-betteraves-fourrageres/",
+      "https://betterave-fourragere.org/recolte-et-paturage/",
+      "http://www.betterave-fourragere.org/semis.html",
+      "https://agriculture.wallonie.be/home/communiques/presses/nouvelle-variete-de-betterave-fourragere-au-catalogue-national-belge-des-varietes-24-04-2025.html"
+    ]
+  },
+  "Orge de printemps": {
+    "regime": "spring-cereal",
+    "greenStart": "03-25",
+    "greenEnd": "08-05",
+    "peakStart": "05-15",
+    "peakEnd": "06-15",
+    "practice": "Spring barley in Wallonia (mainly malting/brassicole barley) is sown from late February to early April, ideally around 15 March; CRA-W/CePiCOP/CARAH trials at Ath and Lonzee were sown 3 March-5 April with emergence about two weeks later (~21 March). It is harvested from mid-July to early August (trials harvested 18 July-3 August), giving a short ~4-4.5 month spring cycle.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://livre-blanc-cereales.be/wp-content/uploads/2024/03/3.4.-Cereales-de-printemps-orge.pdf",
+      "https://livre-blanc-cereales.be/thematiques/semis/date-de-semis/",
+      "https://www.gembloux.ulg.ac.be/phytotechnie-temperee/sitePOB/OBfev08.htm",
+      "https://www.arvalis.fr/infos-techniques/orges-de-printemps-semis-des-que-possible-mais-dans-de-bonnes-conditions"
+    ]
+  },
+  "Haricots": {
+    "regime": "vegetable",
+    "greenStart": "06-01",
+    "greenEnd": "09-30",
+    "peakStart": "07-01",
+    "peakEnd": "08-31",
+    "practice": "In Wallonia \"Haricots\" is chiefly the industrial green bean (haricot vert, Phaseolus vulgaris), a frost-sensitive warm-season legume vegetable sown in staggered plantings from mid/late May to late June-early July once soils are warm. Whole-plant/immature pods are machine-harvested ~55-75 days later for the freezing/canning industry, mainly August into September, so each field shows a short, sharp NDVI cycle of ~6-9 weeks.",
+    "confidence": "medium",
+    "source": "researched",
+    "sources": [
+      "https://agriculture.wallonie.be/files/20182/21867/UCLouvain_Etude_le%C2%B4gumes_Rapport_200131.pdf",
+      "https://sytra.be/wp-content/uploads/2023/03/2-fiche-legumes.pdf",
+      "https://www.agrobio-bretagne.org/voy_content/uploads/2021/12/Web_17-HARICOT_INDUSTRIE.pdf",
+      "https://popups.uliege.be/1780-4507/index.php?id=9695"
+    ]
+  },
+  "Bande bordure de champ": {
+    "regime": "cover-fallow",
+    "greenStart": "03-01",
+    "greenEnd": "11-15",
+    "practice": "Not a harvested crop but a permanent grassed buffer strip (6-20 m wide) of grasses and legumes sown along the edge of arable fields as an agri-environmental element in Wallonia. It is established once and kept as a low-intensity green cover receiving no fertiliser or phytosanitary inputs; mowing, mulching or grazing is allowed only from 16 July onward, and it must be maintained at least until harvest of the adjacent main crop, giving an NDVI signal that stays green from early-spring grass green-up (~March) through late autumn with a mid-July mowing dip.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://agriculture.wallonie.be/maec-tournieres-enherbees",
+      "https://agriculture.wallonie.be/home/aides/pac-2023-2027-description-des-interventions/mesures-agro-environnementales-et-climatiques/maec-tournieres-enherbees---mb5.html",
+      "https://www.natagriwal.be/projet/tourniere-enherbee/",
+      "https://culturalite.be/bandes-et-tournieres-enherbees/"
+    ]
+  },
+  "Froment de printemps": {
+    "regime": "spring-cereal",
+    "greenStart": "03-25",
+    "greenEnd": "08-15",
+    "peakStart": "05-25",
+    "peakEnd": "06-30",
+    "practice": "In Wallonia, spring wheat (froment de printemps, Triticum aestivum) is sown from February to early April — the main window is late February to March — at 300–350 grains/m². Grain reaches maturity at the end of July and the crop is harvested in August (roughly early–mid August, a few weeks later than winter wheat).",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://www.livre-blanc-cereales.be/wp-content/uploads/2020/02/LBFEV2020-8.-C%C3%A9r%C3%A9ales-de-printemps.pdf",
+      "https://livre-blanc-cereales.be/thematiques/semis/date-de-semis/",
+      "https://www.livre-blanc-cereales.be/tag/froment/",
+      "https://www.dockmoulin.be/cultures/froment/"
+    ]
+  },
+  "Autres couverts semés que ceux déjà listés": {
+    "regime": "cover-fallow",
+    "greenStart": "09-01",
+    "greenEnd": "12-15",
+    "peakStart": "10-01",
+    "peakEnd": "11-15",
+    "practice": "Catch-all SIGeC category for sown intercrop cover crops (CIPAN/couverts d'interculture) not matching a listed species. In Wallonia these are sown after the main-crop harvest, typically mid-August to mid-September (standard CIPAN must be established by 15/09, short interculture by 01/09), green up through autumn, and are destroyed from 16/11 onward; parcels enrolled in the \"couverture longue du sol\" eco-scheme keep the green cover until 15/02.",
+    "confidence": "medium",
+    "source": "researched",
+    "sources": [
+      "https://www.protecteau.be/fr/implantation-et-destruction-mes-obligations",
+      "https://www.protecteau.be/fr/faq-cipan-et-couvertures-de-sol",
+      "https://www.protecteau.be/fr/valorisation-dune-cipan-en-sie",
+      "https://agriculture.wallonie.be/eco-regime-couverture-longue-du-sol"
+    ]
+  },
+  "Mélange légumineuses fourragères + céréales ou autres espèces": {
+    "regime": "mixture",
+    "greenStart": "03-15",
+    "greenEnd": "10-31",
+    "practice": "In Wallonia this legume-dominant forage mixture (méteil/mélange fourrager, >50% forage legumes such as luzerne, trèfle, vesce, lotier, sainfoin, plus straw cereals or other species) is sown either in autumn (mid-Oct to mid-Nov, winter cereal varieties) for a whole-crop silage cut in early May to June, or in spring (March–April, spring varieties) for a summer harvest (July–Aug); the persistent forage-legume component then regrows and is cut several times, keeping the parcel green across much of the season.",
+    "confidence": "medium",
+    "source": "researched",
+    "sources": [
+      "https://agriculture.wallonie.be/home/aides/pac-2023-2027-description-des-interventions/eco-regimes-nouveaute-2025/eco-regime-culture-favorable-a-l-environnement.html",
+      "https://www.arvalis.fr/infos-techniques/un-guide-pour-composer-ses-melanges-cereales-legumineuses",
+      "https://herbe-book.org/articles/les-melanges-fourragers-dits-meteils/",
+      "https://hal.inrae.fr/hal-02788708"
+    ]
+  },
+  "Miscanthus": {
+    "regime": "biomass-perennial",
+    "greenStart": "04-25",
+    "greenEnd": "11-10",
+    "peakStart": "07-15",
+    "peakEnd": "09-15",
+    "practice": "In Wallonia, Miscanthus × giganteus is established once from rhizomes (~12,000/ha) in April–May for a productive stand of 15–20 years; the C4 grass greens up from late April, closes canopy by June and reaches 3+ m by late summer. It is harvested annually from year 2 onward either green in autumn or, more commonly, dry in late winter (February–April) once leaves have senesced and moisture has dropped, so the standing crop is brown over winter.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://www.cra.wallonie.be/fr/le-miscanthus-contrechamps",
+      "https://www.cra.wallonie.be/fr/le-miscanthus-une-solution-pour-les-zones-environnementales-sensibles",
+      "https://cipf.be/fr/miscanthus",
+      "https://www.valbiom.be/actualites/le-miscanthus-une-solution-non-invasive-pour-les-bandes-tampons-et-les-parcelles-en"
+    ]
+  },
+  "Prairie permanente (taux de couverture > 90%), avec contrat complémentaire environnemental": {
+    "regime": "grassland-permanent",
+    "greenStart": "03-01",
+    "greenEnd": "11-15",
+    "practice": "Permanent grassland (>90% grass cover) under an agri-environmental contract (MAE/MAEC \"prairie naturelle\"-type): not sown annually; the sward greens up with the spring flush (grass démarrage ~late Feb–March), and under the environmental contract no cut/grazing is allowed before ~15 June, after which it is mown or grazed through late October, with a winter rest. Multiple cuts/grazing keep the NDVI high but fluctuating from spring to late autumn.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://agriculture.wallonie.be/home/aides/pac-2023-2027-description-des-interventions/mesures-agro-environnementales-et-climatiques-nouveaute-2025/maec-prairie-naturelle---mb2-nouveaute-2025.html",
+      "https://agriculture.wallonie.be/maec-prairie-naturelle",
+      "https://agriculture.wallonie.be/home/recherche-developpement/adaptations-a-la-secheresse/resilience-fourragere/apprehender-la-croissance-de-lherbe.html",
+      "https://www.paturage.be/paturage/gestion_pre/gestion_pre.html"
+    ]
+  },
+  "Trèfles": {
+    "regime": "forage-perennial",
+    "greenStart": "03-15",
+    "greenEnd": "11-15",
+    "practice": "\"Trèfles\" are forage clovers — mainly red clover (trèfle violet, exploited exclusively by cutting, persists ~2-3 years) and white clover (trèfle blanc, grazed/perennial), grown pure or in temporary leys. In Wallonia they are sown either in spring (from ~1 March, giving two cuts the first year) or in late summer after a cereal (before ~1 September); from year two the first cut is advanced to 15 May–15 June, with regrowth cuts about every 6 weeks through autumn.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://www.fourragesmieux.be/Documents_telechargeables/La_prairie_temporaire_de_fauche_Cremer_2015.pdf",
+      "https://www.agryco.be/fr_BE/blog/cultures/trefle-violet",
+      "https://www.alliance-elevage.com/informations/article/le-trefle-violet-une-legumineuse-polyvalente",
+      "https://www.agryco.com/blog/cultures/trefle-blanc"
+    ]
+  },
+  "jachère non herbacée": {
+    "regime": "cover-fallow",
+    "greenStart": "none",
+    "greenEnd": "none",
+    "practice": "In Wallonia this is an administrative, non-productive set-aside declared under BCAE 8 / SIE (SIGeC culture code 812, \"jachère faune / sol nu\"), explicitly the non-herbaceous variant as opposed to herbaceous fallow (811) or melliferous fallow (813). It is either kept as bare soil (jachère noire) or covered with a non-herbaceous, non-grass fauna mixture; it must be maintained from 15 February to 15 August without agricultural production and carries no sown commercial crop or harvest, so there is no reliably managed green canopy — any Sentinel-2 signal comes only from irregular spontaneous regrowth.",
+    "confidence": "medium",
+    "source": "researched",
+    "sources": [
+      "https://agriculture.wallonie.be/home/aides/pac-2023-2027-description-des-interventions/conditionnalite-renforcee/bcae-8-part-minimale-de-terres-arables-consacree-a-des-surfaces-et-des-elements-non-productifs.html",
+      "https://www.fugea.be/web/content/386802?unique=8029f4ab483adecad7323eb721e38a86a16535de&download=true",
+      "https://agriculture.wallonie.be/files/accueil/Aides/FAQ%20-%20Conditionnalit%C3%A9%20-%20Version%20230227.pdf",
+      "https://agriculture.wallonie.be/surface-agricole"
+    ]
+  },
+  "cultures fruitières pluriannuelles (poires) - basses tiges": {
+    "regime": "orchard",
+    "greenStart": "04-10",
+    "greenEnd": "11-10",
+    "peakStart": "05-25",
+    "peakEnd": "09-10",
+    "practice": "Intensive low-stem (basse-tige) pear orchards in Wallonia are perennial plantations, concentrated in the Hesbaye and dominated by 'Conférence' (with 'Doyenné du Comice', 'Durondeau'). Flowering is mid-April, leaf-out April, main harvest of Conférence early-to-mid September; leaves senesce and fall in late October–November. Grassed inter-rows keep an NDVI baseline through the season.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://lafermedemargaux.fr/calendrier-floraison-poiriers/",
+      "https://lafermedemargaux.fr/calendrier-de-maturite-des-poires/",
+      "https://www.sciencedirect.com/science/article/abs/pii/S0168169924008287",
+      "https://doi.org/10.3390/rs16183393"
+    ]
+  },
+  "Cultures fruitière pluriannuelles-basses tiges": {
+    "regime": "orchard",
+    "greenStart": "04-01",
+    "greenEnd": "11-10",
+    "peakStart": "06-01",
+    "peakEnd": "09-15",
+    "practice": "Low-stem (basse-tige) perennial fruit orchards in Wallonia are dwarf-rootstock pear and apple plantations (~1,450 ha, mainly Liège/Namur), not annually sown. Leaf-out and flowering occur late March–April (pear late March–April, apple mid-April); harvest runs from August for early apples through September–October/November for late apples and Conférence/Doyenné pears, with leaf senescence in November.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://etat-agriculture.wallonie.be/contents/indicatorsheets/EAW_C3c.html",
+      "https://ifel-w.be/pommes-et-poires-de-wallonie/",
+      "https://sytra.be/wp-content/uploads/2023/03/fiche-fruits.pdf",
+      "https://rwdf.cra.wallonie.be/fr/patrimoine-fruitier"
+    ]
+  },
+  "Prairie permanente (50%<taux de couverture <= 90%), avec contrat complémentaire environnemental": {
+    "regime": "grassland-permanent",
+    "greenStart": "03-01",
+    "greenEnd": "11-30",
+    "practice": "Permanent grassland in Wallonia is a perennial sward, never sown annually; active grass growth begins in March, peaks in April–May, and continues (with a summer slowdown) through autumn. It is exploited by grazing and/or 2–4 cuts — a first cut typically late May–June — with grazing or a late cut extended into October, but here the complementary environmental contract (MAE/MAEC, ~50–90% ground cover) imposes extensive management with delayed/limited cutting and no fertiliser, keeping the sward green from early spring to late autumn.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://agriculture.wallonie.be/home/recherche-developpement/adaptations-a-la-secheresse/resilience-fourragere/apprehender-la-croissance-de-lherbe.html",
+      "https://www.cra.wallonie.be/fr/wllherbe-pour-suivre-la-pousse-et-la-qualite-de-lherbe",
+      "https://agriculture.wallonie.be/maec-prairie-naturelle",
+      "https://www.sciencedirect.com/science/article/pii/S0034425721004715"
+    ]
+  },
+  "Pépinières de plants fruitiers ou de plantes ornementales": {
+    "regime": "non-crop",
+    "greenStart": "04-01",
+    "greenEnd": "10-31",
+    "practice": "In Wallonia these parcels are multi-year woody-plant nurseries (young fruit trees, ornamental trees/shrubs, roses, hedging feuillus, perennials) grown in open ground (\"plein champ\") and containers, not sown/harvested annually like arable crops. Deciduous stock leafs out in April and is leaf-off by November; bare-root lifting and transplanting are done in the dormant season (autumn to early spring). Wide row spacing, bare inter-row soil, container areas and mixed evergreen/deciduous material make the Sentinel-2 signal weak and heterogeneous.",
+    "confidence": "low",
+    "source": "researched",
+    "sources": [
+      "https://agriculture.wallonie.be/pepinieres-ornementales",
+      "https://agriculture.wallonie.be/home/productions-agricoles/qualite/vegetaux/pepinieres-de-plants-fruitiers.html",
+      "https://www.apaqw.be/fr/informations-generales-sur-les-pepinieres",
+      "https://collegedesproducteurs.be/filieres-agricoles/horticulture-ornementale/"
+    ]
+  },
+  "Oignons (non-hâtifs)": {
+    "regime": "vegetable",
+    "greenStart": "05-01",
+    "greenEnd": "09-10",
+    "peakStart": "06-15",
+    "peakEnd": "07-31",
+    "practice": "Non-early (maincrop, storage) onions in Wallonia are direct-drilled from seed — or planted as sets — from mid-March to early April, as soon as the soil is workable (sowing window Feb–Apr). The canopy of thin tubular leaves builds through spring, bulbs form in summer, tops lodge and dry down in August, and bulbs are lifted/harvested from late August through September for storage.",
+    "confidence": "medium",
+    "source": "researched",
+    "sources": [
+      "https://www.bioceres.be/fiche/semis-et-plants-loignon-ciboule-et-de-garde",
+      "https://www.tridge.com/news/onion-cultivation-starts",
+      "https://agrocares.com/the-most-cultivated-crop-in-the-netherlands-onion/",
+      "https://www.agrobio-bretagne.org/voy_content/uploads/2021/12/Web_29-OIGNON.pdf"
+    ]
+  },
+  "Couvert à finalité environnementale rénuméré par des tiers privés (éolienne,)": {
+    "regime": "cover-fallow",
+    "greenStart": "03-01",
+    "greenEnd": "11-30",
+    "practice": "Not a commercial crop but an agri-environmental green cover recognised in the Walloon PAC 2023-2027 \"activité agricole\" definitions: an environmental-purpose cover whose upkeep is paid for by private third parties (here wind-farm operators, éolienne, funding ecological compensation). In Wallonia these covers are permanent herbaceous stands — extensive grassland, grass-legume field strips, flower/late-mown meadows or red-kite (Milan royal) feeding zones — maintained rather than sown-and-harvested; management is extensive with no inputs and late or sequential mowing, typically between late June and September (preferably after 1 August).",
+    "confidence": "medium",
+    "source": "researched",
+    "sources": [
+      "https://agriculture.wallonie.be/home/aides/pac-2023-2027-description-des-interventions/definitions/activite-agricole.html",
+      "https://geoportail.wallonie.be/catalogue/c48a4052-c79a-43c1-838a-c36a584484ac.html",
+      "https://www.canopea.be/compensation-ecologique-le-flou-regne-en-wallonie/",
+      "https://edora.org/wp-content/uploads/2017/03/120512_Etude-RHEA_mesures-compensation.pdf"
+    ]
+  },
+  "Pomme de terre (plants)": {
+    "regime": "summer-row-crop",
+    "greenStart": "05-15",
+    "greenEnd": "08-15",
+    "peakStart": "06-15",
+    "peakEnd": "07-20",
+    "practice": "Seed potato (\"plants\") in Wallonia is planted mid-April to early May, often at closer spacing/higher density than a ware crop; emergence follows ~20-30 days later (mid-May to early June) with canopy closure and flowering mid-June to mid-July. The defining trait is an EARLIER haulm-kill (défanage): to hold tubers to the certified seed calibre (~28-55 mm) and limit virus transmission, foliage is destroyed rapidly around mid-July to mid-August, with lifting 2-3 weeks later (August to early September) — well ahead of the September-October ware-potato harvest.",
+    "confidence": "medium",
+    "source": "researched",
+    "sources": [
+      "https://fiwap.be/documentation-fiwap/technique/",
+      "https://www.cra.wallonie.be/fr/la-culture-de-la-pomme-de-terre-en-wallonie",
+      "https://www.plantsdepommesdeterre.be/superficie-et-production",
+      "https://ithy.com/article/cycle-de-vie-pomme-terre-4lqu6wy9"
+    ]
+  },
+  "Avoine d'hiver": {
+    "regime": "winter-cereal",
+    "greenStart": "03-15",
+    "greenEnd": "07-20",
+    "peakStart": "04-25",
+    "peakEnd": "05-31",
+    "practice": "Winter oats (avoine d'hiver) is autumn-sown in Wallonia, typically from early October (late/humid parcels or altitude >300 m) to around 10 October — it is the most frost-sensitive straw cereal, so it must be established fairly early. It is harvested mid-to-late July (e.g. 18 July in 2023), slightly later than winter barley and around the same time as winter wheat.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://livre-blanc-cereales.be/thematiques/semis/date-de-semis/",
+      "https://livre-blanc-cereales.be/wp-content/uploads/2023/10/2023-09-II.8-Choix-varietal-Avoine.pdf",
+      "https://www.cra.wallonie.be/fr/website-livre-blanc-cereales",
+      "https://www.livre-blanc-cereales.be/wp-content/uploads/2021/10/2.-Implantation-des-cultures.pdf"
+    ]
+  },
+  "Seigle dhiver": {
+    "regime": "winter-cereal",
+    "greenStart": "03-01",
+    "greenEnd": "07-10",
+    "peakStart": "04-20",
+    "peakEnd": "05-31",
+    "practice": "Seigle d'hiver (winter rye) is sown in Wallonia from late September through October, ideally the first half of October (~250 grains/m2); after a thin autumn establishment and winter dormancy it regrows in spring, heads earlier than wheat (épiaison late April–early May), reaches maturity end June/early July and is harvested from late June to mid-July, typically about two weeks ahead of winter wheat.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://livre-blanc-cereales.be/thematiques/semis/date-de-semis/",
+      "https://www.cra.wallonie.be/fr/website-livre-blanc-cereales",
+      "https://www.livre-blanc-cereales.be/wp-content/uploads/2021/10/2.-Implantation-des-cultures.pdf",
+      "https://www.lat-nitrogen.com/fr/fr/crop/rye-12"
+    ]
+  },
+  "Carotte (non hâtive)": {
+    "regime": "vegetable",
+    "greenStart": "05-01",
+    "greenEnd": "11-15",
+    "peakStart": "07-15",
+    "peakEnd": "09-30",
+    "practice": "Maincrop/storage carrot (non-early, i.e. not the primeur type sown under cover in Feb–March): sown in open ground from April to June in Wallonia, typically on light loamy soils. Harvested ~4–5 months later, mainly October–November, and can be left in the field into winter under straw mulch/ridging; the green foliage stays active until lifting.",
+    "confidence": "medium",
+    "source": "researched",
+    "sources": [
+      "https://www.bioceres.be/fiche/la-carotte",
+      "https://www.lovethegarden.com/be-fr/article/tout-savoir-sur-la-culture-des-carottes",
+      "https://www.lpcbio.org/pdf/fiche-lpc-itk-carotte/",
+      "https://www.doc-developpement-durable.org/file/Culture/Culture-plantes-alimentaires/FICHES_PLANTES/carotte/carotte_en_AB.pdf"
+    ]
+  },
+  "Autres surfaces pâturées (taux de couverture <= 50%)": {
+    "regime": "grassland-permanent",
+    "greenStart": "03-15",
+    "greenEnd": "11-15",
+    "practice": "A permanent, extensively grazed surface (not sown or rotated) where herbaceous vegetation covers only ≤50% of the parcel — the rest being woody scrub, bare ground or landscape features — so it is a residual \"other grazed surface\" category rather than a qualifying prairie permanente (≥90% cover). There is no seedbed or harvest date in Wallonia: livestock graze it across the growing season (roughly April–October), typically on marginal land in less-favoured areas (Ardenne/Fagnes).",
+    "confidence": "medium",
+    "source": "researched",
+    "sources": [
+      "https://agriculture.wallonie.be/home/aides/pac-2023-2027-description-des-interventions/definitions/surface-agricole.html",
+      "https://agriculture.wallonie.be/home/aides/pac-2023-2027-description-des-interventions/eco-regimes/eco-regime-prairies-permanentes-conditionnee-a-la-charge-en-betail.html",
+      "https://geoportail.wallonie.be/catalogue/7ba2cb90-a5d0-46f6-9502-481a25951e55.html"
+    ]
+  },
+  "Carotte": {
+    "regime": "vegetable",
+    "greenStart": "05-10",
+    "greenEnd": "11-15",
+    "peakStart": "07-01",
+    "peakEnd": "09-30",
+    "practice": "In Wallonia carrots are field-sown with precision seeders from late March to June (storage/industrial types mainly April–June); germination is slow so the fern-like canopy only closes in late spring. Storage carrots need ~4–6 months and are lifted with still-green foliage from October to December, then cold-stored, so the NDVI green canopy runs from late spring to the autumn harvest with no cereal-like senescence peak.",
+    "confidence": "medium",
+    "source": "researched",
+    "sources": [
+      "https://chambres-agriculture.fr/actualites/actualite/la-production-de-carottes-en-france",
+      "https://www.bioceres.be/fiche/la-carotte",
+      "https://www.lpcbio.org/pdf/fiche-lpc-itk-carotte/",
+      "http://rwdf.cra.wallonie.be/fr/varietes/carotte-de-tilques"
+    ]
+  },
+  "Pois protéagineux de printemps": {
+    "regime": "legume-grain",
+    "greenStart": "04-01",
+    "greenEnd": "07-25",
+    "peakStart": "05-15",
+    "peakEnd": "06-20",
+    "practice": "Spring field pea (Pisum sativum) for dry protein grain, sown as early as the soil is fit — roughly mid-February to end of March in Wallonia — at 70–80 grains/m² with no N fertilisation (N-fixing legume). It flowers in June and is harvested at 15–16% grain moisture in mid-to-late July, in the same window as winter wheat or slightly earlier.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://www.cra.wallonie.be/uploads/2024/05/lepoisproteagineux-a5-web.pdf",
+      "https://www.gembloux.ulg.ac.be/phytotechnie-temperee/appo/Menu/conduite_des_cultures/Pois/PoisProteagineuxPrintemps.pdf",
+      "https://www.gembloux.ulg.ac.be/phytotechnie-temperee/appo/Menu/conduite_des_cultures/Pois/INFO/2018/varpoisprintemps2018.pdf",
+      "https://walakis.be/system/files/2025-02/Pois%20prot%C3%A9agineux_livret.pdf"
+    ]
+  },
+  "Endives (chicons)": {
+    "regime": "vegetable",
+    "greenStart": "06-05",
+    "greenEnd": "11-10",
+    "peakStart": "08-01",
+    "peakEnd": "10-15",
+    "practice": "Witloof/Belgian endive (chicon) is a two-phase crop; only the field root-cultivation phase is seen by Sentinel-2. In Wallonia roots are field-sown mainly ~20 May–10 June (broadly Apr–Jun), building a dense dark-green leafy rosette over summer, and the taproots are lifted (arrachage) mid-October to mid-November. The roots are then topped and forced indoors in darkness through winter to produce the white chicon — a stage invisible to satellites.",
+    "confidence": "medium",
+    "source": "researched",
+    "sources": [
+      "https://etat-agriculture.wallonie.be/contents/indicatorsheets/EAW-C_III_b_7.html",
+      "https://www.omafra.gov.on.ca/CropOp/fr/spec_veg/leafy_veg/witl.html",
+      "https://patrimoine.brussels/decouvrir/inventaires-du-patrimoine-bruxellois/inventaire-du-patrimoine-culturel-immateriel/la-culture-et-le-forcage-du-chicon-a-bruxelles",
+      "http://hortidactique.11vm-serv.net/pages/ftech/chicoree_witloof.pdf"
+    ]
+  },
+  "Orge de brasserie": {
+    "regime": "spring-cereal",
+    "greenStart": "04-01",
+    "greenEnd": "08-05",
+    "peakStart": "05-15",
+    "peakEnd": "06-20",
+    "practice": "In Wallonia \"orge de brasserie\" is grown mainly as spring malting barley: sown mid-March (optimal window ~20 Feb–15 March on well-drained soil, ideal date ~15 March) and harvested from mid/late July into August. The short cycle means canopy and grain quality build over a compressed spring-to-mid-July period; a small share is winter malting barley (orge brassicole d'hiver), which would shift green-up earlier.",
+    "confidence": "medium",
+    "source": "researched",
+    "sources": [
+      "https://livre-blanc-cereales.be/wp-content/uploads/2024/03/3.4.-Cereales-de-printemps-orge.pdf",
+      "https://www.livre-blanc-cereales.be/wp-content/uploads/2021/03/7.-Orge-brassicole.pdf",
+      "https://www.gembloux.ulg.ac.be/phytotechnie-temperee/sitePOB/OBsept13.htm",
+      "https://livre-blanc-cereales.be/wp-content/uploads/2020/02/LBFEV2020-7.-Orges-brassicoles-4.pdf"
+    ]
+  },
+  "Multiplication de semences en mode de production biologique": {
+    "regime": "other",
+    "greenStart": "none",
+    "greenEnd": "none",
+    "practice": "This is an administrative/production category, not a specific crop: it denotes a parcel grown to produce certified organic seed, and the multiplied species can be almost anything (vegetables such as carrot, beet, bean and fava; but also cereals, grasses or forage legumes). Sowing and harvest timing in Wallonia therefore depend entirely on the species; seed crops are generally left to bolt, flower and set seed, extending the green cycle later than a food harvest, and biennial vegetables (carrot, beet) require a two-year cycle — so no single NDVI phenology applies.",
+    "confidence": "low",
+    "source": "researched",
+    "sources": [
+      "https://www.biowallonie.com/accompagnement/production/semences-et-plants-bio/",
+      "https://www.cra.wallonie.be/fr/semences-dici",
+      "https://www.biowallonie.com/wp-content/uploads/2026/02/SDI-Dossiers-ProductionSemencesCarotte.pdf",
+      "https://www.biowallonie.com/wp-content/uploads/2025/11/SDI-Dossiers-Betterave.pdf"
+    ]
+  },
+  "Fèves et Féveroles de printemps": {
+    "regime": "legume-grain",
+    "greenStart": "04-01",
+    "greenEnd": "08-10",
+    "peakStart": "05-15",
+    "peakEnd": "07-05",
+    "practice": "Spring faba/field beans (Vicia faba) are sown in Wallonia from early February to mid-March (as soon as soil conditions allow, occasionally into early April) at about 45-50 seeds/m²; the canopy builds through April, flowers in May-June, fills pods in June-July and is harvested as dry grain from early to mid/late August.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://www.cra.wallonie.be/uploads/2024/05/la-feverolle.pdf",
+      "https://www.gembloux.ulg.ac.be/phytotechnie-temperee/appo/Menu/conduite_des_cultures/la%20feverole%20%20Lessentiel%20de%20la%20culture.pdf",
+      "https://www.biowallonie.com/wp-content/uploads/2023/01/Fiche-fe%CC%81verole-de-printemps.pdf",
+      "https://www.bioceres.be/fiche/la-feverole"
+    ]
+  },
+  "Sorgho": {
+    "regime": "summer-row-crop",
+    "greenStart": "06-01",
+    "greenEnd": "10-20",
+    "peakStart": "07-15",
+    "peakEnd": "09-15",
+    "practice": "In Wallonia sorghum is a spring/summer-sown C4 row crop drilled around 15-20 May (once soil reaches ~12 degrees C) in 75-cm rows, as a drought-tolerant alternative to silage maize. It is harvested (ensiled) around 15-20 October, roughly 3-4 weeks after maize silage; grain sorghum rarely matures at this latitude so sugar/forage silage types dominate.",
+    "confidence": "high",
+    "source": "researched",
+    "sources": [
+      "https://cipf.be/fr/sorgho",
+      "https://reseauwallonpac.be/fr/ressources/le-sorgho-fourrager-en-wallonie",
+      "https://walakis.be/fr/ressources/sorgho-fourrager-en-agriculture-biologique",
+      "https://www.semencesdefrance.com/actualite-semences-de-france/sorgho-grain-positionner-idealement-les-semis-entre-mi-avril-et-mi-mai-selon-le-secteur/"
+    ]
+  },
+  "Triticale de printemps": {
+    "regime": "spring-cereal",
+    "greenStart": "04-05",
+    "greenEnd": "08-05",
+    "peakStart": "05-25",
+    "peakEnd": "06-30",
+    "practice": "In Wallonia, spring triticale is drilled once the soil has warmed and hard frost risk passes, roughly mid-March to early April (the \"céréales de printemps\" group of the Livre Blanc). It heads in June and is harvested from late July into August, giving a single spring-to-summer canopy cycle with no autumn establishment.",
+    "confidence": "medium",
+    "source": "researched",
+    "sources": [
+      "https://livre-blanc-cereales.be/wp-content/uploads/2023/03/2023-02-3.-Cereales-de-printemps.pdf",
+      "https://livre-blanc-cereales.be/wp-content/uploads/2024/03/3.4.-Cereales-de-printemps-orge.pdf",
+      "https://livre-blanc-cereales.be/thematiques/semis/date-de-semis/",
+      "https://www.cra.wallonie.be/fr/varietes-en-triticale-et-seigle-2023"
+    ]
+  },
+  "Pomme de terre féculière": {
+    "regime": "summer-row-crop",
+    "greenStart": "05-15",
+    "greenEnd": "10-05",
+    "peakStart": "07-01",
+    "peakEnd": "08-10",
+    "practice": "Starch potato (potato grown for industrial fécule) in Wallonia is spring-planted from end March to mid-April, emerges in mid-May and closes canopy by late June. As a long-season crop it is left to bulk starch fully, with haulm senescence/killing and harvest running September into October — later than ware/processing potatoes.",
+    "confidence": "medium",
+    "source": "researched",
+    "sources": [
+      "https://www.cra.wallonie.be/fr/pomme-de-terre-en-wallonie-restitution",
+      "https://www.lat-nitrogen.com/fr/be/crop/potatoes-35",
+      "https://www.action-agricole-picarde.com/la-pomme-de-terre-feculiere-une-opportunite-agronomique-et-economique",
+      "https://www.walhain.be/ma-commune/administration-communale/environnement-mobilite-energie/environnement/agriculteurs/calendrier-des-cultures-les-mois-de-septembre-octobre-et-novembre-seront-marques-par-les-recoltes-de-betteraves-pomme-de-terre-et-mais"
+    ]
+  },
+  "Pomme de terre hâtives": {
+    "regime": "summer-row-crop",
+    "greenStart": "04-15",
+    "greenEnd": "08-15",
+    "peakStart": "06-01",
+    "peakEnd": "07-15",
+    "practice": "Early potato: planted late March–April, canopy closes June, lifted July–mid Aug.",
+    "confidence": "medium",
+    "source": "agronomic-knowledge"
+  },
+  "Autres plantes ornementales de plein air": {
+    "regime": "non-crop",
+    "greenStart": "04-01",
+    "greenEnd": "10-31",
+    "practice": "Outdoor ornamentals: heterogeneous; broad leaf-on season spring–autumn.",
+    "confidence": "low",
+    "source": "agronomic-knowledge"
+  },
+  "Fèves et Féveroles d'hiver": {
+    "regime": "legume-grain",
+    "greenStart": "03-01",
+    "greenEnd": "08-10",
+    "peakStart": "05-01",
+    "peakEnd": "06-30",
+    "practice": "Winter faba/field bean: sown Oct–Nov, spring green-up, harvested Aug.",
+    "confidence": "medium",
+    "source": "agronomic-knowledge"
+  },
+  "Epeautre de printemps": {
+    "regime": "spring-cereal",
+    "greenStart": "04-01",
+    "greenEnd": "08-15",
+    "peakStart": "05-25",
+    "peakEnd": "06-30",
+    "practice": "Spring spelt: sown March–April, harvested Aug.",
+    "confidence": "medium",
+    "source": "agronomic-knowledge"
+  },
+  "Épinards": {
+    "regime": "vegetable",
+    "greenStart": "03-20",
+    "greenEnd": "10-15",
+    "practice": "Spinach (industry): successive sowings March–Aug, each short cycle (6–10 wk); harvested May–Oct.",
+    "confidence": "low",
+    "source": "agronomic-knowledge"
+  },
+  "Sarrasin": {
+    "regime": "summer-row-crop",
+    "greenStart": "06-01",
+    "greenEnd": "09-30",
+    "peakStart": "07-15",
+    "peakEnd": "08-31",
+    "practice": "Buckwheat: sown late May–June, flowers July–Aug, harvested Sept–Oct.",
+    "confidence": "medium",
+    "source": "agronomic-knowledge"
+  },
+  "Lin oléagineux": {
+    "regime": "oilseed",
+    "greenStart": "04-01",
+    "greenEnd": "08-20",
+    "peakStart": "05-25",
+    "peakEnd": "06-30",
+    "practice": "Linseed (oil flax): spring-sown March–April, flowers June, harvested Aug.",
+    "confidence": "medium",
+    "source": "agronomic-knowledge"
+  },
+  "Autres oléagineux": {
+    "regime": "oilseed",
+    "greenStart": "04-15",
+    "greenEnd": "09-15",
+    "practice": "Other oilseeds: mostly spring-sown, canopy late spring to late summer.",
+    "confidence": "low",
+    "source": "agronomic-knowledge"
+  },
+  "Noyer": {
+    "regime": "orchard",
+    "greenStart": "04-20",
+    "greenEnd": "10-31",
+    "peakStart": "06-01",
+    "peakEnd": "09-15",
+    "practice": "Walnut trees: leaf-out late April, leaf-on through October.",
+    "confidence": "medium",
+    "source": "agronomic-knowledge"
+  },
+  "Endives de Bruxelles (pour la racine) (transformation industrielle)": {
+    "regime": "summer-row-crop",
+    "greenStart": "05-01",
+    "greenEnd": "10-31",
+    "peakStart": "07-01",
+    "peakEnd": "09-15",
+    "practice": "Witloof chicory root (field phase): sown May, root canopy June–Oct, roots lifted autumn then forced indoors.",
+    "confidence": "medium",
+    "source": "agronomic-knowledge"
+  },
+  "Tournesol": {
+    "regime": "summer-row-crop",
+    "greenStart": "05-01",
+    "greenEnd": "09-30",
+    "peakStart": "07-01",
+    "peakEnd": "08-20",
+    "practice": "Sunflower: sown late April–May, flowers July–Aug, harvested Sept–Oct (marginal in Wallonia).",
+    "confidence": "medium",
+    "source": "agronomic-knowledge"
+  },
+  "Autres surfaces pâturées (taux de couverture <= 50%), avec contrat complémentaire environnemental": {
+    "regime": "grassland-permanent",
+    "greenStart": "03-15",
+    "greenEnd": "11-15",
+    "practice": "Grazed surface (agri-environmental contract): active green season spring–late autumn.",
+    "confidence": "medium",
+    "source": "agronomic-knowledge"
+  },
+  "Pois protéagineux dhiver": {
+    "regime": "legume-grain",
+    "greenStart": "03-01",
+    "greenEnd": "07-25",
+    "peakStart": "05-01",
+    "peakEnd": "06-15",
+    "practice": "Winter protein pea: sown Oct–Nov, spring green-up, harvested July.",
+    "confidence": "medium",
+    "source": "agronomic-knowledge"
+  },
+  "Seigle de printemps": {
+    "regime": "spring-cereal",
+    "greenStart": "04-01",
+    "greenEnd": "08-05",
+    "peakStart": "05-20",
+    "peakEnd": "06-25",
+    "practice": "Spring rye: sown March–April, harvested Aug.",
+    "confidence": "medium",
+    "source": "agronomic-knowledge"
+  },
+  "Autres protéagineux": {
+    "regime": "legume-grain",
+    "greenStart": "04-01",
+    "greenEnd": "08-10",
+    "practice": "Other protein crops: mostly spring-sown grain legumes, canopy spring–summer.",
+    "confidence": "low",
+    "source": "agronomic-knowledge"
+  },
+  "Soja": {
+    "regime": "summer-row-crop",
+    "greenStart": "05-15",
+    "greenEnd": "10-10",
+    "peakStart": "07-15",
+    "peakEnd": "09-01",
+    "practice": "Soybean: sown mid-May, canopy June–Sept, harvested Oct.",
+    "confidence": "medium",
+    "source": "agronomic-knowledge"
+  },
+  "Quinoa": {
+    "regime": "summer-row-crop",
+    "greenStart": "05-01",
+    "greenEnd": "09-30",
+    "peakStart": "07-01",
+    "peakEnd": "08-31",
+    "practice": "Quinoa: sown April–May, flowers/grain fill summer, harvested Sept–Oct.",
+    "confidence": "medium",
+    "source": "agronomic-knowledge"
+  },
+  "Colza de printemps": {
+    "regime": "oilseed",
+    "greenStart": "04-15",
+    "greenEnd": "08-31",
+    "peakStart": "06-01",
+    "peakEnd": "07-05",
+    "practice": "Spring rapeseed: sown April, flowers June, harvested Aug–Sept.",
+    "confidence": "medium",
+    "source": "agronomic-knowledge"
+  },
+  "Luzerne lupuline": {
+    "regime": "forage-annual",
+    "greenStart": "04-01",
+    "greenEnd": "10-31",
+    "practice": "Black medic (Medicago lupulina): short-lived forage legume, active spring–autumn.",
+    "confidence": "low",
+    "source": "agronomic-knowledge"
+  },
+  "Lupin doux": {
+    "regime": "legume-grain",
+    "greenStart": "04-15",
+    "greenEnd": "09-15",
+    "peakStart": "06-01",
+    "peakEnd": "07-15",
+    "practice": "Sweet lupin: spring-sown April, flowers June, harvested Sept.",
+    "confidence": "medium",
+    "source": "agronomic-knowledge"
+  },
+  "Sainfoin (Onobrychis sativa)": {
+    "regime": "forage-perennial",
+    "greenStart": "03-20",
+    "greenEnd": "10-31",
+    "practice": "Sainfoin: perennial forage legume, multiple cuts, active early spring–late autumn.",
+    "confidence": "medium",
+    "source": "agronomic-knowledge"
+  },
+  "Pomme de terre (primeur, arrachage avant le 20 juin)": {
+    "regime": "summer-row-crop",
+    "greenStart": "04-01",
+    "greenEnd": "06-20",
+    "peakStart": "05-15",
+    "peakEnd": "06-15",
+    "practice": "New potato (primeur): planted March under cover, lifted before 20 June.",
+    "confidence": "medium",
+    "source": "agronomic-knowledge"
+  },
+  "Navette dhiver (graines)": {
+    "regime": "oilseed",
+    "greenStart": "03-01",
+    "greenEnd": "07-15",
+    "peakStart": "04-15",
+    "peakEnd": "05-25",
+    "practice": "Winter turnip rape (seed): sown Aug–Sept, flowers April–May, harvested July.",
+    "confidence": "low",
+    "source": "agronomic-knowledge"
+  },
+  "Carottes fourragères": {
+    "regime": "vegetable",
+    "greenStart": "05-01",
+    "greenEnd": "11-10",
+    "peakStart": "07-01",
+    "peakEnd": "09-30",
+    "practice": "Fodder carrot: sown April–May, canopy summer, lifted Oct–Nov.",
+    "confidence": "medium",
+    "source": "agronomic-knowledge"
+  }
+}

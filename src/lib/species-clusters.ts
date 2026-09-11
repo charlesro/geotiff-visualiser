@@ -11,9 +11,21 @@ import { ZoneExtraction } from './zones';
  */
 
 // Vivid cyan / orange / blue / purple tones that punch through the green /
-// brown / pinkish field imagery (no greens or yellows that would blend in,
-// and no red — that's the edge·other pixel class).
-export const CLUSTER_COLORS = ['#00e5ff', '#ff7a00', '#c026ff', '#2f6bff', '#9b5cff', '#00aaff', '#ff9100', '#7d3cff'];
+// brown / pinkish field imagery. Greens and yellows would blend into the
+// imagery, and green / red / amber / slate are each already a pixel class
+// (see ZONE_CLASSES), so the whole palette stays out of those families.
+//
+// Chosen by greedy max-min separation in CIELAB over vivid candidates, under
+// three constraints: >=26 deltaE from every reserved pixel-class colour, >=3.2
+// contrast against the dark UI, and saturation/value high enough to read over
+// imagery. Ordered most-distinct-first — clusters are sorted biggest-first, so
+// the scenarios carrying the most fields get the most separable hues; the
+// minimum pairwise separation across the first ten is ~36 deltaE.
+// Twelve entries cover the maximum k; indexed modulo its length everywhere.
+export const CLUSTER_COLORS = [
+  '#00e5ff', '#ff4000', '#8c00ff', '#ff33a3', '#0084ff', '#e68d2e',
+  '#ff33f5', '#ff0059', '#1953ff', '#17a4e6', '#00ffea', '#e6622e',
+];
 
 export interface ClusteredField {
   /** Field identity (NewID), same convention as the zone extraction. */
@@ -32,16 +44,38 @@ export interface ClusteredField {
 export interface SpeciesClusterGroup {
   species: string;
   fields: ClusteredField[];
-  /** centroids[cluster][dateIndex] */
+  /**
+   * centroids[cluster][dateIndex] over `dates` — the mean of the cluster's
+   * members that were SEEN on that date. NaN where none of them was.
+   */
   centroids: number[][];
+  /**
+   * support[cluster][dateIndex]: how many of the cluster's fields went into
+   * that centroid point. A point averaged over three fields is not the same
+   * evidence as one averaged over forty, and the charts say so.
+   */
+  support: number[][];
   /** Fields per cluster. */
   sizes: number[];
 }
 
 export interface SpeciesClustering {
   groups: SpeciesClusterGroup[];
-  /** Dates the curves are built on (those covered by ≥80% of fields). */
+  /**
+   * Every date in the extraction. The curves carry a point wherever ANY of a
+   * cluster's fields was seen — a partly-clouded acquisition still says
+   * something about the fields it did see, and dropping it would leave a hole
+   * in the season exactly where the user asked for an image to fill one.
+   */
   dates: string[];
+  /**
+   * The subset of `dates` k-means itself ran on. Membership is decided on
+   * complete, well-covered rows only: a column observed on a handful of fields
+   * carries almost no information about who resembles whom, and letting it into
+   * the distance would move fields between scenarios on the strength of a
+   * cloud edge. It is good enough to DRAW, not to partition on.
+   */
+  clusteringDates: string[];
   /** Requested cluster count (capped at the species' field count). */
   k: number;
   metric: string;
@@ -53,7 +87,7 @@ export interface SpeciesClustering {
 /** Field identity of a pixel point or polygon feature (matches zones.ts). */
 export const fieldKeyOf = (props: any): string => String(props?.NewID ?? `pid:${props?.__pid}`);
 
-/** Keep dates observed on at least this fraction of fields. */
+/** Cluster on dates observed by at least this fraction of fields. */
 const DATE_COVERAGE_THRESHOLD = 0.8;
 
 export function clusterBySpecies(extraction: ZoneExtraction, k: number): SpeciesClustering {
@@ -120,7 +154,10 @@ export function clusterBySpecies(extraction: ZoneExtraction, k: number): Species
     rawCurves.set(acc.key, { curve, pixelCount: pixels.length });
   }
 
-  // Complete-case matrix: keep well-covered dates, drop incomplete fields.
+  // Complete-case matrix for the PARTITION only: well-covered dates, and the
+  // fields with a value on every one of them. The curves drawn afterwards use
+  // the full date axis, so a sparse acquisition is still plotted — it just does
+  // not get a vote on which fields belong together.
   const keptDateIdx = allDates
     .map((_, di) => di)
     .filter(di => {
@@ -128,17 +165,17 @@ export function clusterBySpecies(extraction: ZoneExtraction, k: number): Species
       for (const { curve } of rawCurves.values()) if (isFinite(curve[di])) n++;
       return n >= rawCurves.size * DATE_COVERAGE_THRESHOLD;
     });
-  const dates = keptDateIdx.map(di => allDates[di]);
-  if (dates.length < 3) {
+  const clusteringDates = keptDateIdx.map(di => allDates[di]);
+  if (clusteringDates.length < 3) {
     throw new Error('Fewer than 3 dates are shared across the fields — fetch a denser series.');
   }
 
-  const complete: { acc: FieldAcc; curve: number[]; pixelCount: number }[] = [];
+  const complete: { acc: FieldAcc; curve: number[]; full: number[]; pixelCount: number }[] = [];
   let droppedFields = 0;
   for (const acc of fields.values()) {
     const { curve, pixelCount } = rawCurves.get(acc.key)!;
     const kept = keptDateIdx.map(di => curve[di]);
-    if (kept.every(isFinite)) complete.push({ acc, curve: kept, pixelCount });
+    if (kept.every(isFinite)) complete.push({ acc, curve: kept, full: curve, pixelCount });
     else droppedFields++;
   }
   if (complete.length < 2) {
@@ -174,20 +211,58 @@ export function clusterBySpecies(extraction: ZoneExtraction, k: number): Species
       label: m.acc.label,
       species,
       pixelCount: m.pixelCount,
-      curve: m.curve,
+      curve: m.full,
       cluster: remap.get(assign[i])!,
     }));
     const sizes = order.map(old => assign.filter(x => x === old).length);
+
+    // Re-average each cluster over the FULL date axis. k-means produced its
+    // centroids on the complete-case columns only; those are the right thing to
+    // partition on and the wrong thing to plot, because they simply have no
+    // value on a date that half the fields missed. Averaging the members that
+    // WERE seen puts a real point there instead of a hole.
+    const fullCentroids: number[][] = [];
+    const support: number[][] = [];
+    for (let c = 0; c < sizes.length; c++) {
+      const rows = members.filter((_, i) => remap.get(assign[i]) === c).map(m => m.full);
+      const mean = new Array<number>(allDates.length).fill(NaN);
+      const seen = new Array<number>(allDates.length).fill(0);
+      for (let di = 0; di < allDates.length; di++) {
+        let sum = 0;
+        let n = 0;
+        for (const row of rows) {
+          const v = row[di];
+          if (isFinite(v)) {
+            sum += v;
+            n++;
+          }
+        }
+        seen[di] = n;
+        if (n > 0) mean[di] = sum / n;
+      }
+      fullCentroids.push(mean);
+      support.push(seen);
+    }
+
     groups.push({
       species,
       fields: clustered.sort((a, b) => a.cluster - b.cluster),
-      centroids: order.map(old => centroids[old]),
+      centroids: fullCentroids,
+      support,
       sizes,
     });
   }
   groups.sort((a, b) => b.fields.length - a.fields.length);
 
-  return { groups, dates, k, metric: extraction.metric, droppedFields, createdAt: Date.now() };
+  return {
+    groups,
+    dates: allDates,
+    clusteringDates,
+    k,
+    metric: extraction.metric,
+    droppedFields,
+    createdAt: Date.now(),
+  };
 }
 
 // ----- k-means ---------------------------------------------------------------

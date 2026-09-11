@@ -4,14 +4,55 @@ import { cn } from '../lib/utils';
 
 /** Small shared form primitives so every step looks identical. */
 
-export function InfoTip({ text }: { text: string }) {
+/**
+ * A term, or an icon, that explains itself on hover.
+ *
+ * Driven by React state rather than a CSS `group-hover` variant. The CSS version
+ * depends on Tailwind having emitted that variant and on nothing in between
+ * swallowing the hover, and when it silently fails there is nothing to inspect;
+ * state is deterministic and testable. The browser's own `title` is not an
+ * option either — it cannot be styled and does not reliably surface.
+ */
+export function Explain({
+  children,
+  text,
+  className,
+  align = 'left',
+}: {
+  children: React.ReactNode;
+  text: React.ReactNode;
+  className?: string;
+  align?: 'left' | 'center';
+}) {
+  const [open, setOpen] = React.useState(false);
   return (
-    <span className="group relative inline-flex align-middle">
-      <Info className="h-3 w-3 cursor-help text-slate-600 transition-colors group-hover:text-sky-400" />
-      <span className="pointer-events-none invisible absolute bottom-full left-1/2 z-[1200] mb-1.5 w-60 -translate-x-1/2 rounded-md border border-white/10 bg-[#1a2027] px-2.5 py-2 text-[11px] font-normal normal-case tracking-normal text-slate-300 shadow-xl group-hover:visible">
-        {text}
-      </span>
+    <span
+      className={cn('relative inline-flex cursor-help align-middle', className)}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      {children}
+      {open && (
+        <span
+          className={cn(
+            'pointer-events-none absolute bottom-full z-[1200] mb-1.5 w-64 rounded-md border border-white/10',
+            'bg-[#1a2027] px-2.5 py-2 text-left text-[11px] font-normal normal-case not-italic leading-snug',
+            'tracking-normal text-slate-300 shadow-xl',
+            align === 'center' ? 'left-1/2 -translate-x-1/2' : 'left-0'
+          )}
+        >
+          {text}
+        </span>
+      )}
     </span>
+  );
+}
+
+export function InfoTip({ text }: { text: React.ReactNode }) {
+  return (
+    <Explain text={text} align="center">
+      <Info className="h-3 w-3 text-slate-600 transition-colors hover:text-sky-400" />
+    </Explain>
   );
 }
 
@@ -40,7 +81,8 @@ export function Field({
 
 export const inputClass =
   'w-full rounded-md border border-white/10 bg-[#0b0e11] px-2.5 py-1.5 text-sm text-slate-200 ' +
-  'placeholder:text-slate-600 focus:border-sky-500/60 focus:outline-none';
+  'placeholder:text-slate-600 transition-colors hover:border-white/20 ' +
+  'focus:border-sky-500/60 focus:ring-1 focus:ring-sky-500/30 focus:outline-none';
 
 /**
  * Number field that doesn't fight your typing.
@@ -90,7 +132,10 @@ export function NumberInput({
       max={max}
       step={step}
       disabled={disabled}
-      className={cn(className ?? inputClass, disabled && 'opacity-50')}
+      // `className` EXTENDS the field styling rather than replacing it — a
+      // caller passing a width should not silently lose the border, background
+      // and padding that make the control look editable at all.
+      className={cn(inputClass, className, disabled && 'opacity-50')}
       value={text}
       onFocus={() => {
         focused.current = true;

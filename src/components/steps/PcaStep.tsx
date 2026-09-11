@@ -101,12 +101,12 @@ interface PcaStepProps {
   busy: boolean;
   error: string | null;
   onRun: () => void;
-  /** Restrict the PCA to the crops' NDVI-detected growing season. */
+  /** Whether the PCA is restricted to the NDVI-detected growing season (read-only
+   *  status here; toggled in the Growth-scenarios window). */
   seasonOnly: boolean;
-  onToggleSeason: (on: boolean) => void;
   season: GrowingSeasonResult | null;
-  seasonBusy: boolean;
-  seasonError: string | null;
+  /** Open the Growth-scenarios window (clustering + season selection live there). */
+  onOpenClusterWindow: () => void;
   onOpenResults: () => void;
   onExportCsv: () => void;
 }
@@ -139,6 +139,11 @@ export default function PcaStep(props: PcaStepProps) {
 
   const scoped = parsePcaScope(props.scope);
   const scopeColor = scoped ? CLUSTER_COLORS[scoped.cluster % CLUSTER_COLORS.length] : null;
+  // Mirror runPca: a scoped run uses that scenario's own window, not the shared
+  // one, so the status line must not advertise the shared window instead.
+  const scopedSeason = scoped
+    ? props.season?.perCluster?.find(p => p.species === scoped.species && p.cluster === scoped.cluster)?.window ?? null
+    : props.season?.window ?? null;
 
   return (
     <>
@@ -163,7 +168,9 @@ export default function PcaStep(props: PcaStepProps) {
             {props.clustering?.groups.map(group =>
               group.sizes
                 .map((size, ci) => ({ size, ci }))
-                .filter(({ ci }) => ci < props.topScenarios)
+                // An empty k-means cluster holds no pixels — scoping to it would
+                // run the PCA on nothing. phenology skips these too.
+                .filter(({ ci, size }) => ci < props.topScenarios && size > 0)
                 .map(({ size, ci }) => (
                   <option key={pcaScopeValue(group.species, ci)} value={pcaScopeValue(group.species, ci)}>
                     {group.species} — scenario {ci + 1} ({size} field{size === 1 ? '' : 's'})
@@ -272,45 +279,29 @@ export default function PcaStep(props: PcaStepProps) {
         </div>
       )}
 
-      <label className="flex cursor-pointer items-start gap-2 rounded-md border border-emerald-400/15 bg-emerald-400/[0.03] px-2.5 py-2 text-[11px] leading-snug text-slate-300">
-        <input
-          type="checkbox"
-          checked={props.seasonOnly}
-          disabled={props.seasonBusy}
-          onChange={e => props.onToggleSeason(e.target.checked)}
-          className="mt-0.5 accent-emerald-500"
-        />
+      <button
+        type="button"
+        onClick={props.onOpenClusterWindow}
+        className="flex w-full items-center gap-2 rounded-md border border-emerald-400/15 bg-emerald-400/[0.03] px-2.5 py-2 text-left text-[11px] leading-snug text-slate-300 transition-colors hover:border-emerald-400/30"
+      >
+        <Sprout className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
         <span className="flex-1">
-          <span className="flex items-center gap-1 text-slate-200">
-            <Sprout className="h-3 w-3 text-emerald-400" /> Growing season only
+          <span className="block text-slate-200">
+            Growing season:{' '}
+            {props.seasonOnly
+              ? scopedSeason
+                ? `${scopedSeason.start} → ${scopedSeason.end}${scoped ? ' · this scenario' : ''}`
+                : scoped
+                  ? 'this scenario has no clear season — whole year'
+                  : 'on'
+              : 'off — whole year'}
           </span>
-          <span className="text-slate-500">
-            {props.seasonBusy
-              ? 'Reading scenario curves…'
-              : 'Detected per growth scenario (step 4); scenarios with no clear cycle are skipped. Scope to a scenario to use its own window.'}
+          <span className="block text-slate-500">
+            Set the growth scenarios &amp; season in the Growth-scenarios window (step 4).
           </span>
-          {props.seasonError && <span className="mt-0.5 block text-amber-300/90">{props.seasonError}</span>}
-          {props.seasonOnly && props.season?.perCluster && (
-            <span className="mt-1 block space-y-0.5">
-              {props.season.perCluster.map(p => (
-                <span key={`${p.species}-${p.cluster}`} className="block">
-                  <span className="text-slate-400">{p.species} · scenario {p.cluster + 1}</span>{' '}
-                  {p.window ? (
-                    <span className="text-emerald-300/90">{p.window.start} → {p.window.end}</span>
-                  ) : (
-                    <span className="text-slate-600">no clear growth — skipped</span>
-                  )}
-                </span>
-              ))}
-              {props.season.window && (
-                <span className="block text-emerald-300">
-                  Shared window (unscoped): {props.season.window.start} → {props.season.window.end}
-                </span>
-              )}
-            </span>
-          )}
         </span>
-      </label>
+        <ExternalLink className="h-3.5 w-3.5 shrink-0 opacity-60" />
+      </button>
 
       <Button
         onClick={props.onRun}
