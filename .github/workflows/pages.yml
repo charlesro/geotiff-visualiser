@@ -1,4 +1,5 @@
-# Build both pages (index.html + pixel-grid.html) and publish them to GitHub Pages.
+# Build the Pixel Grid Designer — only that page — and publish it to GitHub Pages.
+# The PCA app and its data files are deliberately not published.
 #
 # The site is served from https://<user>.github.io/<repo>/ — a sub-path — so the
 # build is given --base=/<repo>/ for Vite's bundled assets. Runtime fetches and
@@ -33,13 +34,14 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      # PIXEL_GRID_ONLY builds that one entry and leaves out public/ (the PCA
+      # app's data); VITE_STANDALONE drops the page's links back to the PCA app.
       - run: npx vite build --base=/${{ github.event.repository.name }}/
         env:
-          VITE_PCA_HREF: ./pca.html
-      # Land on the pixel grid designer — the page that works for every visitor
-      # (the PCA app's database mode needs the local DuckDB engine). The PCA app
-      # moves to pca.html; the pixel grid's back-links were built to point there.
-      - run: mv dist/index.html dist/pca.html && cp dist/pixel-grid.html dist/index.html
+          PIXEL_GRID_ONLY: '1'
+          VITE_STANDALONE: '1'
+      # Serve it at the site root; pixel-grid.html stays too, for any existing link.
+      - run: cp dist/pixel-grid.html dist/index.html
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

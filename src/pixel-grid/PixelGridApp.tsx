@@ -31,8 +31,11 @@ import { PcaStep } from './steps/PcaStep';
  *    stepper unmounts closed panels.
  */
 
-/** The PCA app's address — './' locally, './pca.html' on GitHub Pages (see vite-env.d.ts). */
-const PCA_HREF = import.meta.env.VITE_PCA_HREF || './';
+/**
+ * Built on its own for the public site (see vite-env.d.ts). There is no PCA app
+ * published alongside it, so the links back to it are not rendered.
+ */
+const STANDALONE = import.meta.env.VITE_STANDALONE === '1';
 
 export default function PixelGridApp() {
   const mapRef = useRef<L.Map | null>(null);
@@ -139,13 +142,15 @@ export default function PixelGridApp() {
         <header className="shrink-0 border-b border-white/10 px-4 py-3">
           <div className="flex items-start justify-between gap-2">
             <h1 className="text-sm font-semibold text-white">Sentinel-2 Pixel Grid Designer</h1>
-            <a
-              href={PCA_HREF}
-              title="Back to the Polygon Time-Series PCA app"
-              className="flex shrink-0 items-center gap-1.5 rounded-md border border-sky-500/40 bg-sky-500/10 px-2.5 py-1 text-xs text-sky-300 transition-colors hover:bg-sky-500/20"
-            >
-              <Layers className="h-3 w-3" /> Polygon PCA
-            </a>
+            {!STANDALONE && (
+              <a
+                href="./"
+                title="Back to the Polygon Time-Series PCA app"
+                className="flex shrink-0 items-center gap-1.5 rounded-md border border-sky-500/40 bg-sky-500/10 px-2.5 py-1 text-xs text-sky-300 transition-colors hover:bg-sky-500/20"
+              >
+                <Layers className="h-3 w-3" /> Polygon PCA
+              </a>
+            )}
           </div>
           <p className="mt-0.5 text-[11px] leading-snug text-slate-500">
             Draw your area → see the real pixels → align plots to whole, pure pixels.
@@ -163,9 +168,11 @@ export default function PixelGridApp() {
 
         </div>
 
-        <div className="shrink-0 border-t border-white/10 px-4 py-2 text-[11px] text-slate-500">
-          <a href={PCA_HREF} className="text-sky-400 hover:underline">← Polygon Time-Series PCA</a>
-        </div>
+        {!STANDALONE && (
+          <div className="shrink-0 border-t border-white/10 px-4 py-2 text-[11px] text-slate-500">
+            <a href="./" className="text-sky-400 hover:underline">← Polygon Time-Series PCA</a>
+          </div>
+        )}
       </aside>
     </div>
   );

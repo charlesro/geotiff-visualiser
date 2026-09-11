@@ -2,10 +2,9 @@
 
 interface ImportMetaEnv {
   /**
-   * Where the pixel-grid page's "back to the PCA app" links point. Unset locally,
-   * where index.html IS the PCA app, so they fall back to './'. The GitHub Pages
-   * workflow sets it to './pca.html', because there the pixel grid designer is
-   * the landing page and the PCA app is moved aside to pca.html.
+   * '1' when the Pixel Grid Designer is built on its own — the public GitHub Pages
+   * site, which does not carry the PCA app. The page then leaves out its links
+   * back to the PCA app, since there is nothing there to link to. Unset locally.
    */
-  readonly VITE_PCA_HREF?: string;
+  readonly VITE_STANDALONE?: string;
 }

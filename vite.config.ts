@@ -6,8 +6,14 @@ import {defineConfig} from 'vite';
 // No `define` of env secrets here: anything inlined this way ships in the
 // public client bundle. The AI Studio template's GEMINI_API_KEY define was
 // unused by src/ and would have published a key the day a .env appeared.
+// PIXEL_GRID_ONLY=1 builds the Pixel Grid Designer on its own — that is what the
+// public GitHub Pages site carries, deliberately without the PCA app. It also
+// drops public/ (crop-calendars.json, species-graph.json), which only the PCA
+// app reads, so none of its data is published either.
 export default defineConfig(() => {
+  const gridOnly = process.env.PIXEL_GRID_ONLY === '1';
   return {
+    publicDir: gridOnly ? (false as const) : 'public',
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
@@ -16,10 +22,12 @@ export default defineConfig(() => {
     },
     build: {
       rollupOptions: {
-        input: {
-          main: path.resolve(__dirname, 'index.html'),
-          pixelGrid: path.resolve(__dirname, 'pixel-grid.html'),
-        },
+        input: gridOnly
+          ? { pixelGrid: path.resolve(__dirname, 'pixel-grid.html') }
+          : {
+              main: path.resolve(__dirname, 'index.html'),
+              pixelGrid: path.resolve(__dirname, 'pixel-grid.html'),
+            },
       },
     },
     server: {
