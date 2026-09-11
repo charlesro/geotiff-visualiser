@@ -34,7 +34,7 @@ let cache: Promise<SpeciesGraph> | null = null;
 /** Fetch and index the graph once; subsequent calls reuse the same promise. */
 export function loadSpeciesGraph(): Promise<SpeciesGraph> {
   if (!cache) {
-    cache = fetch('/species-graph.json')
+    cache = fetch('./species-graph.json')
       .then(r => {
         if (!r.ok) throw new Error(`species-graph.json: ${r.status}`);
         return r.json() as Promise<RawGraph>;

@@ -89,10 +89,12 @@ const BASEMAPS = {
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
     attribution: 'Tiles © Esri — Source: Esri, HERE, Garmin, FAO, NOAA',
   },
+  // Esri's keyless Dark Gray Canvas: CARTO's dark_all now watermarks every tile
+  // with "API KEY REQUIRED". Esri's imagery ends at zoom 16 — see maxNativeZoom.
   dark: {
     label: 'Dark',
-    url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-    attribution: '© OpenStreetMap contributors © CARTO',
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
+    attribution: 'Tiles © Esri — Esri, HERE, Garmin, © OpenStreetMap contributors',
   },
   streets: {
     label: 'Streets',
@@ -529,7 +531,7 @@ export default function MapPanel({ polygons, selectedIds, onTogglePolygon, onBox
         zoomControl={true}
         attributionControl={true}
       >
-        <TileLayer key={basemap} url={BASEMAPS[basemap].url} attribution={BASEMAPS[basemap].attribution} maxZoom={19} />
+        <TileLayer key={basemap} url={BASEMAPS[basemap].url} attribution={BASEMAPS[basemap].attribution} maxZoom={19} maxNativeZoom={basemap === 'dark' ? 16 : undefined} />
         <ScaleControl position="bottomleft" />
         <FitController fitRequest={fitRequest} />
         <BboxSelector polygons={polygons} onSelectBox={onBoxSelect} />
