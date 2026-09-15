@@ -58,7 +58,7 @@ export default function PixelGridApp() {
   // sensor) and handed to the simulation hooks as plain scalars.
   const gridApi = useFieldGrid({ aoi, aoiPoly });
   const { sigmaX, sigmaY, renderGrid, fieldAreaM2, gridSummary } = gridApi;
-  const [basemap, setBasemap] = usePersistentState<BasemapKey>('basemap', 'dark', v => typeof v === 'string' && v in BASEMAPS);
+  const [basemap, setBasemap] = usePersistentState<BasemapKey>('basemap', 'satellite', v => typeof v === 'string' && v in BASEMAPS);
   const [showField, setShowField] = usePersistentState('showField', false, isBool);   // render the true planting pattern under the grid
   const [showPsf, setShowPsf] = usePersistentState('showPsf', false, isBool);        // draw the sensor PSF footprint on the map
   const [fieldOnly, setFieldOnly] = usePersistentState('fieldOnly', false, isBool);  // trim the grid to the traced field
