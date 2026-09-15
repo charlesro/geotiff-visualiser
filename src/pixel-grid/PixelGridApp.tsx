@@ -1,7 +1,8 @@
-import { useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import { Layers } from 'lucide-react';
-import { type BasemapKey } from './map-layers';
+import { BASEMAPS, type BasemapKey } from './map-layers';
+import { inRange, isBool, isLngLat, oneOf, readSaved, resetSavedState, usePersistentState, writeSaved } from './persist';
 import { useAoiField, usePlaceSearch } from './use-area';
 import { useFieldGrid } from './use-grid';
 import { useExperiment, usePcaSim, useSimulation } from './use-simulation';
@@ -12,7 +13,7 @@ import { SimStep } from './steps/SimStep';
 import { PcaStep } from './steps/PcaStep';
 
 /**
- * The Sentinel-2 Pixel Grid Designer.
+ * The Pixel Grid Designer.
  *
  * An agronomist draws a field, sees exactly where a chosen satellite's pixels
  * fall on it, exports those squares as a shapefile to plant against, and
@@ -41,7 +42,8 @@ export default function PixelGridApp() {
   const mapRef = useRef<L.Map | null>(null);
 
   // Collapsible steps (one open at a time, PCA-style; click an open one to close it)
-  const [activeStep, setActiveStep] = useState<'area' | 'grid' | 'sim' | 'pca' | null>('grid');
+  const [activeStep, setActiveStep] = usePersistentState<'area' | 'grid' | 'sim' | 'pca' | null>('activeStep', 'grid',
+    v => v === null || oneOf('area', 'grid', 'sim', 'pca')(v));
   const toggleStep = (s: 'area' | 'grid' | 'sim' | 'pca') => setActiveStep(cur => (cur === s ? null : s));
   const simOn = activeStep === 'sim' || activeStep === 'pca';
 
@@ -56,19 +58,17 @@ export default function PixelGridApp() {
   // sensor) and handed to the simulation hooks as plain scalars.
   const gridApi = useFieldGrid({ aoi, aoiPoly });
   const { sigmaX, sigmaY, renderGrid, fieldAreaM2, gridSummary } = gridApi;
-  const [basemap, setBasemap] = useState<BasemapKey>('dark');
-  const [showField, setShowField] = useState(false);   // render the true planting pattern under the grid
-  const [showPsf, setShowPsf] = useState(false);
-  const [fieldOnly, setFieldOnly] = useState(false);  // trim the grid to the traced field
+  const [basemap, setBasemap] = usePersistentState<BasemapKey>('basemap', 'dark', v => typeof v === 'string' && v in BASEMAPS);
+  const [showField, setShowField] = usePersistentState('showField', false, isBool);   // render the true planting pattern under the grid
+  const [showPsf, setShowPsf] = usePersistentState('showPsf', false, isBool);        // draw the sensor PSF footprint on the map
+  const [fieldOnly, setFieldOnly] = usePersistentState('fieldOnly', false, isBool);  // trim the grid to the traced field
 
   // Disclosure / tab state for the step panels. It lives up here because `Step`
   // unmounts a collapsed panel, which would otherwise reset it every time the
   // user folds a step away.
-  const [recipeOpen, setRecipeOpen] = useState(false);
-  const [simTab, setSimTab] = useState<'ladder' | 'ndvi'>('ladder');
-  const [simAdvOpen, setSimAdvOpen] = useState(false);
-  const [pcaRetuneOpen, setPcaRetuneOpen] = useState(false);
-  const [compareAligned, setCompareAligned] = useState(false);  // rotated vs 0° ladders        // draw the sensor PSF footprint on the map
+  const [simAdvOpen, setSimAdvOpen] = usePersistentState('simAdvOpen', false, isBool);
+  const [pcaRetuneOpen, setPcaRetuneOpen] = usePersistentState('pcaRetuneOpen', false, isBool);
+  const [compareAligned, setCompareAligned] = usePersistentState('compareAligned', false, isBool);  // rotated vs 0° ladders
   const [panelW, setPanelW] = useState(() => {          // drag the panel's left edge to widen it
     const v = Number(localStorage.getItem('pgrid_panel_w'));
     return v >= 320 && v <= 1400 ? v : 380;
@@ -89,6 +89,23 @@ export default function PixelGridApp() {
   const geoKey = renderGrid
     ? `${renderGrid.epsg}-${renderGrid.res}-${renderGrid.utmBounds.join(',')}-${basemap}-${simOn ? simView : 'off'}-${simOn && simView === 'ndvi' ? day : ''}-${pattern}-${stripWidth}-${spacing}-${rotation}-${optimizePlacement ? 'opt' : 'raw'}-${sensorSig}-${cropSig}`
     : 'none';
+
+  // The map reopens exactly where it was left; failing that, on the field.
+  const initialView = useMemo(() => {
+    const saved = readSaved<{ center: [number, number]; zoom: number }>('view',
+      v => !!v && typeof v === 'object' && isLngLat((v as { center?: unknown }).center) && inRange(1, 23)((v as { zoom?: unknown }).zoom));
+    return saved ?? { center: initialCenter, zoom: 16 };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const saveView = useCallback((center: [number, number], zoom: number) => writeSaved('view', { center, zoom }), []);
+
+  // Reset asks once more before wiping: it discards the drawn field and every
+  // setting, so a single stray click should not be enough.
+  const [confirmReset, setConfirmReset] = useState(false);
+  useEffect(() => {
+    if (!confirmReset) return;
+    const id = setTimeout(() => setConfirmReset(false), 3000);
+    return () => clearTimeout(id);
+  }, [confirmReset]);
 
   const flyTo = (lat: number, lon: number, bbox?: [number, number, number, number]) => {
     const map = mapRef.current;
@@ -117,7 +134,6 @@ export default function PixelGridApp() {
 
   const stepProps = { activeStep, toggleStep, area, search, gridApi, exp, sim: simApi, pca: pcaApi,
                       areaSummary, gridSummary, simSummary, geoKey, showPsf, setShowPsf,
-                      recipeOpen, setRecipeOpen, simTab, setSimTab,
                       simAdvOpen, setSimAdvOpen, pcaRetuneOpen, setPcaRetuneOpen,
                       compareAligned, setCompareAligned, setActiveStep };
 
@@ -125,7 +141,7 @@ export default function PixelGridApp() {
     <div className="flex h-full w-full bg-[#050505] text-neutral-200 font-sans">
       {/* Map */}
       <FieldMap
-        mapRef={mapRef} initialCenter={initialCenter}
+        mapRef={mapRef} initialCenter={initialView.center} initialZoom={initialView.zoom} onView={saveView}
         basemap={basemap} setBasemap={setBasemap}
         showField={showField} setShowField={setShowField}
         showPsf={showPsf} setShowPsf={setShowPsf}
@@ -140,8 +156,15 @@ export default function PixelGridApp() {
         <div onPointerDown={startResize} title="Drag to resize"
           className="absolute inset-y-0 -left-1 z-[1200] w-2 cursor-col-resize hover:bg-sky-500/40" />
         <header className="shrink-0 border-b border-white/10 px-4 py-3">
-          <div className="flex items-start justify-between gap-2">
-            <h1 className="text-sm font-semibold text-white">Sentinel-2 Pixel Grid Designer</h1>
+          <div className="flex items-center justify-between gap-2">
+            <h1 className="text-sm font-semibold text-white">Pixel Grid Designer</h1>
+            <div className="flex shrink-0 items-center gap-1.5">
+            <button type="button"
+              onClick={() => (confirmReset ? resetSavedState() : setConfirmReset(true))}
+              title="Clear the field and all settings (your pinned field stays)"
+              className={`rounded-md border px-2 py-1 text-xs transition-colors ${confirmReset ? 'border-amber-400/60 bg-amber-500/15 text-amber-200' : 'border-white/10 text-slate-400 hover:border-white/25 hover:text-slate-200'}`}>
+              {confirmReset ? 'Click again to reset' : 'Reset'}
+            </button>
             {!STANDALONE && (
               <a
                 href="./"
@@ -151,10 +174,8 @@ export default function PixelGridApp() {
                 <Layers className="h-3 w-3" /> Polygon PCA
               </a>
             )}
+            </div>
           </div>
-          <p className="mt-0.5 text-[11px] leading-snug text-slate-500">
-            Draw your area → see the real pixels → align plots to whole, pure pixels.
-          </p>
         </header>
 
         <div className="min-h-0 flex-1 overflow-y-auto">

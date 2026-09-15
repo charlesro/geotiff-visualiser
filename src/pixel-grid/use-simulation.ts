@@ -1,17 +1,29 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import proj4 from 'proj4';
 import { crsToProj4Def } from '../lib/geo';
 import {
-  BARE, PATTERNS, bestPhaseOffset, cropById, makeBetaSchedule, simulateField, simulatePatch,
+  BARE, CROP_PRESETS, PATTERNS, TRUTH_TYPES, bestPhaseOffset, cropById, makeBetaSchedule, simulateField, simulatePatch,
   truthAt, utmEnvelope, TMAX,
   type FieldParams, type FieldSim, type PatternType, type SensorParams, type SimLayout,
 } from './simulate';
 import { aoiUtmOrigin, buildS2Grid, type LngLatBounds } from './s2-grid';
 import { cellCenter, pointInPoly, type Poly } from './geometry';
-import { fmtM, lerpHex, mix3 } from './util';
+import { lerpHex, mix3 } from './util';
 import { PCA_SAMPLE, RES_LADDER } from './sensors';
 import type { SweepStep } from './PcaSweep';
 import type { useFieldGrid } from './use-grid';
+import { inRange, isNum, oneOf, usePersistentState } from './persist';
+
+/** A restored crop must still be a usable curve, not whatever happened to be stored. */
+const isFieldParams = (v: unknown): v is FieldParams => {
+  if (!v || typeof v !== 'object') return false;
+  const f = v as Record<string, unknown>;
+  return typeof f.name === 'string'
+    && typeof f.color === 'string' && /^#[0-9a-f]{6}$/i.test(f.color)
+    && TRUTH_TYPES.some(t => t.id === f.truth)
+    && ['L1', 'k1', 'x01', 'k2', 'x02', 'tc'].every(k => isNum(f[k]));
+};
+const isPreset = (v: unknown) => typeof v === 'string' && (v === 'custom' || CROP_PRESETS.some(c => c.id === v));
 
 type GridApi = ReturnType<typeof useFieldGrid>;
 
@@ -44,23 +56,25 @@ type GridApi = ReturnType<typeof useFieldGrid>;
 /** Planting design, crop curves and noise. Sigma is owned by step 2 and passed in. */
 export function useExperiment({ sigmaX, sigmaY }: { sigmaX: number; sigmaY: number }) {
   // Experiment simulation (repo parameter set)
-  const [pattern, setPattern] = useState<PatternType>('row');
-  const [stripWidth, setStripWidth] = useState(3);
-  const [spacing, setSpacing] = useState(0);
-  const [rotation, setRotation] = useState(0);
-  const [optimizePlacement, setOptimizePlacement] = useState(true); // slide plants to max purity
-  const [cropA, setCropA] = useState<FieldParams>(() => cropById('maize'));
-  const [cropB, setCropB] = useState<FieldParams>(() => cropById('wheat'));
-  const [presetA, setPresetA] = useState('maize');
-  const [presetB, setPresetB] = useState('wheat');
-  const [magnitude, setMagnitude] = useState(0.04);
-  const [alpha, setAlpha] = useState(2);
-  const [beta, setBeta] = useState(2);
+  const [pattern, setPattern] = usePersistentState<PatternType>('pattern', 'row', oneOf(...PATTERNS.map(p => p.id)));
+  const [stripWidth, setStripWidth] = usePersistentState('stripWidth', 3, inRange(0.01, 1000));
+  const [spacing, setSpacing] = usePersistentState('spacing', 0, inRange(0, 1000));
+  const [rotation, setRotation] = usePersistentState('rotation', 0, inRange(0, 90));
+  // Always on: plants slide to max purity. The switch left the UI, so a saved
+  // "off" must not linger where nobody can turn it back on.
+  const [optimizePlacement, setOptimizePlacement] = useState(true);
+  const [cropA, setCropA] = usePersistentState<FieldParams>('cropA', () => cropById('maize'), isFieldParams);
+  const [cropB, setCropB] = usePersistentState<FieldParams>('cropB', () => cropById('wheat'), isFieldParams);
+  const [presetA, setPresetA] = usePersistentState('presetA', 'maize', isPreset);
+  const [presetB, setPresetB] = usePersistentState('presetB', 'wheat', isPreset);
+  const [magnitude, setMagnitude] = usePersistentState('magnitude', 0.04, inRange(0, 0.15));
+  const [alpha, setAlpha] = usePersistentState('alpha', 2, inRange(0.1, 10));
+  const [beta, setBeta] = usePersistentState('beta', 2, inRange(0.1, 10));
   // 100% by default: a pixel counts as pure only if it is entirely one crop.
   // The repo engine's own default is 80%, which flatters the design — it calls a
   // pixel "pure maize" when a fifth of it is wheat. Start strict; the slider in
   // "Noise & purity threshold" relaxes it.
-  const [threshold, setThreshold] = useState(100);
+  const [threshold, setThreshold] = usePersistentState('threshold', 100, inRange(50, 100));
   const [day] = useState(196);
   const [simView] = useState<'mixture' | 'purity' | 'ndvi'>('mixture');
 
@@ -77,8 +91,10 @@ export function useExperiment({ sigmaX, sigmaY }: { sigmaX: number; sigmaY: numb
     : cropB.color;
   const nameA = dupSpecies ? `${cropA.name} (A)` : cropA.name;
   const nameB = dupSpecies ? `${cropB.name} (B)` : cropB.name;
-  const cropAd: FieldParams = dupSpecies ? { ...cropA, name: nameA } : cropA;
-  const cropBd: FieldParams = dupSpecies ? { ...cropB, color: colB, name: nameB } : cropB;
+  // Memoised so the memoised chart components see the same object and can skip
+  // redrawing when nothing about the crops changed.
+  const cropAd = useMemo<FieldParams>(() => (dupSpecies ? { ...cropA, name: nameA } : cropA), [cropA, dupSpecies, nameA]);
+  const cropBd = useMemo<FieldParams>(() => (dupSpecies ? { ...cropB, color: colB, name: nameB } : cropB), [cropB, dupSpecies, colB, nameB]);
 
   const fsig = (c: FieldParams) => `${c.truth}_${c.L1}_${c.k1}_${c.x01}_${c.k2}_${c.x02}_${c.tc}`;
   const cropSig = `${cropA.color}${colB}-${fsig(cropA)}-${fsig(cropB)}`;
@@ -110,16 +126,6 @@ export function useSimulation({ aoi, aoiPoly, gridApi, exp, simOn }: {
     const t = (rotation * Math.PI) / 180, cos = Math.cos(t), sin = Math.sin(t);
     return { origin: [base[0] + du * cos - dv * sin, base[1] + du * sin + dv * cos] as [number, number], offset: [du, dv] as [number, number] };
   }, [aoi, build?.epsg, build?.res, optimizePlacement, pattern, stripWidth, spacing, threshold, rotation]);
-  // Concrete planting instruction: how far to shift the pattern from the SW corner.
-  const placementShift = useMemo(() => {
-    if (!patternOrigin || !optimizePlacement) return null;
-    const P = stripWidth + Math.max(0, spacing);
-    const norm = (d: number) => ((d % P) + P) % P;
-    const [du, dv] = patternOrigin.offset;
-    if (pattern === 'checker') return `${fmtM(norm(du))} along the rows × ${fmtM(norm(dv))} across them`;
-    if (pattern === 'col' || pattern === 'strip-col-2') return `${fmtM(norm(du))} across the columns`;
-    return `${fmtM(norm(dv))} across the rows`;
-  }, [patternOrigin, optimizePlacement, pattern, stripWidth, spacing]);
 
   const sim = useMemo(
     () => (simOn && renderGrid && patternOrigin ? simulateField(renderGrid, patternOrigin.origin, layout, sensor) : null),
@@ -180,7 +186,7 @@ export function useSimulation({ aoi, aoiPoly, gridApi, exp, simOn }: {
     ? 'needs an area'
     : `${cropA.name} × ${cropB.name} · ${stripWidth} m ${PATTERNS.find(p => p.id === pattern)?.label.toLowerCase() ?? ''}`;
 
-  return { patternOrigin, placementShift, sim, ndviSeries, simStyle, fieldOutlineStyle, simGeojson, simSummary };
+  return { patternOrigin, sim, ndviSeries, simStyle, fieldOutlineStyle, simGeojson, simSummary };
 }
 
 /** The PCA — always over the FIELD, never the viewport — plus the resolution sweep. */
@@ -269,11 +275,11 @@ export function usePcaSim({ aoi, aoiPoly, gridApi, exp, patternOrigin, activeSte
   const [sweepAligned, setSweepAligned] = useState<SweepStep[] | null>(null);
   const [sweepBusy, setSweepBusy] = useState(false);
   /**
-   * One resolution ladder at a GIVEN rotation. Parameterised rather than reading
-   * `rotation` directly so the same code can produce the comparison run at 0°.
-   * Synchronous and pure — the callers own the busy flags and the deferral.
+   * ONE resolution of the ladder at a GIVEN rotation — the unit the sweep is split
+   * into. Parameterised by rotation so the comparison at 0° runs the identical code.
+   * Pure and synchronous (~15-50 ms, much less once the placement is cached).
    */
-  const sweepAt = useCallback((rotationDeg: number): SweepStep[] | null => {
+  const stepAt = useCallback((rotationDeg: number, r: number): SweepStep | null => {
     if (!aoi || !build?.epsg) return null;
     const epsg = build.epsg;
     const layoutL: SimLayout = { pattern, width: stripWidth, spacing, rotationDeg };
@@ -283,32 +289,50 @@ export function usePcaSim({ aoi, aoiPoly, gridApi, exp, patternOrigin, activeSte
     const fieldMin = Math.min(maxE - minE, maxN - minN);
     const base = aoiUtmOrigin(aoi, epsg);
     const t = (rotationDeg * Math.PI) / 180, cos = Math.cos(t), sin = Math.sin(t);
-    return RES_LADDER.map(r => {
-      // Each size gets its own purity-optimal placement (matches the map when picked).
-      let ox = base[0], oy = base[1];
-      if (optimizePlacement) {
-        const [du, dv] = bestPhaseOffset(pattern, r, stripWidth, spacing, threshold / 100, base[0], base[1]);
-        ox = base[0] + du * cos - dv * sin; oy = base[1] + du * sin + dv * cos;
-      }
-      const sizeM = Math.min(fieldMin, Math.max(r * 40, 20)); // ~40 px/side, bounded by the field
-      const p = simulatePatch(cx - sizeM / 2, cy - sizeM / 2, sizeM, r, ox, oy, layoutL, sensorL);
-      return { res: r, proportionA: p.proportionA, proportionBare: p.proportionBare, purePct: p.purePct };
-    });
+    // Each size gets its own purity-optimal placement (matches the map when picked).
+    let ox = base[0], oy = base[1];
+    if (optimizePlacement) {
+      const [du, dv] = bestPhaseOffset(pattern, r, stripWidth, spacing, threshold / 100, base[0], base[1]);
+      ox = base[0] + du * cos - dv * sin; oy = base[1] + du * sin + dv * cos;
+    }
+    const sizeM = Math.min(fieldMin, Math.max(r * 40, 20)); // ~40 px/side, bounded by the field
+    const p = simulatePatch(cx - sizeM / 2, cy - sizeM / 2, sizeM, r, ox, oy, layoutL, sensorL);
+    return { res: r, proportionA: p.proportionA, proportionBare: p.proportionBare, purePct: p.purePct };
   }, [aoi, build?.epsg, pattern, stripWidth, spacing, optimizePlacement, sigmaX, sigmaY, threshold]);
+
+  // Bumped by every new run and every cancellation. A chunk that finds it changed
+  // stops without writing, so a stale ladder can never land after a newer one.
+  const sweepGen = useRef(0);
 
   const runSweep = useCallback(() => {
     if (!aoi || !build?.epsg) return;
+    const gen = ++sweepGen.current;
     setSweepBusy(true);
-    // Defer so the "Computing…" state paints before the synchronous crunch.
-    setTimeout(() => {
-      setSweep(sweepAt(rotation));
-      // The comparison run: the same design with the strips laid along the pixel
-      // rows. Only computed while the user is asking for it, and pointless at 0°
-      // where it would be the identical ladder.
-      setSweepAligned(compareAligned && rotation !== 0 ? sweepAt(0) : null);
+    // The comparison run: the same design with the strips along the pixel rows.
+    // Only computed while the user asks for it, and pointless at 0°.
+    const wantAligned = compareAligned && rotation !== 0;
+    const jobs: [number, number, 0 | 1][] = [
+      ...RES_LADDER.map(r => [rotation, r, 0] as [number, number, 0]),
+      ...(wantAligned ? RES_LADDER.map(r => [0, r, 1] as [number, number, 1]) : []),
+    ];
+    const cur: SweepStep[] = [], al: SweepStep[] = [];
+    let i = 0;
+    // One resolution per task, yielding to the browser in between. The whole
+    // ladder used to run as ONE task (~0.5 s, ~0.9 s with "vs aligned"), during
+    // which the page could not even echo a keystroke. The result is still
+    // committed once at the end, so the panels never show a half-updated ladder.
+    const next = () => {
+      if (gen !== sweepGen.current) return;
+      const [rot, r, which] = jobs[i++];
+      const step = stepAt(rot, r);
+      if (step) (which ? al : cur).push(step);
+      if (i < jobs.length) { setTimeout(next, 0); return; }
+      setSweep(cur);
+      setSweepAligned(wantAligned ? al : null);
       setSweepBusy(false);
-    }, 30);
-  }, [aoi, build?.epsg, rotation, compareAligned, sweepAt]);
+    };
+    setTimeout(next, 30);
+  }, [aoi, build?.epsg, rotation, compareAligned, stepAt]);
   // Auto-recompute whenever an input that feeds the sweep changes — no button click
   // needed. Debounced so dragging a slider doesn't refit on every frame. Only while
   // the PCA step is open (nothing else shows the sweep). The crop / noise params only
@@ -316,7 +340,13 @@ export function usePcaSim({ aoi, aoiPoly, gridApi, exp, patternOrigin, activeSte
   useEffect(() => {
     if (activeStep !== 'pca') return;
     const id = setTimeout(runSweep, 250);
-    return () => clearTimeout(id);
+    return () => {
+      clearTimeout(id);
+      // Inputs changed (or the step closed): abandon any ladder still being built
+      // from the old inputs rather than letting it finish and flash stale results.
+      sweepGen.current++;
+      setSweepBusy(false);
+    };
   }, [activeStep, runSweep]);
 
   const pcaSubsampled = !grid && !!pcaGrid; // PCA ran on a central subsample, not the whole field

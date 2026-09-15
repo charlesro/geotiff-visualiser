@@ -112,7 +112,7 @@ function CropControl({ label, crop, preset, swatchColor, onCrop, onPreset, onCol
           {CROP_PRESETS.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
           {preset === 'custom' && <option value="custom">Custom</option>}
         </select>
-        <button onClick={() => setOpen(o => !o)} title="Edit the growth (truth) curve"
+        <button onClick={() => setOpen(o => !o)} title="Edit the growth curve"
           className={`rounded-md border px-2 text-xs ${open ? 'border-sky-500 bg-sky-500/15 text-sky-300' : 'border-white/10 bg-neutral-800 text-neutral-300 hover:bg-neutral-700'}`}>
           curve ▾
         </button>

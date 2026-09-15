@@ -24,11 +24,13 @@ import type { Experiment, useSimulation, usePcaSim } from './use-simulation';
  * this whole tree.
  */
 export function FieldMap({
-  mapRef, initialCenter, basemap, setBasemap, showField, setShowField, showPsf, setShowPsf,
+  mapRef, initialCenter, initialZoom, onView, basemap, setBasemap, showField, setShowField, showPsf, setShowPsf,
   fieldOnly, setFieldOnly, simOn, geoKey, area, gridApi, exp, sim, pca,
 }: {
   mapRef: React.MutableRefObject<L.Map | null>;
   initialCenter: [number, number];
+  initialZoom: number;
+  onView: (center: [number, number], zoom: number) => void;
   basemap: BasemapKey; setBasemap: (b: BasemapKey) => void;
   showField: boolean; setShowField: (v: boolean | ((p: boolean) => boolean)) => void;
   showPsf: boolean; setShowPsf: (v: boolean | ((p: boolean) => boolean)) => void;
@@ -51,7 +53,7 @@ export function FieldMap({
         <MapContainer
           ref={mapRef}
           center={initialCenter}
-          zoom={16}
+          zoom={initialZoom}
           maxZoom={23}
           preferCanvas
           style={{ height: '100%', width: '100%' }}
@@ -67,7 +69,7 @@ export function FieldMap({
             maxNativeZoom={basemap === 'satellite' ? 18 : basemap === 'dark' ? 16 : 19}
           />
           <ScaleControl position="bottomleft" />
-          <ViewTracker onChange={setViewBounds} />
+          <ViewTracker onChange={setViewBounds} onView={onView} />
           <RectDrawer active={drawKind === 'rect'} onDone={onDrawDone} />
           <PolyDrawer active={drawKind === 'poly'} onDone={onPolyDone} />
           {aoi && !drawMode && (
@@ -134,7 +136,7 @@ export function FieldMap({
         <button
           onClick={() => setShowField(v => !v)}
           disabled={!build}
-          title="Show the field as it really is — the planting pattern under the pixel grid"
+          title="Show the planting pattern under the grid"
           className={`absolute right-3 top-12 z-[1000] rounded-md border px-3 py-1.5 text-xs backdrop-blur transition-colors disabled:opacity-40 ${
             showField ? 'border-sky-400/70 bg-[#11151acc] text-sky-300' : 'border-white/10 bg-[#11151acc] text-slate-300 hover:text-slate-100'
           }`}
@@ -147,7 +149,7 @@ export function FieldMap({
           onClick={() => setFieldOnly(v => !v)}
           disabled={!build || !fieldGeojson}
           title={fieldGeojson
-            ? 'Show only the pixels whose centre falls inside the traced field — what the shapefile contains'
+            ? 'Show only the exported pixels (centred inside the field)'
             : 'Trace a field shape in step 1 to use this'}
           className={`absolute right-3 top-[5.25rem] z-[1000] rounded-md border px-3 py-1.5 text-xs backdrop-blur transition-colors disabled:opacity-40 ${
             fieldOnly ? 'border-sky-400/70 bg-[#11151acc] text-sky-300' : 'border-white/10 bg-[#11151acc] text-slate-300 hover:text-slate-100'
@@ -160,7 +162,7 @@ export function FieldMap({
         <button
           onClick={() => setShowPsf(v => !v)}
           disabled={!build || psfSigmaM <= 0}
-          title="Draw the sensor's blur footprint (PSF) on the ground, to scale with the pixels"
+          title="Show the sensor's blur footprint to scale"
           className={`absolute right-3 top-[7.5rem] z-[1000] rounded-md border px-3 py-1.5 text-xs backdrop-blur transition-colors disabled:opacity-40 ${
             showPsf ? 'border-sky-400/70 bg-[#11151acc] text-sky-300' : 'border-white/10 bg-[#11151acc] text-slate-300 hover:text-slate-100'
           }`}

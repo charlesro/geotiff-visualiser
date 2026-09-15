@@ -38,7 +38,7 @@ export interface DrMethodInfo {
 }
 
 export const DR_METHODS: DrMethodInfo[] = [
-  { id: 'pca', label: 'PCA', nonlinear: false, blurb: 'Linear, ordered by variance. Honest distances — the default.' },
+  { id: 'pca', label: 'PCA', nonlinear: false, blurb: 'Linear, ordered by variance. Honest distances. The default.' },
   {
     id: 'whitened',
     label: 'Whitened PCA',
@@ -49,7 +49,7 @@ export const DR_METHODS: DrMethodInfo[] = [
     id: 'ica',
     label: 'ICA (FastICA)',
     nonlinear: false,
-    blurb: 'Independent components — separates statistically independent signals instead of maximizing variance.',
+    blurb: 'Independent components: separates statistically independent signals instead of maximizing variance.',
   },
   {
     id: 'mnf',
@@ -62,31 +62,31 @@ export const DR_METHODS: DrMethodInfo[] = [
     id: 'random',
     label: 'Random projection',
     nonlinear: false,
-    blurb: 'A random linear projection — a baseline to judge the structured methods against.',
+    blurb: 'A random linear projection, a baseline to judge the structured methods against.',
   },
   {
     id: 'kpca',
     label: 'Kernel PCA (RBF)',
     nonlinear: true,
-    blurb: 'Nonlinear PCA through an RBF kernel — can unfold curved structure. Computed on a subsample.',
+    blurb: 'Nonlinear PCA through an RBF kernel. Can unfold curved structure. Computed on a subsample.',
   },
   {
     id: 'isomap',
     label: 'Isomap',
     nonlinear: true,
-    blurb: 'Geodesic MDS on a kNN graph — unrolls a curved manifold (the PCA arch) into a straight gradient. Subsample.',
+    blurb: 'Geodesic MDS on a kNN graph. Unrolls a curved manifold (the PCA arch) into a straight gradient. Subsample.',
   },
   {
     id: 'diffusion',
     label: 'Diffusion map',
     nonlinear: true,
-    blurb: 'Embeds by diffusion distance on an affinity graph — robust on smooth gradients. Subsample.',
+    blurb: 'Embeds by diffusion distance on an affinity graph. Robust on smooth gradients. Subsample.',
   },
   {
     id: 'tsne',
     label: 't-SNE',
     nonlinear: true,
-    blurb: 'Local-structure embedding — tidy clusters, but distances and gaps are NOT metric (don’t threshold boundaries on it). Subsample.',
+    blurb: 'Local-structure embedding: tidy clusters, but distances and gaps are NOT metric (don’t threshold boundaries on it). Subsample.',
   },
 ];
 

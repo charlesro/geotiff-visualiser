@@ -91,7 +91,7 @@ export function AreaStep(p: StepProps) {
             </button>
             {defaultSaved && (
               <>
-                <span className="text-neutral-400/90">saved · loads on reload</span>
+                <span className="text-neutral-400/90">pinned · Reset returns here</span>
                 <button onClick={clearDefaultField} className="text-neutral-500 underline decoration-dotted hover:text-neutral-300">clear</button>
               </>
             )}

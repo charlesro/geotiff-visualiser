@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { Disclosure, Explain, InfoDot, Step, Spinner } from '../ui';
 import { CropPair, LayoutFields, LayoutSelect, SELECT } from './controls';
 import { fmt } from '../util';
@@ -20,12 +21,14 @@ export function PcaStep(p: StepProps) {
   const { pcaBusy, pcaView, pcaSubsampled, setSelectedPixels, sweep, sweepBusy } = p.pca;
   const { pcaRetuneOpen, setPcaRetuneOpen, compareAligned, setCompareAligned } = p;
   const { sweepAligned } = p.pca;
+  // A fresh array every render would defeat PcaSweep's memo; keyed on the angle only.
+  const pairLabels = useMemo<[string, string]>(() => [`at ${rotation}° · your design`, 'at 0° · rows along the pixels'], [rotation]);
 
   const compareBtn = (
     <button type="button" onClick={() => setCompareAligned(v => !v)} disabled={rotation === 0}
       title={rotation === 0
-        ? 'Rows already run along the pixels — there is nothing to compare'
-        : 'Show the resolution ladder twice: at this rotation and with the rows laid along the pixels'}
+        ? 'Already aligned with the pixels'
+        : 'Compare with rows aligned to the pixels'}
       className={`ml-auto rounded px-1.5 py-0.5 text-[10px] font-normal normal-case tracking-normal transition-colors disabled:opacity-30 ${compareAligned ? 'bg-sky-500/15 text-sky-300' : 'text-neutral-500 hover:text-neutral-300'}`}>
       vs aligned
     </button>
@@ -41,7 +44,7 @@ export function PcaStep(p: StepProps) {
               onSelect={setSelectedPixels} busy={pcaBusy} />
             {pcaSubsampled && (
               <p className="text-[11px] leading-snug text-neutral-500">
-                Computed on a representative {fmt(pcaView.sim.total)}-pixel central subsample — the field is too fine to draw in full.
+                Computed on a representative {fmt(pcaView.sim.total)}-pixel central subsample, as the field is too fine to draw in full.
               </p>
             )}
 
@@ -49,29 +52,25 @@ export function PcaStep(p: StepProps) {
               <div className="mb-2 flex items-center justify-between gap-2">
                 <span className="flex items-center gap-1.5 text-[11px] text-neutral-400">
                   Across resolutions
-                  <Explain text={<>Each panel is an independent PCA of the field&rsquo;s pixels at that size (% = pure single-crop pixels); watch the two crop clusters merge as the sensor coarsens. <span className="text-neutral-300">Click a panel</span> to render the field at that resolution on the map.</>}><InfoDot /></Explain>
+                  <Explain text={<>One PCA per pixel size (% = pure pixels); click a panel to show that size on the map.</>}><InfoDot /></Explain>
                 </span>
                 <span className="flex items-center gap-1.5 text-[11px] text-neutral-500">
-                  {sweepBusy ? <><Spinner className="h-3 w-3" /> <span className="text-sky-300">Updating…</span></> : `${RES_LADDER[0]}–${RES_LADDER[RES_LADDER.length - 1]} m · live`}
+                  {sweepBusy && <><Spinner className="h-3 w-3" /> <span className="text-sky-300">Updating…</span></>}
                 </span>
               </div>
               {sweep ? (
                 sweepAligned ? (
-                  // Same ladder twice, stacked and labelled, so the rows line up
-                  // size-for-size and the only difference is the strip angle.
+                  // One row per resolution: your design on the left, the same design
+                  // with the rows along the pixels on the right — so 0.5 m sits next
+                  // to 0.5 m, 1 m next to 1 m, and only the angle differs in a pair.
                   <div className="space-y-2">
-                    <div>
-                      <p className="mb-1 text-[10px] uppercase tracking-wide text-sky-300/80">at {rotation}° — your design</p>
-                      <PcaSweep steps={sweep} cropA={cropAd} cropB={cropBd} magnitude={magnitude} activeRes={build?.res} onPick={pickRes} />
-                    </div>
-                    <div>
-                      <p className="mb-1 text-[10px] uppercase tracking-wide text-neutral-500">at 0° — rows along the pixels</p>
-                      <PcaSweep steps={sweepAligned} cropA={cropAd} cropB={cropBd} magnitude={magnitude} activeRes={build?.res} onPick={pickRes} />
-                    </div>
+                    <PcaSweep steps={sweep} pairWith={sweepAligned}
+                      pairLabels={pairLabels}
+                      cropA={cropAd} cropB={cropBd} magnitude={magnitude} activeRes={build?.res} onPick={pickRes} />
                     <p className="text-[11px] leading-snug text-neutral-500">
                       Pure pixels at {RES_LADDER[0]} m: <span className="font-mono text-sky-300">{sweep[0].purePct.toFixed(0)}%</span> rotated
                       vs <span className="font-mono text-neutral-300">{sweepAligned[0].purePct.toFixed(0)}%</span> aligned.
-                      Rotating away from the pixel rows costs purity at every size — this is how much.
+                      Rotating away from the pixel rows costs purity at every size. This is how much.
                     </p>
                   </div>
                 ) : (
@@ -81,7 +80,7 @@ export function PcaStep(p: StepProps) {
             </div>
 
             <Disclosure
-              label={`Retune design — ${cropA.name} × ${cropB.name} · ${stripWidth} m strips · ${rotation}°`}
+              label={`Retune design: ${cropA.name} × ${cropB.name} · ${stripWidth} m strips · ${rotation}°`}
               open={pcaRetuneOpen} onToggle={() => setPcaRetuneOpen(v => !v)}>
               <div className="grid grid-cols-2 gap-2">
                 <div>
@@ -90,7 +89,7 @@ export function PcaStep(p: StepProps) {
                     {[FIXED, TASK].map(g => (
                       <optgroup key={g} label={g}>
                         {SOURCES.filter(s => s.group === g).map(s => (
-                          <option key={s.id} value={s.id}>{s.provider}{s.resLabel !== '—' ? ` · ${s.resLabel}` : ''}</option>
+                          <option key={s.id} value={s.id}>{s.provider}{s.resLabel ? ` · ${s.resLabel}` : ''}</option>
                         ))}
                       </optgroup>
                     ))}

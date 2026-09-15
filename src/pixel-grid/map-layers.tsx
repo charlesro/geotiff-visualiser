@@ -26,19 +26,19 @@ const BASEMAPS = {
   dark: {
     label: 'Dark',
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
-    attribution: 'Tiles © Esri — Esri, HERE, Garmin, © OpenStreetMap contributors',
+    attribution: 'Tiles © Esri · Esri, HERE, Garmin, © OpenStreetMap contributors',
     light: false,
   },
   satellite: {
     label: 'Satellite',
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-    attribution: 'Tiles © Esri — Source: Esri, Maxar, Earthstar Geographics',
+    attribution: 'Tiles © Esri · Source: Esri, Maxar, Earthstar Geographics',
     light: false,
   },
   topo: {
     label: 'Topo',
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
-    attribution: 'Tiles © Esri — Source: Esri, HERE, Garmin, FAO, NOAA',
+    attribution: 'Tiles © Esri · Source: Esri, HERE, Garmin, FAO, NOAA',
     light: true,
   },
   streets: {
@@ -352,8 +352,17 @@ function PolyDrawer({ active, onDone }: { active: boolean; onDone: (pts: Poly) =
 
 
 /** Reports the current map viewport (WGS84 bounds) so a too-fine grid can be clipped to it. */
-function ViewTracker({ onChange }: { onChange: (b: LngLatBounds) => void }) {
-  const emit = (map: L.Map) => { const b = map.getBounds(); onChange([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]); };
+function ViewTracker({ onChange, onView }: {
+  onChange: (b: LngLatBounds) => void;
+  /** Also report centre + zoom, so the page can reopen exactly where it was left. */
+  onView?: (center: [number, number], zoom: number) => void;
+}) {
+  const emit = (map: L.Map) => {
+    const b = map.getBounds();
+    onChange([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]);
+    const c = map.getCenter();
+    onView?.([c.lat, c.lng], map.getZoom());
+  };
   const map = useMapEvents({ moveend: () => emit(map), zoomend: () => emit(map) });
   useEffect(() => { emit(map); }, []);
   return null;

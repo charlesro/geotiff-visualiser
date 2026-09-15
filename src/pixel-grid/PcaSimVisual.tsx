@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useTransition } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, useTransition } from 'react';
 import {
   ScatterChart, Scatter, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer, Symbols,
   BarChart, Bar, LineChart, Line,
@@ -8,6 +8,7 @@ import {
   type FieldParams, type FieldSim,
 } from './simulate';
 import { embed, DR_METHODS, type DrMethod } from '../lib/projections';
+import { oneOf, usePersistentState } from './persist';
 
 /**
  * PCA of the grid cells, with the full scatter toolset: pick the DR method, the
@@ -50,24 +51,28 @@ const selectClass = 'rounded-md border border-white/10 bg-neutral-900 px-2 py-1 
 
 const PURE_T = 80; // % of one crop for the pure/mixed colour & shape encodings
 
-export default function PcaSimVisual({ sim, cropA, cropB, magnitude, onSelect, busy }: {
+function PcaSimVisual({ sim, cropA, cropB, magnitude, onSelect, busy }: {
   sim: FieldSim; cropA: FieldParams; cropB: FieldParams; magnitude: number;
   /** Report the pixel indices selected in the scatter (click / lasso) → map highlight. */
   onSelect?: (indices: number[]) => void;
   /** True while the parent is recomputing the simulation → show a spinner. */
   busy?: boolean;
 }) {
-  const [tab, setTab] = useState<'scatter' | 'variance' | 'loadings'>('scatter');
-  const [method, setMethodState] = useState<DrMethod>('pca');
+  // The chart's own view settings survive a refresh too; selection and lasso are
+  // momentary and deliberately do not.
+  const [tab, setTab] = usePersistentState<'scatter' | 'variance' | 'loadings'>('pcaTab', 'scatter', oneOf('scatter', 'variance', 'loadings'));
+  // Validated against the real list: an unknown method would make embed() throw.
+  const [method, setMethodState] = usePersistentState<DrMethod>('pcaMethod', 'pca', v => DR_METHODS.some(m => m.id === v));
   const [pending, startTransition] = useTransition();
   // Switching the DR method re-embeds (slow for the nonlinear ones) — run it as a
   // transition so the spinner shows and the old chart stays until it's ready.
   const setMethod = (m: DrMethod) => startTransition(() => setMethodState(m));
   const working = !!busy || pending;
-  const [pcX, setPcX] = useState(0);
-  const [pcY, setPcY] = useState(1);
-  const [colorBy, setColorBy] = useState<ColorBy>('mixing');
-  const [shapeBy, setShapeBy] = useState<ShapeBy>('species');
+  const isAxis = (v: unknown) => Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 2; // 3 components are computed
+  const [pcX, setPcX] = usePersistentState('pcaX', 0, isAxis);
+  const [pcY, setPcY] = usePersistentState('pcaY', 1, isAxis);
+  const [colorBy, setColorBy] = usePersistentState<ColorBy>('pcaColorBy', 'mixing', oneOf('mixing', 'species', 'purity'));
+  const [shapeBy, setShapeBy] = usePersistentState<ShapeBy>('pcaShapeBy', 'species', oneOf('species', 'purity', 'none'));
   // Pixel selection (→ highlighted on the map). Click one, or lasso many.
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [lassoOn, setLassoOn] = useState(false);
@@ -337,3 +342,9 @@ export default function PcaSimVisual({ sim, cropA, cropB, magnitude, onSelect, b
     </>
   );
 }
+
+// Memoised: it only needs to redraw when its own data changes. A parameter change
+// re-renders the whole page, and redrawing ~700 interactive dots each time cost
+// hundreds of milliseconds. Its props are kept stable upstream (pcaView,
+// cropAd/cropBd, the setSelectedPixels setter).
+export default memo(PcaSimVisual);

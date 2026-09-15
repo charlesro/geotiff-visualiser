@@ -1,5 +1,5 @@
 /**
- * Regression suite for the Sentinel-2 Pixel Grid Designer's pure modules —
+ * Regression suite for the Pixel Grid Designer's pure modules —
  * run with `npm run test:pixel-grid`.
  *
  * The tool itself (src/pixel-grid/PixelGridApp.tsx) is one big component that
@@ -201,7 +201,7 @@ console.log('\nE. the cell cap and the viewport clip');
   const capped = buildS2Grid(AOI, { res: 10, maxCells: 10 });
   ok('over the cap no grid is built, but the count is still reported',
     capped.grid === null && capped.capped === true && capped.cellCount === full.cellCount, `${capped.cellCount}`);
-  ok('and the extent is still returned, so the gdalwarp recipe still works',
+  ok('and the extent is still returned when the grid is capped',
     capped.utmBounds.join(',') === full.utmBounds.join(','));
   ok('a grid under the cap is not flagged', full.capped === false && full.grid !== null);
 

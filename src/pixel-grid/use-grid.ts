@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { saveAs } from 'file-saver';
 import proj4 from 'proj4';
 import { crsToProj4Def } from '../lib/geo';
@@ -19,6 +19,7 @@ import { gridToShapefileZip } from './shapefile';
 import { cellCenter, pointInPoly, polyAreaHa, type Poly } from './geometry';
 import { fmt } from './util';
 import { SOURCES } from './sensors';
+import { inRange, oneOf, usePersistentState } from './persist';
 
 /**
  * Step 2: which satellite, and therefore exactly where its pixels fall.
@@ -33,8 +34,7 @@ import { SOURCES } from './sensors';
  *    returned as plain scalars and passed INTO the simulation hooks.
  *  - `viewBounds` is owned here even though the MAP reports it, because
  *    `renderGrid` clips to it. One owner keeps the map -> grid -> map cycle sane.
- *  - `onDownload` and the gdalwarp `recipe` are here because both are pure
- *    functions of the built grid.
+ *  - `onDownload` is here because it is a pure function of the built grid.
  *
  * The three `[sourceId]`-keyed effects must stay in THIS order (sigma reset, GSD
  * seed, catalog fetch); `pickRes` deliberately races the GSD-seed effect, which
@@ -42,27 +42,40 @@ import { SOURCES } from './sensors';
  * behaviour, pinned here rather than fixed.
  */
 export function useFieldGrid({ aoi, aoiPoly }: { aoi: LngLatBounds | null; aoiPoly: Poly | null }) {
-  const [sourceId, setSourceId] = useState('s2-10');
-  const [gsd, setGsd] = useState(1);
-  const [customAnchor, setCustomAnchor] = useState<'utm' | 'plot'>('utm');
+  const [sourceId, setSourceId] = usePersistentState('sourceId', 's2-10', v => typeof v === 'string' && SOURCES.some(s => s.id === v));
+  const [gsd, setGsd] = usePersistentState('gsd', 1, inRange(0.01, 1000));
+  const [customAnchor, setCustomAnchor] = usePersistentState<'utm' | 'plot'>('customAnchor', 'utm', oneOf('utm', 'plot'));
   const [viewBounds, setViewBounds] = useState<LngLatBounds | null>(null);
-  const [sigmaX, setSigmaX] = useState(() => SOURCES.find(s => s.id === 's2-10')!.psf);
-  const [sigmaY, setSigmaY] = useState(() => SOURCES.find(s => s.id === 's2-10')!.psf);
+  const [sigmaX, setSigmaX] = usePersistentState('sigmaX', () => SOURCES.find(s => s.id === 's2-10')!.psf, inRange(0, 5));
+  const [sigmaY, setSigmaY] = usePersistentState('sigmaY', () => SOURCES.find(s => s.id === 's2-10')!.psf, inRange(0, 5));
 
   const source = SOURCES.find(s => s.id === sourceId)!;
 
   // Load each satellite's realistic default PSF (σ, from its published MTF) when it's
   // picked — the user can still override σx/σy afterwards.
-  useEffect(() => { setSigmaX(source.psf); setSigmaY(source.psf); }, [sourceId]);
+  // Only when the satellite actually CHANGES — not on first render, where σ may
+  // have just been restored from the last session and would be overwritten the
+  // instant the page loaded.
+  const sigmaSource = useRef(sourceId);
+  useEffect(() => {
+    if (sigmaSource.current === sourceId) return;
+    sigmaSource.current = sourceId;
+    setSigmaX(source.psf); setSigmaY(source.psf);
+  }, [sourceId]);
 
   // Authoritative grid lookup against the product catalog, per source.
   const [grids, setGrids] = useState<CoveringGrid[] | null>(null);
   const [gridState, setGridState] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle');
-  const [selectedGridKey, setSelectedGridKey] = useState<string | null>(null);
+  const [selectedGridKey, setSelectedGridKey] = usePersistentState<string | null>('gridKey', null, v => v === null || typeof v === 'string');
 
 
   // Switching to a commercial source seeds the GSD with its typical value.
-  useEffect(() => { if (source.kind === 'custom' && source.res > 0) setGsd(source.res); }, [sourceId]);
+  const gsdSource = useRef(sourceId);
+  useEffect(() => {
+    if (gsdSource.current === sourceId) return; // same guard: keep a restored GSD
+    gsdSource.current = sourceId;
+    if (source.kind === 'custom' && source.res > 0) setGsd(source.res);
+  }, [sourceId]);
 
   // For catalog sources, identify the real grid(s) covering the area.
   useEffect(() => {
@@ -79,7 +92,9 @@ export function useFieldGrid({ aoi, aoiPoly }: { aoi: LngLatBounds | null; aoiPo
         setGridState(found.length ? 'ok' : 'error');
         const auto = utmZoneForLng((aoi[0] + aoi[2]) / 2);
         const pick = found.find(g => zoneFromEpsg(g.epsg) === auto) ?? found[0];
-        setSelectedGridKey(pick?.label ?? null);
+        // Keep the choice — restored, or made before a redraw — whenever it is still
+        // one of the grids covering this area; only otherwise take the default.
+        setSelectedGridKey(prev => (prev && found.some(g => g.label === prev) ? prev : pick?.label ?? null));
       })
       .catch(() => { if (!ctrl.signal.aborted) { setGridState('error'); setGrids(null); } });
     return () => ctrl.abort();
@@ -156,7 +171,9 @@ export function useFieldGrid({ aoi, aoiPoly }: { aoi: LngLatBounds | null; aoiPo
   }, [build?.utmBounds, build?.epsg, build?.res, viewBounds]);
 
   // Click a sweep panel → show the field at that pixel size (a custom grid @ res).
-  const pickRes = (r: number) => { setSourceId('custom'); setGsd(r); };
+  // Stable identity: it is handed to the memoised PcaSweep, which would otherwise
+  // redraw on every render just because a fresh function arrived.
+  const pickRes = useCallback((r: number) => { setSourceId('custom'); setGsd(r); }, []);
 
   const onDownload = () => {
     if (!grid) return;
@@ -204,8 +221,12 @@ export function useFieldGrid({ aoi, aoiPoly }: { aoi: LngLatBounds | null; aoiPo
         ny: Math.round((grid.utmBounds[3] - grid.utmBounds[1]) / grid.res),
       }
     : null;
-  const areaHa = build ? (build.cellCount * pxSize * pxSize) / 10_000 : 0; // bounding-box area
-  const fieldAreaHa = aoiPoly ? polyAreaHa(aoiPoly) : areaHa; // the traced field (or the box)
+  const areaHa = build ? (build.cellCount * pxSize * pxSize) / 10_000 : 0; // pixels covering the box
+  // The traced field, or else the drawn box itself. Not `areaHa`: that counts
+  // every pixel touching the box, edge pixels whole — +15% on a 280 × 330 m box.
+  const fieldAreaHa = aoiPoly
+    ? polyAreaHa(aoiPoly)
+    : aoi ? polyAreaHa([[aoi[0], aoi[1]], [aoi[2], aoi[1]], [aoi[2], aoi[3]], [aoi[0], aoi[3]]]) : 0;
   /** The same surface in square metres — what the panels display. Hectares stay
    *  internally for the cell-count cap, which is quoted in ha. */
   const fieldAreaM2 = fieldAreaHa * 10_000;
@@ -225,22 +246,6 @@ export function useFieldGrid({ aoi, aoiPoly }: { aoi: LngLatBounds | null; aoiPo
   /** How much the pixels (and any aligned plot) are rotated from true north. */
   const convergence = aoi && build?.epsg ? gridConvergence((aoi[0] + aoi[2]) / 2, (aoi[1] + aoi[3]) / 2, build.epsg) : null;
 
-  // Resampling / ordering recipe for commercial grids (works even when capped).
-  const recipe = source.kind === 'custom' && build?.utmBounds
-    ? (() => {
-        const c = (v: number) => Number(v.toFixed(3)).toString(); // strip float noise
-        const [e0, n0, e1, n1] = build.utmBounds!;
-        const tap = customAnchor === 'utm' ? '-tap ' : '';
-        return {
-          epsg: build.epsg,
-          gsd: build.res,
-          extent: build.utmBounds!,
-          gdalwarp: `gdalwarp -t_srs EPSG:${build.epsg} -tr ${build.res} ${build.res} ${tap}-te ${c(e0)} ${c(n0)} ${c(e1)} ${c(n1)} -r bilinear input.tif output.tif`,
-        };
-      })()
-    : null;
-  const copyRecipe = () => { if (recipe) navigator.clipboard?.writeText(recipe.gdalwarp); };
-
   const gridSummary = !aoi
     ? 'needs an area'
     : grid
@@ -256,5 +261,5 @@ export function useFieldGrid({ aoi, aoiPoly }: { aoi: LngLatBounds | null; aoiPo
            viewBounds, setViewBounds, pxSize, psfSigmaM, psfFwhmM, psfCenter,
            psfSigmaXM, psfSigmaYM, psfFwhmXM, psfFwhmYM, psfAnisotropic,
            dims, areaHa, fieldAreaHa, fieldAreaM2, maxAreaHa, fieldCellCount,
-           gridNoun, nestsS2, convergence, recipe, copyRecipe, onDownload, pickRes, gridSummary };
+           gridNoun, nestsS2, convergence, onDownload, pickRes, gridSummary };
 }

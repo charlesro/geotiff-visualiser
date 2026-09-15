@@ -493,7 +493,30 @@ export function cultureAt(E: number, N: number, layout: SimLayout, ox: number, o
  * pixels; a good heuristic when rotated). Returns [du, dv] in the rotated
  * (along-row u, cross-row v) frame; add it to the pattern origin.
  */
+/**
+ * bestPhaseOffset is pure but costs ~35 ms (192 phases x 400 pixels x 16
+ * sub-samples), and the resolution ladder calls it once per size — twice per size
+ * with "vs aligned", with IDENTICAL arguments, since rotation is not an input.
+ * Results are cached by argument. `threshold` is deliberately left out of the
+ * key: the search maximises continuous coverage and never reads it, so moving the
+ * purity slider reuses every cached placement.
+ */
+const phaseCache = new Map<string, [number, number]>();
+const PHASE_CACHE_MAX = 512;
+
 export function bestPhaseOffset(
+  pattern: PatternType, res: number, width: number, spacing: number, threshold: number, ox0: number, oy0: number,
+): [number, number] {
+  const key = `${pattern}|${res}|${width}|${spacing}|${ox0}|${oy0}`;
+  const hit = phaseCache.get(key);
+  if (hit) return [hit[0], hit[1]]; // a copy: callers must never share the cached tuple
+  const out = searchPhaseOffset(pattern, res, width, spacing, threshold, ox0, oy0);
+  if (phaseCache.size >= PHASE_CACHE_MAX) phaseCache.delete(phaseCache.keys().next().value as string);
+  phaseCache.set(key, out);
+  return [out[0], out[1]];
+}
+
+function searchPhaseOffset(
   pattern: PatternType, res: number, width: number, spacing: number, threshold: number, ox0: number, oy0: number,
 ): [number, number] {
   const W = width, P = width + Math.max(0, spacing);

@@ -28,8 +28,6 @@ export interface StepProps {
    * These live in the SHELL, not in the panels: `Step` renders {open && children},
    * so a collapsed step unmounts its subtree and any state held there is lost.
    */
-  recipeOpen: boolean; setRecipeOpen: (v: boolean | ((p: boolean) => boolean)) => void;
-  simTab: 'ladder' | 'ndvi'; setSimTab: (v: 'ladder' | 'ndvi') => void;
   simAdvOpen: boolean; setSimAdvOpen: (v: boolean | ((p: boolean) => boolean)) => void;
   pcaRetuneOpen: boolean; setPcaRetuneOpen: (v: boolean | ((p: boolean) => boolean)) => void;
   /** Show the resolution ladder twice — at the current rotation and at 0°. */

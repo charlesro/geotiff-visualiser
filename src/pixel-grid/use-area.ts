@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { polyBbox, type Poly } from './geometry';
 import type { LngLatBounds } from './s2-grid';
+import { isLngLat, isNum, usePersistentState } from './persist';
 
 /**
  * Step 1: which field are we looking at, and how did the user say so.
@@ -40,14 +41,19 @@ interface Suggestion {
 export function useAoiField(onDrawComplete: (step: 'grid') => void) {
   const [drawKind, setDrawKind] = useState<null | 'rect' | 'poly'>(null);
   const drawMode = drawKind !== null;
-  const [aoi, setAoi] = useState<LngLatBounds | null>(() => loadDefaultField()?.aoi ?? DEFAULT_AOI);
-  const [aoiPoly, setAoiPoly] = useState<Poly | null>(() => loadDefaultField()?.aoiPoly ?? null); // field shape (null = plain rectangle = aoi)
+  // The CURRENT field comes back on refresh. The pinned default (★) is what a
+  // brand-new browser — or Reset — opens on, and the demo field near Lonzée is
+  // the last resort. `null` is a real saved value: the user cleared the field.
+  const [aoi, setAoi] = usePersistentState<LngLatBounds | null>('aoi', () => loadDefaultField()?.aoi ?? DEFAULT_AOI,
+    v => v === null || (Array.isArray(v) && v.length === 4 && v.every(isNum)));
+  const [aoiPoly, setAoiPoly] = usePersistentState<Poly | null>('aoiPoly', () => loadDefaultField()?.aoiPoly ?? null,
+    v => v === null || (Array.isArray(v) && v.length >= 3 && v.every(isLngLat))); // field shape (null = plain rectangle = aoi)
   const [defaultSaved, setDefaultSaved] = useState<boolean>(() => !!loadDefaultField());
   // Map opens centred on the restored field (only read once, at mount).
   const initialCenter = useMemo<[number, number]>(() => {
-    const f = loadDefaultField()?.aoi ?? DEFAULT_AOI;
+    const f = aoi ?? DEFAULT_AOI; // the restored field, as of the first render
     return [(f[1] + f[3]) / 2, (f[0] + f[2]) / 2];
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // `onDrawComplete` MUST have a stable identity (the shell passes setActiveStep
   // itself, never an inline arrow): RectDrawer and PolyDrawer list `onDone` in
