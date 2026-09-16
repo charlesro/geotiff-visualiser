@@ -138,29 +138,44 @@ function TruthOverlay({ extent, epsg, layout, origin, colorA, colorB, clipPoly }
  * per cell — O(rows+cols) not O(rows×cells), so even a 0.3 m grid draws fast.
  * `box` is the UTM window to draw (the visible part of the field).
  */
-function GridLines({ box, res, epsg, color, weight }: {
+/** Smallest gap between ruled lines, in screen pixels, before they stop being readable. */
+const MIN_LINE_GAP_PX = 6;
+
+function GridLines({ box, res, epsg, color, weight, onStep }: {
   box: [number, number, number, number]; res: number; epsg: number; color: string; weight: number;
+  /** Reports the ruled spacing in metres when it is coarser than one pixel, else 0. */
+  onStep?: (stepM: number) => void;
 }) {
   const map = useMap();
-  const data = useMemo(() => {
-    const [minE, minN, maxE, maxN] = box;
-    const nx = Math.round((maxE - minE) / res), ny = Math.round((maxN - minN) / res);
-    if (nx < 1 || ny < 1 || nx > 1500 || ny > 1500) return null; // too dense to read as lines
-    const inv = proj4(crsToProj4Def(`EPSG:${epsg}`), 'EPSG:4326');
-    const lines: [number, number][][] = [];
-    for (let i = 0; i <= nx; i++) { const E = minE + i * res; lines.push([inv.forward([E, minN]) as [number, number], inv.forward([E, maxN]) as [number, number]]); }
-    for (let j = 0; j <= ny; j++) { const N = minN + j * res; lines.push([inv.forward([minE, N]) as [number, number], inv.forward([maxE, N]) as [number, number]]); }
-    return { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'MultiLineString', coordinates: lines } }] } as GeoJSON.FeatureCollection;
-  }, [box[0], box[1], box[2], box[3], res, epsg]);
-  if (!data) return null;
-  // Scale stroke to the on-screen cell size: keep the line ~⅙ of a cell so the
-  // grid never fills to solid black when zoomed out, and fade it as cells shrink
-  // below a few pixels (where individual cells can't be read anyway).
   const mpp = (156543.03392 * Math.cos((map.getCenter().lat * Math.PI) / 180)) / 2 ** map.getZoom();
   const cellPx = res / mpp;
-  const w = Math.max(0.1, Math.min(weight, cellPx * 0.16));
-  const opacity = Math.max(0.12, Math.min(0.6, cellPx / 5));
-  return <GeoJSON key={`gl-${box.join('_')}-${color}-${w.toFixed(2)}-${opacity.toFixed(2)}`} data={data} style={() => ({ color, weight: w, opacity, interactive: false }) as L.PathOptions} />;
+  // Zoomed out, a 10 m pixel covers a fraction of a screen pixel, and ruling
+  // every edge produced a mesh so faint it read as an empty map. That is the
+  // first thing a freshly drawn area showed. Rule every k-th edge instead, so
+  // the gap on screen stays readable and the lines stay solid. Every line is
+  // still a real pixel edge, and they are anchored to absolute multiples of the
+  // step rather than to the clipped box, so they do not crawl as you pan.
+  const stride = Math.max(1, Math.ceil(MIN_LINE_GAP_PX / Math.max(cellPx, 1e-6)));
+  const step = res * stride;
+  const data = useMemo(() => {
+    const [minE, minN, maxE, maxN] = box;
+    const e0 = Math.ceil(minE / step) * step, n0 = Math.ceil(minN / step) * step;
+    const nx = Math.floor((maxE - e0) / step), ny = Math.floor((maxN - n0) / step);
+    if (nx < 0 || ny < 0 || nx > 1500 || ny > 1500) return null;
+    const inv = proj4(crsToProj4Def(`EPSG:${epsg}`), 'EPSG:4326');
+    const lines: [number, number][][] = [];
+    for (let i = 0; i <= nx; i++) { const E = e0 + i * step; lines.push([inv.forward([E, minN]) as [number, number], inv.forward([E, maxN]) as [number, number]]); }
+    for (let j = 0; j <= ny; j++) { const N = n0 + j * step; lines.push([inv.forward([minE, N]) as [number, number], inv.forward([maxE, N]) as [number, number]]); }
+    return { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'MultiLineString', coordinates: lines } }] } as GeoJSON.FeatureCollection;
+  }, [box[0], box[1], box[2], box[3], step, epsg]);
+  useEffect(() => { onStep?.(stride > 1 ? step : 0); }, [onStep, stride, step]);
+  if (!data) return null;
+  // Stroke and opacity follow the RULED gap, not the pixel size, so a strided
+  // grid is as legible as a close-up one instead of fading away.
+  const gapPx = cellPx * stride;
+  const w = Math.max(0.35, Math.min(weight, gapPx * 0.16));
+  const opacity = Math.max(0.35, Math.min(0.6, gapPx / 5));
+  return <GeoJSON key={`gl-${box.join('_')}-${step}-${color}-${w.toFixed(2)}-${opacity.toFixed(2)}`} data={data} style={() => ({ color, weight: w, opacity, interactive: false }) as L.PathOptions} />;
 }
 
 /**

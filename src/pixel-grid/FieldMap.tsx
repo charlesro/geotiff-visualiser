@@ -1,3 +1,4 @@
+import { useCallback, useState } from 'react';
 import { MapContainer, TileLayer, Rectangle, Polygon, GeoJSON, ScaleControl } from 'react-leaflet';
 import L from 'leaflet';
 import { AOI_STYLE, BASEMAPS, GridLines, PolyDrawer, PsfOverlay, RectDrawer, TruthOverlay, ViewTracker, type BasemapKey } from './map-layers';
@@ -46,6 +47,11 @@ export function FieldMap({
   const { build, geojson, fieldGeojson, lineBox, psfCenter, psfSigmaM, psfSigmaXM, psfSigmaYM, psfFwhmXM, psfFwhmYM, setViewBounds } = gridApi;
   const { layout, spacing, cropA, colB, nameA, nameB } = exp;
   const { patternOrigin, simGeojson, simStyle, fieldOutlineStyle } = sim;
+  // Metres between the ruled lines when the grid is too fine to rule every pixel
+  // edge (0 when every edge is drawn). Named on the map so a coarse mesh is never
+  // read as the pixel grid itself.
+  const [lineStepM, setLineStepM] = useState(0);
+  const onGridStep = useCallback((m: number) => setLineStepM(m), []);
   const { selectedPixels, selectionGeojson } = pca;
 
   return (
@@ -89,7 +95,7 @@ export function FieldMap({
           )}
           {(() => {
             const gridLines = lineBox && build
-              ? <GridLines box={lineBox} res={build.res} epsg={build.epsg} color={BASEMAPS[basemap].light ? '#0f172a' : '#f1f5f9'} weight={0.6} />
+              ? <GridLines box={lineBox} res={build.res} epsg={build.epsg} color={BASEMAPS[basemap].light ? '#0f172a' : '#f1f5f9'} weight={0.6} onStep={onGridStep} />
               : null;
             if (showField) {
               // Per-cell outlines (with not-pure rings) when cells are available;
@@ -195,6 +201,12 @@ export function FieldMap({
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {lineStepM > 0 && (
+          <div className={`pointer-events-none absolute left-2 z-[1000] rounded-md border border-white/10 bg-[#11151a]/85 px-2 py-1 text-[10px] text-slate-300 backdrop-blur ${simOn && simGeojson ? 'bottom-[7.5rem]' : 'bottom-7'}`}>
+            grid ruled every {lineStepM >= 1000 ? `${+(lineStepM / 1000).toFixed(1)} km` : `${Math.round(lineStepM)} m`}, not every pixel
           </div>
         )}
       </div>
