@@ -13,7 +13,7 @@ import type { StepProps } from './props';
 export function GridStep(p: StepProps) {
   const { activeStep, toggleStep, gridSummary } = p;
   const { aoi, aoiPoly } = p.area;
-  const { sourceId, setSourceId, source, gsd, setGsd, customAnchor, setCustomAnchor, sigmaX, setSigmaX, sigmaY, setSigmaY, grids, gridState, selectedGridKey, setSelectedGridKey, build, grid, pxSize, psfSigmaM, psfSigmaXM, psfSigmaYM, psfFwhmXM, psfFwhmYM, psfAnisotropic, dims, fieldAreaM2, maxAreaHa, fieldCellCount, gridNoun, nestsS2, onDownload } = p.gridApi;
+  const { sourceId, setSourceId, source, gsd, setGsd, customAnchor, setCustomAnchor, sigmaX, setSigmaX, sigmaY, setSigmaY, grids, gridState, selectedGridKey, setSelectedGridKey, selectedGrid, build, grid, pxSize, psfSigmaM, psfSigmaXM, psfSigmaYM, psfFwhmXM, psfFwhmYM, psfAnisotropic, dims, fieldAreaM2, maxAreaHa, fieldCellCount, gridNoun, nestsS2, onDownload } = p.gridApi;
 
   const fwhmTxt = psfAnisotropic
     ? `${psfFwhmXM < 10 ? psfFwhmXM.toFixed(1) : Math.round(psfFwhmXM)} × ${psfFwhmYM < 10 ? psfFwhmYM.toFixed(1) : Math.round(psfFwhmYM)}`
@@ -124,7 +124,7 @@ export function GridStep(p: StepProps) {
 
             {/* The ONE place the tile and the CRS are printed. */}
             <p className="mt-1 font-mono text-[11px] text-neutral-500">
-              {source.provider} · {grid.res} m{grid.tile && <> · {grid.tile}</>} · EPSG:{grid.epsg} · {dims.nx} × {dims.ny}{aoiPoly ? ' bbox' : ''}
+              {source.provider} · {grid.res} m{grid.tile && <> · {grid.tile}</>} · EPSG:{grid.epsg} · {dims.nx} × {dims.ny}{aoiPoly ? ' bbox' : ''}{selectedGrid?.catalog && <> · read from {selectedGrid.catalog}</>}
             </p>
 
             <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px]">

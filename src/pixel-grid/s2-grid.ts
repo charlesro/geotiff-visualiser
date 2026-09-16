@@ -292,6 +292,8 @@ export function gridToGeoJson(grid: S2Grid): GeoJSON.FeatureCollection {
 export interface CoveringGrid extends TileAnchor {
   /** Short human label, e.g. "31UFS" (S2/HLS tile) or "31N" (Landsat zone). */
   label: string;
+  /** Which catalog this grid was read from, for the page to name. */
+  catalog?: string;
 }
 
 /**
@@ -312,6 +314,11 @@ export interface SourceConfig {
 
 const MPC_STAC_URL = 'https://planetarycomputer.microsoft.com/api/stac/v1/search';
 export const EARTH_SEARCH_URL = 'https://earth-search.aws.element84.com/v1/search';
+/** Shown on the page so the grid's provenance is never guesswork. */
+const CATALOG_NAMES: Record<string, string> = {
+  [MPC_STAC_URL]: 'Planetary Computer',
+  [EARTH_SEARCH_URL]: 'Earth Search',
+};
 
 const projTransform = (it: any, asset: string | null): number[] | undefined =>
   (asset ? it.assets?.[asset]?.['proj:transform'] : null) ?? it.properties?.['proj:transform'];
@@ -358,7 +365,8 @@ async function searchLattices(
     limit: 100,
     sortby: [{ field: 'properties.datetime', direction: 'desc' }],
   };
-  const r = await fetch(cfg.url ?? MPC_STAC_URL, {
+  const url = cfg.url ?? MPC_STAC_URL;
+  const r = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -378,7 +386,7 @@ async function searchLattices(
     if (!byLattice.has(key)) {
       let label = '';
       try { label = cfg.gridLabel(it) || ''; } catch { /* keep '' */ }
-      byLattice.set(key, { label, epsg, ulx, uly, tile: label });
+      byLattice.set(key, { label, epsg, ulx, uly, tile: label, catalog: CATALOG_NAMES[url] ?? new URL(url).hostname });
     }
   }
   return [...byLattice.values()].sort((a, b) => a.epsg - b.epsg || a.label.localeCompare(b.label));
