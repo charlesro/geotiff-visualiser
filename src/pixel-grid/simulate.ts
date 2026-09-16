@@ -188,7 +188,24 @@ export const cultureForCell = (r: number, c: number, mode: PatternType): number 
 };
 
 /** Bare-soil gap (alley) inserted between strips — a third land cover. */
-export const BARE = { id: 2, color: '#8a7355', ndvi: 0.13 } as const;
+/**
+ * Land-cover sentinels. Species and plot ids are CONTIGUOUS from 0, so the
+ * markers sit at the top of the byte. BARE used to be id 2, which IS the third
+ * species: a four-species design silently painted species three as bare soil,
+ * counted it as bare in the purity totals and gave it bare soil's NDVI in the
+ * PCA. Keep every comparison by symbol, never by the literal.
+ */
+export const MIXED = 255;
+export const BARE = { id: 254, color: '#8a7355', ndvi: 0.13 } as const;
+/**
+ * Ground inside the drawn area but outside a finite trial. NOT the same as an
+ * alley: alley soil really does dilute the pixel a sensor reads, while ground
+ * nobody planted must not drag the headline purity down just because the user
+ * drew a bigger box, so it is excluded from the denominator instead.
+ */
+export const OFF_TRIAL = { id: 253, color: '#3b3b3b', ndvi: BARE.ndvi } as const;
+/** Highest usable species / plot id; everything above is a sentinel. */
+export const MAX_COVER = 252;
 
 export interface AggregateResult {
   rowsAgg: number;
@@ -199,6 +216,66 @@ export interface AggregateResult {
   cropMapProportionA: Float32Array;
   cropMapProportionBare: Float32Array;
   simsGrid: Float64Array[];
+  /**
+   * Per-species composition, present only when the caller passes nSpecies > 0.
+   * `cropMapProportionA` alone is lossy with more than two species: a pixel of
+   * 25% each of four species and one of 25%/75% of two both report 0.25, and
+   * every consumer rebuilds the rest as 1 - pA - pBare. Species s of pixel k is
+   * at cropMapSpecies[k * nSpecies + s].
+   */
+  cropMapSpecies: Float32Array | null;
+  /** Dominant SPECIES index per pixel (not the dominant cover id). */
+  cropMapDominant: Uint8Array | null;
+  /** That species' fraction of all cover in the pixel, alley soil included. */
+  cropMapDominantFrac: Float32Array | null;
+  /** Dominant PLOT id per pixel, so per-plot coverage can be counted. */
+  cropMapDominantPlot: Uint16Array | null;
+  cropMapProportionOffTrial: Float32Array | null;
+}
+
+/** One tally of what a set of pixels covers, shared by every caller. */
+export interface CoverStats {
+  /** Pixels that actually sample the trial (off-trial ones are not counted). */
+  total: number;
+  pureCrop: number;
+  purePct: number;
+  pureBySpecies: Uint32Array;
+  pureBare: number;
+  mixedCount: number;
+  offTrial: number;
+}
+
+/**
+ * Count pure pixels ONCE. This used to be spelled out in three places, each
+ * enumerating `=== 0 / === 1 / === BARE.id`, so a third species fell through
+ * every branch and the headline number silently understated a resolved design.
+ * A pixel counts as pure when its dominant cover clears the threshold that
+ * `aggregate` already applied (anything not MIXED, BARE or OFF_TRIAL).
+ */
+export function coverStats(args: {
+  mixed: Uint8Array;
+  /** Maps a cover id to a species; omit when a cover id IS the species. */
+  coverSpecies?: Uint8Array | null;
+  nSpecies?: number;
+  /** Per-pixel off-trial fraction; a pixel more than half off-trial is skipped. */
+  offTrial?: Float32Array | null;
+}): CoverStats {
+  const { mixed, coverSpecies = null, offTrial = null } = args;
+  const nSp = Math.max(2, args.nSpecies ?? 2);
+  const pureBySpecies = new Uint32Array(nSp);
+  let total = 0, pureCrop = 0, pureBare = 0, mixedCount = 0, off = 0;
+  for (let k = 0; k < mixed.length; k++) {
+    if (offTrial && offTrial[k] > 0.5) { off++; continue; }
+    total++;
+    const id = mixed[k];
+    if (id === MIXED) { mixedCount++; continue; }
+    if (id === BARE.id) { pureBare++; continue; }
+    if (id === OFF_TRIAL.id) { off++; total--; continue; }
+    const s = coverSpecies ? coverSpecies[id] : id;
+    if (s < nSp) pureBySpecies[s]++;
+    pureCrop++;
+  }
+  return { total, pureCrop, purePct: total ? (100 * pureCrop) / total : 0, pureBySpecies, pureBare, mixedCount, offTrial: off };
 }
 
 /**
@@ -217,6 +294,17 @@ export function aggregate(
   rotationDeg: number,
   cropMap: Uint8Array,
   mixThreshold = 0.8,
+  /** PSF centre offset from the pixel centre, in PIXELS (+x east, +y north). */
+  offX = 0,
+  offY = 0,
+  /**
+   * Maps a cover id in `cropMap` to a species index. A block design puts PLOT
+   * ids in the cover map so per-plot coverage can be counted; everything else
+   * leaves this null, where a cover id is already the species.
+   */
+  coverSpecies: Uint8Array | null = null,
+  /** Number of species. 0 (the default) skips the per-species channel entirely. */
+  nSpecies = 0,
 ): AggregateResult {
   const angle = (rotationDeg * Math.PI) / 180;
   const cosA = Math.cos(angle);
@@ -241,6 +329,16 @@ export function aggregate(
   const cropMapMixed = new Uint8Array(rowsAgg * colsAgg);
   const cropMapProportionA = new Float32Array(rowsAgg * colsAgg);
   const cropMapProportionBare = new Float32Array(rowsAgg * colsAgg);
+  // Allocated only when asked for, so the two-species path is unchanged.
+  const nSp = Math.max(0, nSpecies | 0);
+  const cells = rowsAgg * colsAgg;
+  const cropMapSpecies = nSp > 0 ? new Float32Array(cells * nSp) : null;
+  const cropMapDominant = nSp > 0 ? new Uint8Array(cells) : null;
+  const cropMapDominantFrac = nSp > 0 ? new Float32Array(cells) : null;
+  const cropMapDominantPlot = nSp > 0 ? new Uint16Array(cells) : null;
+  const cropMapProportionOffTrial = nSp > 0 ? new Float32Array(cells) : null;
+  /** Per-pixel float64 scratch, allocated once: see the fold below. */
+  const spScratch = nSp > 0 ? new Float64Array(nSp) : null!;
 
   const rCenter = rows / 2;
   const cCenter = cols / 2;
@@ -299,8 +397,11 @@ export function aggregate(
   }
 
   // σ = 0 → no PSF: the window collapses to the pixel itself (sharp sensor).
-  const windowX = Math.max(0, Math.ceil(3 * sigmaX));
-  const windowY = Math.max(0, Math.ceil(3 * sigmaY));
+  // The window follows the OFFSET too: a kernel pushed off centre has its far
+  // tail outside the symmetric window, and clipping it would quietly renormalise
+  // the blur back towards the centre, hiding the very effect being simulated.
+  const windowX = Math.max(0, Math.ceil(3 * sigmaX + Math.abs(offX)));
+  const windowY = Math.max(0, Math.ceil(3 * sigmaY + Math.abs(offY)));
 
   for (let gr = 0; gr < rowsAgg; gr++) {
     for (let gc = 0; gc < colsAgg; gc++) {
@@ -313,8 +414,13 @@ export function aggregate(
         for (let nc = gc - windowX; nc <= gc + windowX; nc++) {
           if (nr >= 0 && nr < rowsAgg && nc >= 0 && nc < colsAgg) {
             const neighbor = idealGrid[nr * colsAgg + nc];
-            const dy = nr - gr;
-            const dx = nc - gc;
+            // Row indices grow NORTHWARD here: buildCropMap fills row r at
+            // N = minN + (r + 0.5) * fineRes. So +offY peaks on the row to the
+            // north, subtracting exactly as +offX does on the east axis. Getting
+            // this backwards mirrors the answer about the pixel centre, which a
+            // symmetric design hides in the purity total.
+            const dy = nr - gr - offY;
+            const dx = nc - gc - offX;
             const weight = Math.exp(-0.5 * ((dx / (sigmaX || 0.5)) ** 2 + (dy / (sigmaY || 0.5)) ** 2));
 
             if (includeOutside || neighbor.hasValidPixels) {
@@ -340,6 +446,40 @@ export function aggregate(
       }
       const isMixed = totalCropWeight > 0 && maxWeight / totalCropWeight < mixThreshold;
 
+      if (cropMapSpecies) {
+        // Fold cover ids into species. Bare and off-trial stay OUT of the
+        // species vector but bare stays IN the denominator, because alley soil
+        // really is part of what the sensor reads. finalCropWeights holds at
+        // most nSpecies + 2 entries, so this is a handful of iterations.
+        const base = idx * nSp;
+        let offW = 0, domPlot = 0xffff, domPlotW = -1;
+        // Accumulate in FLOAT64 and divide before storing. Summing straight into
+        // the Float32Array rounds each partial sum to 32 bits, which left
+        // species 0 a full ULP away from proportionA (line 368 divides once and
+        // stores once). Same maths, one fewer rounding, and this vector feeds
+        // the PCA where the error would compound across the season.
+        spScratch.fill(0, 0, nSp);
+        for (const [coverId, w] of finalCropWeights.entries()) {
+          if (coverId === OFF_TRIAL.id) { offW += w; continue; }
+          if (coverId > MAX_COVER) continue;                 // BARE
+          const s = coverSpecies ? coverSpecies[coverId] : coverId;
+          if (s < nSp) spScratch[s] += w;
+          if (w > domPlotW) { domPlotW = w; domPlot = coverId; }
+        }
+        let domS = 0, domF = 0;
+        if (totalCropWeight > 0) {
+          for (let s = 0; s < nSp; s++) {
+            const f = spScratch[s] / totalCropWeight;
+            cropMapSpecies[base + s] = f;
+            if (f > domF) { domF = f; domS = s; }
+          }
+        }
+        cropMapDominant![idx] = domS;
+        cropMapDominantFrac![idx] = domF;
+        cropMapDominantPlot![idx] = domPlot;
+        cropMapProportionOffTrial![idx] = totalCropWeight > 0 ? offW / totalCropWeight : 0;
+      }
+
       let centerCrop = 0;
       const sRow = gr * g + (g - 1) / 2;
       const sCol = gc * g + (g - 1) / 2;
@@ -353,13 +493,14 @@ export function aggregate(
 
       cropMapCenter[idx] = centerCrop;
       cropMapMajority[idx] = dominantCrop;
-      cropMapMixed[idx] = isMixed ? 255 : dominantCrop;
+      cropMapMixed[idx] = isMixed ? MIXED : dominantCrop;
       cropMapProportionA[idx] = totalCropWeight > 0 ? (finalCropWeights.get(0) || 0) / totalCropWeight : 0;
       cropMapProportionBare[idx] = totalCropWeight > 0 ? (finalCropWeights.get(BARE.id) || 0) / totalCropWeight : 0;
     }
   }
 
-  return { rowsAgg, colsAgg, cropMapMixed, cropMapMajority, cropMapCenter, cropMapProportionA, cropMapProportionBare, simsGrid: outGrid };
+  return { rowsAgg, colsAgg, cropMapMixed, cropMapMajority, cropMapCenter, cropMapProportionA, cropMapProportionBare, simsGrid: outGrid,
+           cropMapSpecies, cropMapDominant, cropMapDominantFrac, cropMapDominantPlot, cropMapProportionOffTrial };
 }
 
 // ===== field driver (repo engine over the real S2 grid) ======================
@@ -395,6 +536,9 @@ function patternCultureUV(u: number, v: number, layout: SimLayout): number {
 export interface SensorParams {
   sigmaX: number;
   sigmaY: number;
+  /** PSF centre offset from the pixel centre, in PIXELS. Optional: 0 = centred. */
+  offX?: number;
+  offY?: number;
   /** Pure when dominant crop fraction ≥ threshold (repo default 0.8). */
   mixThreshold: number;
 }
@@ -458,20 +602,19 @@ export function simulateField(grid: S2Grid, patternOrigin: [number, number], lay
   const rows = ny * g, cols = nx * g;
   const cropMap = buildCropMap(minE, minN, rows, cols, fineRes, patternOrigin[0], patternOrigin[1], layout);
   const simsGrid: Float64Array[] = new Array(rows * cols).fill(EMPTY);
-  const agg = aggregate(simsGrid, rows, cols, g, sensor.sigmaX, sensor.sigmaY, true, 0, cropMap, sensor.mixThreshold);
+  const agg = aggregate(simsGrid, rows, cols, g, sensor.sigmaX, sensor.sigmaY, true, 0, cropMap, sensor.mixThreshold, sensor.offX ?? 0, sensor.offY ?? 0);
 
   const mixed = agg.cropMapMixed;
   const proportionA = agg.cropMapProportionA;
   const proportionBare = agg.cropMapProportionBare;
-  let pureA = 0, pureB = 0, pureBare = 0, sumP = 0;
-  for (let k = 0; k < mixed.length; k++) {
-    sumP += proportionA[k];
-    if (mixed[k] === 0) pureA++;
-    else if (mixed[k] === 1) pureB++;
-    else if (mixed[k] === BARE.id) pureBare++;
-  }
-  const total = mixed.length;
-  return { proportionA, proportionBare, mixed, purePct: total ? (100 * (pureA + pureB)) / total : 0, pureA, pureB, pureBare, total, meanPropA: total ? sumP / total : 0.5 };
+  let sumP = 0;
+  for (let k = 0; k < mixed.length; k++) sumP += proportionA[k];
+  const st = coverStats({ mixed, offTrial: agg.cropMapProportionOffTrial });
+  return {
+    proportionA, proportionBare, mixed,
+    purePct: st.purePct, pureA: st.pureBySpecies[0], pureB: st.pureBySpecies[1], pureBare: st.pureBare,
+    total: st.total, meanPropA: mixed.length ? sumP / mixed.length : 0.5,
+  };
 }
 
 export interface SweepPoint { gsd: number; purePct: number; }
@@ -572,13 +715,12 @@ export function simulatePatch(
   const rows = ny * g, cols = nx * g;
   const cropMap = buildCropMap(minE, minN, rows, cols, fineRes, patternOx, patternOy, layout);
   const simsGrid: Float64Array[] = new Array(rows * cols).fill(EMPTY);
-  const agg = aggregate(simsGrid, rows, cols, g, sensor.sigmaX, sensor.sigmaY, true, 0, cropMap, sensor.mixThreshold);
-  let pureCrop = 0;
-  for (let k = 0; k < agg.cropMapMixed.length; k++) if (agg.cropMapMixed[k] === 0 || agg.cropMapMixed[k] === 1) pureCrop++;
+  const agg = aggregate(simsGrid, rows, cols, g, sensor.sigmaX, sensor.sigmaY, true, 0, cropMap, sensor.mixThreshold, sensor.offX ?? 0, sensor.offY ?? 0);
+  const st = coverStats({ mixed: agg.cropMapMixed, offTrial: agg.cropMapProportionOffTrial });
   return {
     proportionA: agg.cropMapProportionA, proportionBare: agg.cropMapProportionBare, mixed: agg.cropMapMixed,
     nx: agg.colsAgg, ny: agg.rowsAgg,
-    purePct: agg.cropMapMixed.length ? (100 * pureCrop) / agg.cropMapMixed.length : 0,
+    purePct: st.purePct,
   };
 }
 
@@ -614,7 +756,7 @@ export function resolutionSweep(
     const rows = ny * g, cols = nx * g;
     const cropMap = buildCropMap(oMinE, oMinN, rows, cols, fineRes, minE, minN, layout);
     const simsGrid: Float64Array[] = new Array(rows * cols).fill(EMPTY);
-    const agg = aggregate(simsGrid, rows, cols, g, sensor.sigmaX, sensor.sigmaY, true, 0, cropMap, sensor.mixThreshold);
+    const agg = aggregate(simsGrid, rows, cols, g, sensor.sigmaX, sensor.sigmaY, true, 0, cropMap, sensor.mixThreshold, sensor.offX ?? 0, sensor.offY ?? 0);
     let pure = 0;
     for (let k = 0; k < agg.cropMapMixed.length; k++) if (agg.cropMapMixed[k] !== 255) pure++;
     return { gsd, purePct: agg.cropMapMixed.length ? (100 * pure) / agg.cropMapMixed.length : 0 };

@@ -58,8 +58,8 @@ const {
 const {
   makeTruth, makeBetaSchedule, cultureForCell, aggregate, simulate,
   simulateField, simulatePatch, bestPhaseOffset, cultureAt, utmEnvelope,
-  resolutionSweep, truthAt, strideFor, patternCultureUV,
-  TMAX, DEFAULT_PARS, BARE, cropById, parsOf,
+  resolutionSweep, truthAt, strideFor, patternCultureUV, coverStats,
+  TMAX, DEFAULT_PARS, BARE, OFF_TRIAL, MIXED, MAX_COVER, PATTERNS, cropById, parsOf,
 } = await import(path.join(BUILD, 'src/pixel-grid/simulate.mjs'));
 const { gridToShapefileZip } = await import(path.join(BUILD, 'src/pixel-grid/shapefile.mjs'));
 
@@ -343,7 +343,20 @@ console.log('\nG. the planting pattern');
   const gap = { pattern: 'col', width: 20, spacing: 10, rotationDeg: 0 };
   ok('a spacing inserts a bare-soil alley between strips',
     [5, 25, 35, 65].map(u => cultureAt(1000 + u, 2000, gap, 1000, 2000)).join(',') === `0,${BARE.id},1,0`);
-  ok('bare soil is land cover 2, distinct from both crops', BARE.id === 2 && BARE.ndvi === 0.13);
+  ok('bare soil sits above the species id space, distinct from both crops',
+    BARE.id === 254 && BARE.ndvi === 0.13);
+  ok('the three sentinels are distinct and all above MAX_COVER',
+    new Set([BARE.id, OFF_TRIAL.id, MIXED]).size === 3 &&
+    [BARE.id, OFF_TRIAL.id, MIXED].every(v => v > MAX_COVER) && MAX_COVER === 252,
+    `bare ${BARE.id} off ${OFF_TRIAL.id} mixed ${MIXED} max ${MAX_COVER}`);
+  ok('no legacy pattern ever emits the off-trial sentinel',
+    (() => {
+      for (const p of PATTERNS) for (let u = -60; u <= 60; u += 0.7) for (let v = -60; v <= 60; v += 0.7) {
+        const c = patternCultureUV(u, v, { pattern: p.id, width: 7, spacing: 3, rotationDeg: 0 });
+        if (c !== 0 && c !== 1 && c !== BARE.id) return false;
+      }
+      return true;
+    })());
   ok('with spacing 0 the alley never appears',
     (() => { for (let u = -200; u < 200; u += 0.5) if (patternCultureUV(u, 0, col) === BARE.id) return false; return true; })());
   ok('the checkerboard needs both axes inside a strip',
@@ -357,6 +370,27 @@ console.log('\nG. the planting pattern');
     [[10, 20], [10, 5], [60, 2], [2, 100]].map(([g, w]) => `${g}/${w}→${strideFor(g, w)}`).join(' '));
   ok('and it is capped at 24 so a hair-thin strip cannot explode the grid',
     strideFor(60, 0.05) === 24 && strideFor(10, 0.0001) === 24);
+}
+
+console.log('\nG2. the five two-species patterns, pinned byte for byte');
+{
+  // Measured from the build BEFORE the sentinels moved and the per-species
+  // channel was added. Every row must reproduce exactly: these are the numbers
+  // that prove the legacy paths did not drift when BARE went from 2 to 254.
+  const PINNED = `row 20/0 sharp 100.0000 96 96 0 0.500000\ncol 20/0 sharp 100.0000 96 96 0 0.500000\nchecker 20/0 sharp 100.0000 96 96 0 0.500000\nstrip-row-2 20/0 sharp 100.0000 128 64 0 0.666667\nstrip-col-2 20/0 sharp 100.0000 96 96 0 0.500000\nrow 13/0 sharp 41.6667 48 32 0 0.541667\ncol 13/0 sharp 43.7500 48 36 0 0.515625\nchecker 13/0 sharp 18.2292 18 17 0 0.501302\nstrip-row-2 13/0 sharp 66.6667 64 64 0 0.541667\nstrip-col-2 13/0 sharp 68.7500 60 72 0 0.500000\nrow 20/5 sharp 66.6667 96 32 0 0.500000\ncol 20/5 sharp 62.5000 84 36 0 0.437500\nchecker 20/5 sharp 41.6667 48 32 0 0.343750\nstrip-row-2 20/5 sharp 66.6667 80 48 0 0.500000\nstrip-col-2 20/5 sharp 62.5000 72 48 0 0.500000\nrow 30/10 sharp 75.0000 96 48 48 0.500000\ncol 30/10 sharp 75.0000 72 72 48 0.375000\nchecker 30/10 sharp 56.2500 54 54 84 0.281250\nstrip-row-2 30/10 sharp 75.0000 96 48 48 0.500000\nstrip-col-2 30/10 sharp 75.0000 72 72 48 0.375000\nrow 20/0 blur 100.0000 96 96 0 0.500000\ncol 20/0 blur 100.0000 96 96 0 0.500000\nchecker 20/0 blur 27.0833 26 26 0 0.500000\nstrip-row-2 20/0 blur 100.0000 128 64 0 0.666667\nstrip-col-2 20/0 blur 100.0000 96 96 0 0.500000\nrow 13/0 blur 8.3333 16 0 0 0.538455\ncol 13/0 blur 6.2500 12 0 0 0.513324\nchecker 13/0 blur 0.0000 0 0 0 0.501025\nstrip-row-2 13/0 blur 66.6667 64 64 0 0.539957\nstrip-col-2 13/0 blur 68.7500 60 72 0 0.498763\nrow 20/5 blur 66.6667 96 32 0 0.499766\ncol 20/5 blur 56.2500 72 36 0 0.435024\nchecker 20/5 blur 12.5000 16 8 0 0.342882\nstrip-row-2 20/5 blur 66.6667 80 48 0 0.499825\nstrip-col-2 20/5 blur 56.2500 72 36 0 0.501194\nrow 30/10 blur 75.0000 96 48 0 0.503183\ncol 30/10 blur 75.0000 72 72 0 0.374999\nchecker 30/10 blur 38.0208 37 36 24 0.283040\nstrip-row-2 30/10 blur 75.0000 96 48 0 0.499999\nstrip-col-2 30/10 blur 75.0000 72 72 0 0.374999`;
+  const { grid } = buildS2Grid([4.7000, 50.6000, 4.7021, 50.6010], { res: 10 });
+  const [minE, minN] = grid.utmBounds;
+  const rows = [];
+  for (const [label, sensor] of [['sharp', { sigmaX: 0, sigmaY: 0, mixThreshold: 0.8 }], ['blur', { sigmaX: 0.62, sigmaY: 0.62, mixThreshold: 0.8 }]])
+    for (const [w, sp] of [[20, 0], [13, 0], [20, 5], [30, 10]])
+      for (const p of PATTERNS) {
+        const f = simulateField(grid, [minE, minN], { pattern: p.id, width: w, spacing: sp, rotationDeg: 0 }, sensor);
+        rows.push(`${p.id} ${w}/${sp} ${label} ${f.purePct.toFixed(4)} ${f.pureA} ${f.pureB} ${f.pureBare} ${f.meanPropA.toFixed(6)}`);
+      }
+  const got = rows.join('\n');
+  const firstDiff = got === PINNED ? '' : got.split('\n').find((r, i) => r !== PINNED.split('\n')[i]);
+  ok('all 40 legacy rows reproduce their pinned purity, counts and mean fraction',
+    got === PINNED, firstDiff ? `first drift: ${firstDiff}` : `${rows.length} rows`);
 }
 
 console.log('\nH. aggregate: PSF, majority and the mixed threshold');
@@ -409,6 +443,124 @@ console.log('\nH. aggregate: PSF, majority and the mixed threshold');
   ok('every returned map has one entry per aggregated pixel',
     [rot.cropMapMixed, rot.cropMapMajority, rot.cropMapCenter, rot.cropMapProportionA, rot.cropMapProportionBare, rot.simsGrid]
       .every(m => m.length === rot.rowsAgg * rot.colsAgg));
+
+  // PSF centre offset: the kernel peaks on a neighbour, so the pixel reads that
+  // neighbour's crop. The numbers must move, not just the drawing on the map.
+  const centred = aggregate(empty(), rows, cols, g, 0.3, 0.3, true, 0, stripes(0), 0.8);
+  const near = (a, b) => Math.abs(a - b) < 0.05;
+  const east1 = aggregate(empty(), rows, cols, g, 0.3, 0.3, true, 0, stripes(0), 0.8, 1, 0);
+  const east2 = aggregate(empty(), rows, cols, g, 0.3, 0.3, true, 0, stripes(0), 0.8, 2, 0);
+  ok('a kernel offset one pixel east reads the eastern neighbour',
+    near(east1.cropMapProportionA[0], centred.cropMapProportionA[1]) &&
+    near(east1.cropMapProportionA[1], centred.cropMapProportionA[2]),
+    `${east1.cropMapProportionA[0].toFixed(2)},${east1.cropMapProportionA[1].toFixed(2)} vs centred ${centred.cropMapProportionA.slice(0, 4).join(',')}`);
+  ok('a two-pixel offset reaches two pixels over',
+    near(east2.cropMapProportionA[0], centred.cropMapProportionA[2]));
+  ok('a zero offset is byte-identical to a centred kernel',
+    Array.from(aggregate(empty(), rows, cols, g, 0.3, 0.3, true, 0, stripes(0), 0.8, 0, 0).cropMapProportionA).join(',') ===
+    Array.from(centred.cropMapProportionA).join(','));
+
+  // Hand-computed cross-check of the kernel. With sigma 1 and the centre pushed
+  // 1.5 px east, pixel (1,1) averages its four columns with weights
+  // exp(-0.5*(nc-2.5)^2) over column crops [1,0,1,0], which is 0.4342 by hand.
+  // One number that pins the kernel shape, the sign of the offset and the window.
+  const off15 = aggregate(empty(), rows, cols, g, 1, 1, true, 0, stripes(0), 0.8, 1.5, 0);
+  const mid = off15.cropMapProportionA[1 * off15.colsAgg + 1];
+  ok('the offset kernel matches a hand-computed weighted average',
+    Math.abs(mid - 0.4342) < 0.005, mid.toFixed(4));
+
+  // The Y AXIS, which the x-only checks above cannot see. Row indices grow
+  // north (buildCropMap), so +offY must read the band to the north. A symmetric
+  // design hides a flipped sign in the purity total, so compare per pixel.
+  // ASYMMETRIC bands: one crop-A row, then two crop-B rows. An alternating
+  // pattern gives a pixel the same crop to its north and to its south, so it
+  // cannot tell the two directions apart, which is exactly how a flipped sign
+  // survives a test suite. Rows grow north (buildCropMap), so agg row 0 is the
+  // southern edge and the crop-A fractions run [1, 0, 0, 1] from south to north.
+  const bands = () => {
+    const m = new Uint8Array(rows * cols);
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) m[r * cols + c] = Math.floor(r / g) % 3 === 0 ? 0 : 1;
+    return m;
+  };
+  const bCentred = aggregate(empty(), rows, cols, g, 0.3, 0.3, true, 0, bands(), 0.8);
+  const W = bCentred.colsAgg;
+  const bNorth = aggregate(empty(), rows, cols, g, 0.3, 0.3, true, 0, bands(), 0.8, 0, 1);
+  const bSouth = aggregate(empty(), rows, cols, g, 0.3, 0.3, true, 0, bands(), 0.8, 0, -1);
+  ok('a kernel offset one pixel north reads the row to the NORTH',
+    near(bNorth.cropMapProportionA[W], bCentred.cropMapProportionA[2 * W]),
+    `${bNorth.cropMapProportionA[W].toFixed(2)} vs the row north of it ${bCentred.cropMapProportionA[2 * W].toFixed(2)}`);
+  ok('a kernel offset one pixel south reads the row to the SOUTH',
+    near(bSouth.cropMapProportionA[W], bCentred.cropMapProportionA[0]),
+    `${bSouth.cropMapProportionA[W].toFixed(2)} vs the row south of it ${bCentred.cropMapProportionA[0].toFixed(2)}`);
+  ok('north and south offsets disagree, so the sign cannot be lost',
+    Math.abs(bNorth.cropMapProportionA[W] - bSouth.cropMapProportionA[W]) > 0.5,
+    `north ${bNorth.cropMapProportionA[W].toFixed(2)} vs south ${bSouth.cropMapProportionA[W].toFixed(2)}`);
+
+  // Offline lattices south of the equator. The two products are distributed
+  // differently and the plain "multiple of the pixel size" rule fits neither:
+  // measured against live metadata, S2 60 m was 20 m out and HLS 30 m 10 m out.
+  const southAoi = [-51.10, -25.05, -51.09, -25.04];
+  const mod = (v, r) => ((v % r) + r) % r;
+  const s2South = buildS2Grid(southAoi, { res: 60, anchor: { epsg: utmEpsg(22, true), ulx: 0, uly: 10_000_000 } });
+  ok('the Sentinel-2 southern offline lattice sits on the false northing',
+    s2South.epsg === 32722 && s2South.grid.cells.every(c => mod(c.north, 60) === mod(10_000_000, 60)),
+    `epsg ${s2South.epsg}, phase ${mod(s2South.grid.cells[0].north, 60)}`);
+  const hlsSouth = buildS2Grid(southAoi, { res: 30, anchor: { epsg: utmEpsg(22, false), ulx: 0, uly: 0 } });
+  ok('the HLS southern offline lattice stays in the northern CRS at phase 0',
+    hlsSouth.epsg === 32622 && hlsSouth.grid.cells.every(c => mod(c.north, 30) === 0) && hlsSouth.grid.cells[0].north < 0,
+    `epsg ${hlsSouth.epsg}, first northing ${hlsSouth.grid.cells[0].north}`);
+}
+
+console.log('\nH2. the per-species channel is additive, not a rewrite');
+{
+  const rows = 16, cols = 16, g = 4;
+  const empty = () => new Array(rows * cols).fill(new Float64Array(0));
+  const stripes = () => {
+    const m = new Uint8Array(rows * cols);
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) m[r * cols + c] = Math.floor((c % 8) / 4);
+    return m;
+  };
+  const legacy = aggregate(empty(), rows, cols, g, 0.5, 0.5, true, 0, stripes(), 0.8);
+  const withSp = aggregate(empty(), rows, cols, g, 0.5, 0.5, true, 0, stripes(), 0.8, 0, 0, null, 2);
+
+  ok('asking for no species allocates no species channel',
+    legacy.cropMapSpecies === null && legacy.cropMapDominant === null && legacy.cropMapProportionOffTrial === null);
+  ok('and leaves every legacy array byte-identical',
+    Array.from(legacy.cropMapProportionA).join(',') === Array.from(withSp.cropMapProportionA).join(',') &&
+    Array.from(legacy.cropMapMixed).join(',') === Array.from(withSp.cropMapMixed).join(',') &&
+    Array.from(legacy.cropMapProportionBare).join(',') === Array.from(withSp.cropMapProportionBare).join(','));
+  // Not bit-exact by promise: proportionA divides once and stores once, while
+  // the species fold sums then divides. Two orders, so the last bit may differ.
+  // 1e-7 is under a float32 ULP near 0.5 and still catches any real fold error
+  // (a dropped or double-counted cover moves this by orders of magnitude).
+  ok('species 0 of the new channel is the old proportionA, to within a float32 ULP',
+    withSp.cropMapProportionA.every((v, k) => Math.abs(withSp.cropMapSpecies[k * 2] - v) < 1e-7),
+    `worst ${Math.max(...Array.from(withSp.cropMapProportionA, (v, k) => Math.abs(withSp.cropMapSpecies[k * 2] - v))).toExponential(2)}`);
+  ok('every pixel is a partition: species + bare + off-trial sums to 1',
+    withSp.cropMapProportionA.every((_, k) => {
+      const s = withSp.cropMapSpecies[k * 2] + withSp.cropMapSpecies[k * 2 + 1];
+      return Math.abs(s + withSp.cropMapProportionBare[k] + withSp.cropMapProportionOffTrial[k] - 1) < 1e-6;
+    }));
+  ok('the dominant species is the argmax of the species vector',
+    withSp.cropMapDominant.every((d, k) => {
+      const a = withSp.cropMapSpecies[k * 2], b = withSp.cropMapSpecies[k * 2 + 1];
+      return d === (a >= b ? 0 : 1) && Math.abs(withSp.cropMapDominantFrac[k] - Math.max(a, b)) < 1e-6;
+    }));
+
+  const st = coverStats({ mixed: withSp.cropMapMixed, nSpecies: 2 });
+  let pureA = 0, pureB = 0, pureBare = 0;
+  for (const v of withSp.cropMapMixed) { if (v === 0) pureA++; else if (v === 1) pureB++; else if (v === BARE.id) pureBare++; }
+  ok('coverStats reproduces the tally it replaced',
+    st.pureBySpecies[0] === pureA && st.pureBySpecies[1] === pureB && st.pureBare === pureBare &&
+    st.total === withSp.cropMapMixed.length && Math.abs(st.purePct - (100 * (pureA + pureB)) / st.total) < 1e-9,
+    `A ${st.pureBySpecies[0]} B ${st.pureBySpecies[1]} bare ${st.pureBare} of ${st.total}`);
+  ok('a pixel more than half off-trial is left out of the denominator',
+    (() => {
+      const mixed = new Uint8Array([0, 1, 0, 1]);
+      const off = new Float32Array([0, 0, 0.9, 0.4]);
+      const s = coverStats({ mixed, offTrial: off, nSpecies: 2 });
+      return s.total === 3 && s.offTrial === 1 && s.pureCrop === 3;
+    })());
 }
 
 console.log('\nI. field purity — the documented 50% → 100% phase case');
@@ -568,9 +720,38 @@ console.log('\nL. the exported shapefile is a real zipped shapefile');
     sv.getInt32(0, false) === 9994 && sv.getInt32(28, true) === 1000 && sv.getInt32(32, true) === 5);
   ok('the declared file length in 16-bit words is the real length',
     sv.getInt32(24, false) === shp.length / 2, `${sv.getInt32(24, false)} vs ${shp.length / 2}`);
-  ok('the header bbox is the grid\'s snapped UTM extent',
+  ok('an unclipped export declares the grid\'s full snapped UTM extent',
     [0, 1, 2, 3].every(i => sv.getFloat64(36 + 8 * i, true) === grid.utmBounds[i]),
     grid.utmBounds.join(','));
+
+  // A field-clipped export writes only the pixels inside the traced shape, so
+  // the declared extent has to shrink with them. GIS software reads this header
+  // for "zoom to layer", and it used to describe the whole drawn box however
+  // little of it the file covered.
+  const keep = grid.cells.filter(c => c.east < grid.utmBounds[0] + 20 && c.north < grid.utmBounds[1] + 20);
+  const cbuf = new Uint8Array(await gridToShapefileZip({ ...grid, cells: keep }, 'clipped').arrayBuffer());
+  const cdv = new DataView(cbuf.buffer);
+  const cfiles = new Map();
+  let coff = 0;
+  while (coff + 4 <= cbuf.length && cdv.getUint32(coff, true) === 0x04034b50) {
+    const size = cdv.getUint32(coff + 18, true);
+    const nlen = cdv.getUint16(coff + 26, true), elen = cdv.getUint16(coff + 28, true);
+    const name = String.fromCharCode(...cbuf.slice(coff + 30, coff + 30 + nlen));
+    cfiles.set(name, cbuf.slice(coff + 30 + nlen + elen, coff + 30 + nlen + elen + size));
+    coff += 30 + nlen + elen + size;
+  }
+  const cshp = cfiles.get('clipped.shp');
+  const csv = new DataView(cshp.buffer, cshp.byteOffset, cshp.byteLength);
+  const want = [
+    Math.min(...keep.map(c => c.east)), Math.min(...keep.map(c => c.north)),
+    Math.max(...keep.map(c => c.east)) + 10, Math.max(...keep.map(c => c.north)) + 10,
+  ];
+  ok('a clipped export declares the extent of the pixels it actually contains',
+    keep.length > 0 && [0, 1, 2, 3].every(i => csv.getFloat64(36 + 8 * i, true) === want[i]),
+    `${[0, 1, 2, 3].map(i => csv.getFloat64(36 + 8 * i, true)).join(',')} vs ${want.join(',')}`);
+  ok('and that extent is smaller than the whole drawn box',
+    want[2] - want[0] < grid.utmBounds[2] - grid.utmBounds[0],
+    `${want[2] - want[0]} m wide vs the box's ${grid.utmBounds[2] - grid.utmBounds[0]} m`);
   ok('there is exactly one fixed-size record per cell',
     (shp.length / 2 - 50) / (4 + 64) === n, `${(shp.length / 2 - 50) / (4 + 64)} vs ${n}`);
   ok('record 1 is a 1-based, 64-word, single-part 5-point polygon',
