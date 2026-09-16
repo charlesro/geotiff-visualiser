@@ -59,9 +59,18 @@ const {
   makeTruth, makeBetaSchedule, cultureForCell, aggregate, simulate,
   simulateField, simulatePatch, bestPhaseOffset, cultureAt, utmEnvelope,
   resolutionSweep, truthAt, strideFor, patternCultureUV, coverStats,
-  TMAX, DEFAULT_PARS, BARE, OFF_TRIAL, MIXED, MAX_COVER, PATTERNS, cropById, parsOf,
+  buildBlockPlan, blockPermutation, blockCoverUV, blockPlots, minFeatureM, layoutKey,
+  TMAX, DEFAULT_PARS, BARE, OFF_TRIAL, MIXED, MAX_COVER, MAX_PLOTS, PATTERNS, cropById, parsOf,
 } = await import(path.join(BUILD, 'src/pixel-grid/simulate.mjs'));
 const { gridToShapefileZip } = await import(path.join(BUILD, 'src/pixel-grid/shapefile.mjs'));
+
+/**
+ * The five two-species patterns, named explicitly rather than read from
+ * PATTERNS. Every "did the legacy behaviour move" check iterates THIS: when the
+ * block design joined PATTERNS, the pinned table silently grew from 40 rows to
+ * 48 and the off-trial guard started testing a pattern it was never about.
+ */
+const LEGACY_PATTERNS = ['row', 'col', 'checker', 'strip-row-2', 'strip-col-2'];
 
 let bad = 0;
 const ok = (name, cond, extra = '') => {
@@ -351,12 +360,15 @@ console.log('\nG. the planting pattern');
     `bare ${BARE.id} off ${OFF_TRIAL.id} mixed ${MIXED} max ${MAX_COVER}`);
   ok('no legacy pattern ever emits the off-trial sentinel',
     (() => {
-      for (const p of PATTERNS) for (let u = -60; u <= 60; u += 0.7) for (let v = -60; v <= 60; v += 0.7) {
-        const c = patternCultureUV(u, v, { pattern: p.id, width: 7, spacing: 3, rotationDeg: 0 });
+      for (const id of LEGACY_PATTERNS) for (let u = -60; u <= 60; u += 0.7) for (let v = -60; v <= 60; v += 0.7) {
+        const c = patternCultureUV(u, v, { pattern: id, width: 7, spacing: 3, rotationDeg: 0 });
         if (c !== 0 && c !== 1 && c !== BARE.id) return false;
       }
       return true;
     })());
+  ok('and PATTERNS still holds exactly the five legacy designs plus the block design',
+    PATTERNS.map(p => p.id).join(',') === [...LEGACY_PATTERNS, 'block'].join(','),
+    PATTERNS.map(p => p.id).join(','));
   ok('with spacing 0 the alley never appears',
     (() => { for (let u = -200; u < 200; u += 0.5) if (patternCultureUV(u, 0, col) === BARE.id) return false; return true; })());
   ok('the checkerboard needs both axes inside a strip',
@@ -383,9 +395,9 @@ console.log('\nG2. the five two-species patterns, pinned byte for byte');
   const rows = [];
   for (const [label, sensor] of [['sharp', { sigmaX: 0, sigmaY: 0, mixThreshold: 0.8 }], ['blur', { sigmaX: 0.62, sigmaY: 0.62, mixThreshold: 0.8 }]])
     for (const [w, sp] of [[20, 0], [13, 0], [20, 5], [30, 10]])
-      for (const p of PATTERNS) {
-        const f = simulateField(grid, [minE, minN], { pattern: p.id, width: w, spacing: sp, rotationDeg: 0 }, sensor);
-        rows.push(`${p.id} ${w}/${sp} ${label} ${f.purePct.toFixed(4)} ${f.pureA} ${f.pureB} ${f.pureBare} ${f.meanPropA.toFixed(6)}`);
+      for (const id of LEGACY_PATTERNS) {
+        const f = simulateField(grid, [minE, minN], { pattern: id, width: w, spacing: sp, rotationDeg: 0 }, sensor);
+        rows.push(`${id} ${w}/${sp} ${label} ${f.purePct.toFixed(4)} ${f.pureA} ${f.pureB} ${f.pureBare} ${f.meanPropA.toFixed(6)}`);
       }
   const got = rows.join('\n');
   const firstDiff = got === PINNED ? '' : got.split('\n').find((r, i) => r !== PINNED.split('\n')[i]);
@@ -560,6 +572,123 @@ console.log('\nH2. the per-species channel is additive, not a rewrite');
       const off = new Float32Array([0, 0, 0.9, 0.4]);
       const s = coverStats({ mixed, offTrial: off, nSpecies: 2 });
       return s.total === 3 && s.offTrial === 1 && s.pureCrop === 3;
+    })());
+}
+
+console.log('\nH3. the randomised block design: geometry and reproducibility');
+{
+  const design = { nSpecies: 4, nBlocks: 4, plotLength: 8, plotWidth: 2, plotAlley: 0.5, blockAlley: 1.5, blocksPerRow: 1, seed: 1 };
+  const plan = buildBlockPlan(design, { centerU: 0, centerV: 0, snap: 0 });
+
+  ok('the plan resolves to n species x n blocks plots',
+    plan.nPlots === 16 && plan.plotSpecies.length === 16 && plan.design.nBlocks === 4);
+  ok('a block spans its plots plus the alleys between them',
+    Math.abs(plan.blockV - (4 * 2 + 3 * 0.5)) < 1e-9 && plan.blockU === 8,
+    `${plan.blockU} x ${plan.blockV}`);
+  ok('the footprint is the blocks plus the alleys between blocks, with none trailing',
+    Math.abs(plan.totalU - (4 * (8 + 1.5) - 1.5)) < 1e-9 && Math.abs(plan.totalV - plan.blockV) < 1e-9,
+    `${plan.totalU} x ${plan.totalV}`);
+
+  // Randomisation: complete blocks, reproducible, and stable when extended.
+  ok('every block is a complete permutation of the species',
+    (() => {
+      for (let sp = 2; sp <= 8; sp++) for (let nb = 1; nb <= 20; nb++) {
+        const p = buildBlockPlan({ ...design, nSpecies: sp, nBlocks: nb }, { centerU: 0, centerV: 0 });
+        for (let b = 0; b < p.design.nBlocks; b++) {
+          const got = Array.from(p.plotSpecies.slice(b * sp, (b + 1) * sp)).sort((x, y) => x - y).join(',');
+          if (got !== Array.from({ length: sp }, (_, i) => i).join(',')) return false;
+        }
+      }
+      return true;
+    })());
+  ok('the same seed replays exactly, a different seed does not',
+    Array.from(blockPermutation(4, 2, 7)).join(',') === Array.from(blockPermutation(4, 2, 7)).join(',') &&
+    [0, 1, 2, 3].some(b => Array.from(blockPermutation(4, b, 7)).join(',') !== Array.from(blockPermutation(4, b, 8)).join(',')));
+  ok('adding a repetition leaves every earlier block byte-identical',
+    Array.from(buildBlockPlan({ ...design, nBlocks: 5 }, { centerU: 0, centerV: 0, snap: 0 }).plotSpecies.slice(0, 16)).join(',') ===
+    Array.from(plan.plotSpecies).join(','));
+  ok('the permutation is not the identity everywhere (the LCG warm-up works)',
+    Array.from({ length: 12 }, (_, b) => Array.from(blockPermutation(4, b, 1)).join(',')).some(s => s !== '0,1,2,3'));
+  ok('no clock and no global RNG: two plans built apart are identical',
+    (() => {
+      const a = buildBlockPlan(design, { centerU: 0, centerV: 0, snap: 0 });
+      let x = 0; for (let i = 0; i < 2e5; i++) x += Math.sqrt(i);
+      const b = buildBlockPlan(design, { centerU: 0, centerV: 0, snap: 0 });
+      return x > 0 && Array.from(a.plotSpecies).join(',') === Array.from(b.plotSpecies).join(',') && a.u0 === b.u0;
+    })());
+
+  // Geometry: plots tile exactly, nothing leaks, negatives are safe.
+  const step = 0.1, seen = new Map();
+  let invalid = 0, bare = 0, off = 0;
+  for (let u = plan.u0 - 3; u < plan.u0 + plan.totalU + 3; u += step)
+    for (let v = plan.v0 - 3; v < plan.v0 + plan.totalV + 3; v += step) {
+      const c = blockCoverUV(u, v, plan);
+      if (c === OFF_TRIAL.id) { off++; continue; }
+      if (c === BARE.id) { bare++; continue; }
+      if (c < 0 || c >= plan.nPlots) { invalid++; continue; }
+      seen.set(c, (seen.get(c) || 0) + 1);
+    }
+  ok('every plot appears and no sample lands on an invalid id',
+    seen.size === 16 && invalid === 0 && bare > 0 && off > 0, `${seen.size} plots, ${invalid} invalid`);
+  ok('each plot measures plotLength x plotWidth',
+    [...seen.values()].every(n => Math.abs(n * step * step - 16) < 0.5),
+    `${Math.min(...[...seen.values()].map(n => n * step * step)).toFixed(2)} to ${Math.max(...[...seen.values()].map(n => n * step * step)).toFixed(2)} m2`);
+  ok('far negative coordinates are off-trial, never a wrapped plot id',
+    (() => {
+      for (let u = -200; u < -50; u += 0.7) for (let v = -200; v < -50; v += 0.7)
+        if (blockCoverUV(u, v, plan) !== OFF_TRIAL.id) return false;
+      return true;
+    })());
+  ok('with both alleys zero the trial tiles solid, no bare inside the footprint',
+    (() => {
+      const solid = buildBlockPlan({ ...design, plotAlley: 0, blockAlley: 0 }, { centerU: 0, centerV: 0, snap: 0 });
+      for (let u = solid.u0 + 0.05; u < solid.u0 + solid.totalU; u += 0.25)
+        for (let v = solid.v0 + 0.05; v < solid.v0 + solid.totalV; v += 0.25)
+          if (blockCoverUV(u, v, solid) === BARE.id) return false;
+      return true;
+    })());
+  ok('the ragged last row is off-trial, not a phantom block',
+    (() => {
+      const ragged = buildBlockPlan({ ...design, nBlocks: 3, blocksPerRow: 2 }, { centerU: 0, centerV: 0, snap: 0 });
+      const u = ragged.u0 + ragged.pitchU + ragged.blockU / 2;   // second row
+      const v = ragged.v0 + ragged.pitchV + ragged.blockV / 2;   // second column: block 3, absent
+      return blockCoverUV(u, v, ragged) === OFF_TRIAL.id;
+    })());
+
+  // The map and the simulation must read the same plan.
+  ok('every blockPlots rectangle centre returns that plot, with that species',
+    blockPlots(plan).every(r =>
+      blockCoverUV((r.u0 + r.u1) / 2, (r.v0 + r.v1) / 2, plan) === r.plot &&
+      plan.plotSpecies[r.plot] === r.species));
+
+  // Ids are minted under the sentinels, whatever a UI might ask for.
+  const huge = buildBlockPlan({ ...design, nSpecies: 8, nBlocks: 40 }, { centerU: 0, centerV: 0 });
+  ok('the block count is capped where ids are minted, below the sentinels',
+    huge.nPlots - 1 <= MAX_COVER && huge.design.nBlocks === Math.floor(MAX_PLOTS / 8),
+    `${huge.design.nBlocks} blocks, highest id ${huge.nPlots - 1}, ceiling ${MAX_COVER}`);
+
+  // Anchoring and the layout key.
+  ok('the trial is centred on the field, and snaps to the pixel lattice when asked',
+    (() => {
+      const free = buildBlockPlan(design, { centerU: 100, centerV: 200, snap: 0 });
+      const snapped = buildBlockPlan(design, { centerU: 100, centerV: 200, snap: 10 });
+      return Math.abs(free.u0 + free.totalU / 2 - 100) < 1e-9 &&
+             snapped.u0 % 10 === 0 && snapped.v0 % 10 === 0;
+    })());
+  ok('minFeatureM is the plot width for legacy layouts and the narrowest feature for a block',
+    LEGACY_PATTERNS.every(id => minFeatureM({ pattern: id, width: 7, spacing: 3, rotationDeg: 0 }) === 7) &&
+    minFeatureM({ pattern: 'block', width: 2, spacing: 0, rotationDeg: 0, block: plan }) === 0.5);
+  ok('layoutKey moves when any block parameter moves',
+    (() => {
+      const L = { pattern: 'block', width: 2, spacing: 0, rotationDeg: 0, block: plan };
+      const base = layoutKey(L);
+      const perturbed = [
+        { ...design, nSpecies: 3 }, { ...design, nBlocks: 5 }, { ...design, plotLength: 9 },
+        { ...design, plotWidth: 3 }, { ...design, plotAlley: 1 }, { ...design, blockAlley: 2 },
+        { ...design, blocksPerRow: 2 }, { ...design, seed: 2 },
+      ].map(d => layoutKey({ ...L, block: buildBlockPlan(d, { centerU: 0, centerV: 0, snap: 0 }) }));
+      const moved = layoutKey({ ...L, block: buildBlockPlan(design, { centerU: 7, centerV: 0, snap: 0 }) });
+      return new Set([base, ...perturbed, moved]).size === perturbed.length + 2;
     })());
 }
 

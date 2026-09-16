@@ -21,7 +21,7 @@ export const TMAX = 366;
 export const DEFAULT_PARS: number[] = [0.78, 0.117, 104, 0.078, 221, 198];
 
 export type TruthType = 'double' | 'sine' | 'linear' | 'const';
-export type PatternType = 'row' | 'col' | 'checker' | 'strip-row-2' | 'strip-col-2';
+export type PatternType = 'row' | 'col' | 'checker' | 'strip-row-2' | 'strip-col-2' | 'block';
 
 export const TRUTH_TYPES: { id: TruthType; label: string }[] = [
   { id: 'double', label: 'Double logistic' },
@@ -36,6 +36,7 @@ export const PATTERNS: { id: PatternType; label: string }[] = [
   { id: 'checker', label: 'Checkerboard' },
   { id: 'strip-row-2', label: 'Strip rows (2:2)' },
   { id: 'strip-col-2', label: 'Strip columns (2:2)' },
+  { id: 'block', label: 'Randomised blocks (RCBD)' },
 ];
 
 /** One field's parameters — the repo's per-field set, plus name/colour for UI. */
@@ -505,11 +506,208 @@ export function aggregate(
 
 // ===== field driver (repo engine over the real S2 grid) ======================
 
+// ===== randomised complete block design ======================================
+
+/**
+ * A micro-plot trial: n species, n repetitions, plots of a given size with
+ * alleys between them. This is what the agronomist types.
+ *
+ * The layout is a PURE function of these numbers, `seed` included, because a
+ * trial that has been staked out in a field must be reproducible months later.
+ * Nothing here reads the clock or a global RNG.
+ */
+export interface BlockDesign {
+  nSpecies: number;      // treatments per block
+  nBlocks: number;       // repetitions
+  plotLength: number;    // m, along u (a block's long axis)
+  plotWidth: number;     // m, across v
+  plotAlley: number;     // m, bare ground between plots inside a block
+  blockAlley: number;    // m, bare ground between blocks
+  blocksPerRow: number;  // 1 = blocks stacked in tiers
+  seed: number;
+}
+
+/**
+ * A design RESOLVED against a field: the object the simulation, the ladder, the
+ * PCA and the map overlay all read. Resolved once and shared, because a second
+ * copy built from a different extent or seed would draw one trial while the
+ * numbers describe another, with no error anywhere.
+ */
+export interface BlockPlan {
+  design: BlockDesign;
+  cols: number; rows: number;      // block grid (cols = blocksPerRow)
+  blockU: number; blockV: number;  // one block's extent
+  pitchU: number; pitchV: number;  // block extent + the alley between blocks
+  totalU: number; totalV: number;  // the whole trial's footprint
+  u0: number; v0: number;          // its corner, in the rotated frame
+  nPlots: number;
+  /** plotSpecies[plotId] -> species index. */
+  plotSpecies: Uint8Array;
+}
+
+/** One plot as a rectangle, for drawing and for exporting. */
+export interface BlockPlot {
+  plot: number; block: number; pos: number; species: number;
+  u0: number; u1: number; v0: number; v1: number;
+}
+
+/**
+ * Plot ids share the Uint8Array cover map with the sentinels, so ids 0..252 are
+ * usable and 253+ would be read back as off-trial, bare or mixed. Enforced in
+ * buildBlockPlan, where ids are MINTED, rather than trusted to a UI clamp.
+ */
+export const MAX_PLOTS = MAX_COVER + 1;
+
+/**
+ * One block's species order. Seeded PER BLOCK rather than once per design, so
+ * adding a repetition leaves every earlier block byte-identical and a partly
+ * staked trial is not invalidated by extending it. Independent per-block draws
+ * are correct RCBD statistics, so two blocks may legitimately come out alike.
+ */
+export function blockPermutation(nSpecies: number, block: number, seed: number): Uint8Array {
+  const n = Math.max(1, nSpecies | 0);
+  const s = (Math.imul(seed | 0, 0x9e3779b1) ^ Math.imul(block + 1, 0x85ebca6b)) >>> 0;
+  const rnd = randomLcg((s % 2147483647) || 1);
+  for (let i = 0; i < 8; i++) rnd();   // nearby LCG seeds correlate in their first draws
+  const out = new Uint8Array(n);
+  for (let i = 0; i < n; i++) out[i] = i;
+  for (let i = n - 1; i > 0; i--) {    // Fisher-Yates
+    const j = Math.floor(rnd() * (i + 1));
+    const t = out[i]; out[i] = out[j]; out[j] = t;
+  }
+  return out;
+}
+
+/**
+ * Resolve a design against a field. CENTRED on it, not pinned to a corner: the
+ * resolution ladder samples a window around the field centre, so a corner-pinned
+ * trial would sit outside the very window that measures it.
+ *
+ * `snap` (the pixel size) puts the trial's corner on a pixel corner. That is the
+ * whole phase optimisation for a block design: exact, O(1), and explainable.
+ * It deliberately never enters searchPhaseOffset, whose scorer keeps two
+ * counters and assigns crops with `& 1`, i.e. is two-species by construction.
+ */
+export function buildBlockPlan(
+  design: BlockDesign,
+  place: { centerU: number; centerV: number; snap?: number },
+): BlockPlan {
+  const nSpecies = Math.max(1, Math.min(MAX_COVER, design.nSpecies | 0));
+  const plotLength = Math.max(0.01, design.plotLength);
+  const plotWidth = Math.max(0.01, design.plotWidth);
+  const plotAlley = Math.max(0, design.plotAlley);
+  const blockAlley = Math.max(0, design.blockAlley);
+  // Cap where the ids are minted: 8 species x 32 blocks would mint id 255 and be
+  // read straight back as "mixed".
+  const nBlocks = Math.max(1, Math.min(design.nBlocks | 0, Math.floor(MAX_PLOTS / nSpecies)));
+  const cols = Math.max(1, Math.min(nBlocks, design.blocksPerRow | 0 || 1));
+  const rows = Math.ceil(nBlocks / cols);
+
+  const blockU = plotLength;
+  const blockV = nSpecies * plotWidth + (nSpecies - 1) * plotAlley;
+  const pitchU = blockU + blockAlley;
+  const pitchV = blockV + blockAlley;
+  const totalU = rows * pitchU - blockAlley;
+  const totalV = cols * pitchV - blockAlley;
+
+  const resolved: BlockDesign = {
+    nSpecies, nBlocks, plotLength, plotWidth, plotAlley, blockAlley,
+    blocksPerRow: cols, seed: design.seed | 0,
+  };
+  const nPlots = nSpecies * nBlocks;
+  const plotSpecies = new Uint8Array(nPlots);
+  for (let b = 0; b < nBlocks; b++) {
+    const perm = blockPermutation(nSpecies, b, resolved.seed);
+    for (let k = 0; k < nSpecies; k++) plotSpecies[b * nSpecies + k] = perm[k];
+  }
+
+  const snap = place.snap && place.snap > 0 ? place.snap : 0;
+  let u0 = place.centerU - totalU / 2;
+  let v0 = place.centerV - totalV / 2;
+  if (snap > 0) { u0 = Math.floor(u0 / snap) * snap; v0 = Math.floor(v0 / snap) * snap; }
+
+  return { design: resolved, cols, rows, blockU, blockV, pitchU, pitchV, totalU, totalV, u0, v0, nPlots, plotSpecies };
+}
+
+/**
+ * What covers a point: a PLOT id, bare alley, or ground outside the trial.
+ * O(1) and allocation-free, because buildCropMap calls it once per fine cell,
+ * millions of times. It must never loop over plots.
+ */
+export function blockCoverUV(u: number, v: number, p: BlockPlan): number {
+  const du = u - p.u0, dv = v - p.v0;
+  // Bounds FIRST: the map draws in a rotated frame where u and v go negative,
+  // and a negative index would otherwise read some other plot's id.
+  if (du < 0 || du >= p.totalU || dv < 0 || dv >= p.totalV) return OFF_TRIAL.id;
+  const r = Math.floor(du / p.pitchU), c = Math.floor(dv / p.pitchV);
+  const b = r * p.cols + c;
+  if (b >= p.design.nBlocks) return OFF_TRIAL.id;                 // ragged last row
+  const uIn = du - r * p.pitchU, vIn = dv - c * p.pitchV;
+  if (uIn >= p.blockU || vIn >= p.blockV) return BARE.id;         // alley between blocks
+  const pitch = p.design.plotWidth + p.design.plotAlley;
+  const k = Math.floor(vIn / pitch);
+  if (k >= p.design.nSpecies || vIn - k * pitch >= p.design.plotWidth) return BARE.id;
+  return b * p.design.nSpecies + k;
+}
+
+/** Every plot as a rectangle in the rotated frame, for drawing and export. */
+export function blockPlots(p: BlockPlan): BlockPlot[] {
+  const out: BlockPlot[] = [];
+  const pitch = p.design.plotWidth + p.design.plotAlley;
+  for (let b = 0; b < p.design.nBlocks; b++) {
+    const r = Math.floor(b / p.cols), c = b % p.cols;
+    const bu = p.u0 + r * p.pitchU, bv = p.v0 + c * p.pitchV;
+    for (let k = 0; k < p.design.nSpecies; k++) {
+      const plot = b * p.design.nSpecies + k;
+      const v0 = bv + k * pitch;
+      out.push({
+        plot, block: b, pos: k, species: p.plotSpecies[plot],
+        u0: bu, u1: bu + p.blockU, v0, v1: v0 + p.design.plotWidth,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * The narrowest feature the fine grid must resolve. strideFor samples against
+ * ONE width, but a block design's smallest feature is usually an alley, which
+ * can be 0.5 m beside 8 m plots: sampling at the plot width quantises the alleys
+ * away, which is exactly the flat-0.5 artefact strideFor's own comment warns of.
+ * Identity on layout.width for the five two-species patterns.
+ */
+export function minFeatureM(layout: SimLayout): number {
+  if (layout.pattern !== 'block' || !layout.block) return layout.width;
+  const d = layout.block.design;
+  let m = Math.min(d.plotWidth, d.plotLength);
+  if (d.plotAlley > 0) m = Math.min(m, d.plotAlley);
+  if (d.blockAlley > 0) m = Math.min(m, d.blockAlley);
+  return Math.max(0.05, m);
+}
+
+/**
+ * Everything a layout depends on, in one string. The memo dependency arrays,
+ * the map's remount key and the overlay's effect deps take THIS rather than a
+ * hand-listed set of primitives: a field forgotten in one of those lists shows
+ * a stale design with no error, no type failure and no failing test.
+ * Includes the RESOLVED corner, so re-anchoring the trial also invalidates.
+ */
+export function layoutKey(layout: SimLayout): string {
+  const base = `${layout.pattern}|${layout.width}|${layout.spacing}|${layout.rotationDeg}`;
+  const p = layout.block;
+  if (!p) return base;
+  const d = p.design;
+  return `${base}|${d.nSpecies}|${d.nBlocks}|${d.plotLength}|${d.plotWidth}|${d.plotAlley}|` +
+         `${d.blockAlley}|${d.blocksPerRow}|${d.seed}|${p.u0.toFixed(3)}|${p.v0.toFixed(3)}`;
+}
+
 export interface SimLayout {
   pattern: PatternType;
   width: number;        // strip / plot width in metres
   spacing: number;      // bare-soil gap between strips, in metres (0 = none)
   rotationDeg: number;
+  /** The RESOLVED plan for a 'block' layout. Built once, shared by every reader. */
+  block?: BlockPlan;
 }
 
 /**
@@ -530,7 +728,16 @@ function patternCultureUV(u: number, v: number, layout: SimLayout): number {
     case 'checker':     return inStrip(u) && inStrip(v) ? alt(idx(u) + idx(v)) : BARE.id;
     case 'strip-row-2': return inStrip(v) ? alt(Math.floor(idx(v) / 2)) : BARE.id;
     case 'strip-col-2': return inStrip(u) ? alt(Math.floor(idx(u) / 2)) : BARE.id;
-    default:            return 0;
+    // A block layout carries its resolved plan; without one there is no trial
+    // here yet, so the ground is off-trial rather than silently species A.
+    case 'block':       return layout.block ? blockCoverUV(u, v, layout.block) : OFF_TRIAL.id;
+    default: {
+      // Exhaustive: adding a pattern without handling it is a type error here,
+      // instead of quietly painting the whole field species A at runtime.
+      const unhandled: never = layout.pattern;
+      void unhandled;
+      return OFF_TRIAL.id;
+    }
   }
 }
 export interface SensorParams {
@@ -597,7 +804,7 @@ export function simulateField(grid: S2Grid, patternOrigin: [number, number], lay
   const [minE, minN, maxE, maxN] = grid.utmBounds;
   const nx = Math.round((maxE - minE) / res);
   const ny = Math.round((maxN - minN) / res);
-  const g = strideFor(res, layout.width);
+  const g = strideFor(res, minFeatureM(layout));
   const fineRes = res / g;
   const rows = ny * g, cols = nx * g;
   const cropMap = buildCropMap(minE, minN, rows, cols, fineRes, patternOrigin[0], patternOrigin[1], layout);
@@ -710,7 +917,7 @@ export function simulatePatch(
 ): PatchSim {
   const nx = Math.max(1, Math.round(sizeM / gsd));
   const ny = nx;
-  const g = strideFor(gsd, layout.width);
+  const g = strideFor(gsd, minFeatureM(layout));
   const fineRes = gsd / g;
   const rows = ny * g, cols = nx * g;
   const cropMap = buildCropMap(minE, minN, rows, cols, fineRes, patternOx, patternOy, layout);
@@ -751,7 +958,7 @@ export function resolutionSweep(
     const oMinN = Math.floor(wMinN / gsd) * gsd;
     const nx = Math.max(1, Math.ceil((wMaxE - oMinE) / gsd));
     const ny = Math.max(1, Math.ceil((wMaxN - oMinN) / gsd));
-    const g = strideFor(gsd, layout.width);
+    const g = strideFor(gsd, minFeatureM(layout));
     const fineRes = gsd / g;
     const rows = ny * g, cols = nx * g;
     const cropMap = buildCropMap(oMinE, oMinN, rows, cols, fineRes, minE, minN, layout);
