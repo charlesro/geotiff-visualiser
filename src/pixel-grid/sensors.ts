@@ -1,4 +1,4 @@
-import type { SourceConfig } from './s2-grid';
+import { EARTH_SEARCH_URL, type SourceConfig } from './s2-grid';
 
 /**
  * The satellites the tool can put a grid over, and what each one's optics do to
@@ -49,6 +49,10 @@ interface Source {
 const FIXED = 'Fixed grid: read live from the catalog';
 const TASK = 'Commercial: you define the grid';
 const s2Label = (it: any) => it.properties?.['s2:mgrs_tile'] ?? '';
+/** Earth Search writes the same tile as "MGRS-31UFS" and keeps the pixel origin on the red band. */
+const esS2Label = (it: any) => String(it.properties?.['grid:code'] ?? '').replace(/^MGRS-/, '');
+const esS2 = (res: number) => ({ collection: 'sentinel-2-l2a', asset: 'red', res, gridLabel: esS2Label, url: EARTH_SEARCH_URL });
+const lsLabel = (it: any) => { const e = it.properties?.['proj:epsg']; return e >= 32700 ? `${e - 32700}S` : `${e - 32600}N`; };
 // Where each sensor's MTF/PSF figure is documented.
 const SRC_S2 = { url: 'https://sentiwiki.copernicus.eu/web/s2-mission', label: 'ESA SentiWiki' };
 const SRC_LS = { url: 'https://www.usgs.gov/landsat-missions/spatial-performance-landsat-8-instruments', label: 'USGS · Landsat 8 spatial performance' };
@@ -57,21 +61,21 @@ const SRC_PLANET = { url: 'https://www.tandfonline.com/doi/full/10.1080/01431161
 const SOURCES: Source[] = [
   { id: 's2-10', provider: 'Sentinel-2', resLabel: '10 m', res: 10, kind: 'catalog', group: FIXED, offlinePhase0: true, psf: 0.62, psfSrc: SRC_S2,
     note: 'Blue, green, red and NIR bands: B02, B03, B04, B08.',
-    cfg: { collection: 'sentinel-2-l2a', asset: 'B04', res: 10, gridLabel: s2Label } },
+    cfg: { collection: 'sentinel-2-l2a', asset: 'B04', res: 10, gridLabel: s2Label, alt: esS2(10) } },
   { id: 's2-20', provider: 'Sentinel-2', resLabel: '20 m', res: 20, kind: 'catalog', group: FIXED, offlinePhase0: true, psf: 0.62, psfSrc: SRC_S2,
     note: 'Red-edge and SWIR bands: B05 to B07, B8A, B11, B12.',
-    cfg: { collection: 'sentinel-2-l2a', asset: 'B04', res: 20, gridLabel: s2Label } },
+    cfg: { collection: 'sentinel-2-l2a', asset: 'B04', res: 20, gridLabel: s2Label, alt: esS2(20) } },
   { id: 's2-60', provider: 'Sentinel-2', resLabel: '60 m', res: 60, kind: 'catalog', group: FIXED, offlinePhase0: true, psf: 0.62, psfSrc: SRC_S2,
     note: 'Aerosol and cirrus bands: B01, B09, B10.',
-    cfg: { collection: 'sentinel-2-l2a', asset: 'B04', res: 60, gridLabel: s2Label } },
+    cfg: { collection: 'sentinel-2-l2a', asset: 'B04', res: 60, gridLabel: s2Label, alt: esS2(60) } },
   { id: 'hls-30', provider: 'Landsat · HLS', resLabel: '30 m', res: 30, kind: 'catalog', group: FIXED, offlinePhase0: true, psf: 0.55, psfSrc: SRC_LS,
     note: 'Landsat and Sentinel-2 on one shared 30 m grid.',
     cfg: { collection: 'hls2-s30', asset: null, res: 30,
       gridLabel: it => (it.id?.split('.')?.[2] ?? '').replace(/^T/, '') } },
   { id: 'ls-30', provider: 'Landsat C2', resLabel: '30 m', res: 30, kind: 'catalog', group: FIXED, offlinePhase0: false, psf: 0.55, psfSrc: SRC_LS,
     note: 'Native Landsat 8/9 grid, offset half a pixel from Sentinel-2.',
-    cfg: { collection: 'landsat-c2-l2', asset: null, res: 30,
-      gridLabel: it => { const e = it.properties?.['proj:epsg']; return e >= 32700 ? `${e - 32700}S` : `${e - 32600}N`; } } },
+    cfg: { collection: 'landsat-c2-l2', asset: null, res: 30, gridLabel: lsLabel,
+      alt: { collection: 'landsat-c2-l2', asset: null, res: 30, gridLabel: lsLabel, url: EARTH_SEARCH_URL } } },
   { id: 'wv', provider: 'WorldView / GeoEye', resLabel: '0.3 m', res: 0.3, kind: 'custom', group: TASK, psf: 0.55, psfSrc: eo('worldview-3'),
     note: 'Maxar tasking, no fixed grid.' },
   { id: 'pleiades', provider: 'Pléiades', resLabel: '0.5 m', res: 0.5, kind: 'custom', group: TASK, psf: 0.60, psfSrc: eo('pleiades'),

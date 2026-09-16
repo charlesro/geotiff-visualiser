@@ -304,9 +304,14 @@ export interface SourceConfig {
   asset: string | null;
   res: number;
   gridLabel: (item: any) => string;
+  /** Which STAC API to ask. Defaults to the Planetary Computer. */
+  url?: string;
+  /** The same grid in a second catalog, asked only when the first one fails. */
+  alt?: SourceConfig;
 }
 
 const MPC_STAC_URL = 'https://planetarycomputer.microsoft.com/api/stac/v1/search';
+export const EARTH_SEARCH_URL = 'https://earth-search.aws.element84.com/v1/search';
 
 const projTransform = (it: any, asset: string | null): number[] | undefined =>
   (asset ? it.assets?.[asset]?.['proj:transform'] : null) ?? it.properties?.['proj:transform'];
@@ -328,6 +333,23 @@ export async function fetchCoveringGrids(
   cfg: SourceConfig,
   signal?: AbortSignal,
 ): Promise<CoveringGrid[]> {
+  try {
+    const found = await searchLattices(bounds, cfg, signal);
+    if (found.length || !cfg.alt) return found;
+  } catch (err) {
+    // A dead catalog must not take the page down when a second one has the
+    // same grid: Microsoft's API has gone down for days at a time. An aborted
+    // request is the caller redrawing, so it is passed straight on.
+    if (!cfg.alt || signal?.aborted) throw err;
+  }
+  return searchLattices(bounds, cfg.alt, signal);
+}
+
+async function searchLattices(
+  bounds: LngLatBounds,
+  cfg: SourceConfig,
+  signal?: AbortSignal,
+): Promise<CoveringGrid[]> {
   const cLng = (bounds[0] + bounds[2]) / 2;
   const cLat = (bounds[1] + bounds[3]) / 2;
   const body = {
@@ -336,7 +358,7 @@ export async function fetchCoveringGrids(
     limit: 100,
     sortby: [{ field: 'properties.datetime', direction: 'desc' }],
   };
-  const r = await fetch(MPC_STAC_URL, {
+  const r = await fetch(cfg.url ?? MPC_STAC_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
