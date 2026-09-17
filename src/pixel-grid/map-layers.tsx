@@ -4,7 +4,7 @@ import L from 'leaflet';
 import proj4 from 'proj4';
 import { crsToProj4Def } from '../lib/geo';
 import { clipPolygon, type Poly } from './geometry';
-import { cultureForCell, type SimLayout, BARE } from './simulate';
+import { cultureForCell, blockPlots, type SimLayout, BARE, OFF_TRIAL, CROP_COLORS } from './simulate';
 import type { LngLatBounds } from './s2-grid';
 
 /**
@@ -53,14 +53,20 @@ type BasemapKey = keyof typeof BASEMAPS;
 const AOI_STYLE: L.PathOptions = { color: '#38bdf8', weight: 2, fillOpacity: 0, interactive: false };
 
 /**
- * Renders the field "as it really is" — the crisp planting pattern (crop A vs B
- * at full resolution) as *vector* polygons beneath the pixel grid, drawn with an
- * SVG renderer so the strip boundaries stay clean lines (no rasterised stairs).
+ * Renders the field "as it really is": the crisp planting pattern at full
+ * resolution as *vector* polygons beneath the pixel grid, drawn with an SVG
+ * renderer so the strip boundaries stay clean lines (no rasterised stairs).
  * The pattern is built in the rotated UTM frame (where strips are axis-aligned
  * rectangles), then projected back to WGS84, so it lines up with the grid cells.
+ *
+ * `colors` is indexed by SPECIES, so the periodic patterns (which return 0 or 1)
+ * and a block trial (which returns a plot's species) share one lookup and cannot
+ * be coloured differently. `layoutSig` is the dependency: hand-listing layout
+ * fields here once meant a block design could change with nothing redrawn.
  */
-function TruthOverlay({ extent, epsg, layout, origin, colorA, colorB, clipPoly }: {
-  extent: [number, number, number, number]; epsg: number; layout: SimLayout; origin: [number, number]; colorA: string; colorB: string; clipPoly?: Poly;
+function TruthOverlay({ extent, epsg, layout, layoutSig, origin, colors, clipPoly }: {
+  extent: [number, number, number, number]; epsg: number; layout: SimLayout; layoutSig: string;
+  origin: [number, number]; colors: string[]; clipPoly?: Poly;
 }) {
   const map = useMap();
   useEffect(() => {
@@ -102,18 +108,28 @@ function TruthOverlay({ extent, epsg, layout, origin, colorA, colorB, clipPoly }
       }
       features.push({ type: 'Feature', properties: { cult }, geometry: { type: 'Polygon', coordinates: [ring] } });
     };
-    // Each crop strip occupies width W of every period P; the S-wide alleys are
-    // painted bare-soil brown (a full bare backdrop, with the crop strips on top).
-    const cMin = Math.floor(uMin / P), cMax = Math.floor(uMax / P);
-    const rMin = Math.floor(vMin / P), rMax = Math.floor(vMax / P);
-    if (S > 0) pushRect(uMin, uMax, vMin, vMax, BARE.id);
-    if (layout.pattern === 'row' || layout.pattern === 'strip-row-2') {
-      for (let r = rMin; r <= rMax; r++) pushRect(uMin, uMax, r * P, r * P + W, cultureForCell(r, 0, layout.pattern));
-    } else if (layout.pattern === 'col' || layout.pattern === 'strip-col-2') {
-      for (let c = cMin; c <= cMax; c++) pushRect(c * P, c * P + W, vMin, vMax, cultureForCell(0, c, layout.pattern));
-    } else { // checker — square plots with an alley on every side
-      for (let r = rMin; r <= rMax; r++)
-        for (let c = cMin; c <= cMax; c++) pushRect(c * P, c * P + W, r * P, r * P + W, cultureForCell(r, c, layout.pattern));
+    if (layout.pattern === 'block' && layout.block) {
+      const p = layout.block;
+      // Bare backdrop over the TRIAL FOOTPRINT only, never the whole extent.
+      // Ground outside a finite trial is not an alley: it is land the design
+      // never touched, which is the whole distinction OFF_TRIAL exists to make,
+      // and painting it bare-soil brown would claim otherwise on the map.
+      pushRect(p.u0, p.u0 + p.totalU, p.v0, p.v0 + p.totalV, BARE.id);
+      for (const r of blockPlots(p)) pushRect(r.u0, r.u1, r.v0, r.v1, r.species);
+    } else {
+      // Each crop strip occupies width W of every period P; the S-wide alleys are
+      // painted bare-soil brown (a full bare backdrop, with the crop strips on top).
+      const cMin = Math.floor(uMin / P), cMax = Math.floor(uMax / P);
+      const rMin = Math.floor(vMin / P), rMax = Math.floor(vMax / P);
+      if (S > 0) pushRect(uMin, uMax, vMin, vMax, BARE.id);
+      if (layout.pattern === 'row' || layout.pattern === 'strip-row-2') {
+        for (let r = rMin; r <= rMax; r++) pushRect(uMin, uMax, r * P, r * P + W, cultureForCell(r, 0, layout.pattern));
+      } else if (layout.pattern === 'col' || layout.pattern === 'strip-col-2') {
+        for (let c = cMin; c <= cMax; c++) pushRect(c * P, c * P + W, vMin, vMax, cultureForCell(0, c, layout.pattern));
+      } else { // checker: square plots with an alley on every side
+        for (let r = rMin; r <= rMax; r++)
+          for (let c = cMin; c <= cMax; c++) pushRect(c * P, c * P + W, r * P, r * P + W, cultureForCell(r, c, layout.pattern));
+      }
     }
 
     if (!map.getPane('truth')) { map.createPane('truth'); map.getPane('truth')!.style.zIndex = '300'; }
@@ -123,13 +139,20 @@ function TruthOverlay({ extent, epsg, layout, origin, colorA, colorB, clipPoly }
       interactive: false,
       // same-colour stroke closes the hairline seams between adjacent bands
       style: (f: any) => {
-        const col = f.properties.cult === 0 ? colorA : f.properties.cult === 1 ? colorB : BARE.color;
+        const cult = f.properties.cult as number;
+        // Species index first, then the two sentinels. The palette fallback
+        // covers a design asking for more species than are currently defined,
+        // so an extra block column reads as its own crop rather than as ground.
+        const col = cult < colors.length ? colors[cult]
+          : cult === BARE.id ? BARE.color
+          : cult === OFF_TRIAL.id ? OFF_TRIAL.color
+          : CROP_COLORS[cult % CROP_COLORS.length];
         return { renderer, stroke: true, color: col, weight: 1, opacity: 1, fill: true, fillColor: col, fillOpacity: 1 };
       },
     });
     layer.addTo(map);
     return () => { layer.remove(); };
-  }, [map, extent[0], extent[1], extent[2], extent[3], epsg, layout.pattern, layout.width, layout.spacing, layout.rotationDeg, origin[0], origin[1], colorA, colorB, clipPoly]);
+  }, [map, extent[0], extent[1], extent[2], extent[3], epsg, layoutSig, origin[0], origin[1], colors.join(','), clipPoly]);
   return null;
 }
 

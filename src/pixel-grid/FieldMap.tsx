@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react';
 import { MapContainer, TileLayer, Rectangle, Polygon, GeoJSON, ScaleControl } from 'react-leaflet';
 import L from 'leaflet';
 import { AOI_STYLE, BASEMAPS, GridLines, PolyDrawer, PsfOverlay, RectDrawer, TruthOverlay, ViewTracker, type BasemapKey } from './map-layers';
-import { BARE } from './simulate';
+import { BARE, OFF_TRIAL } from './simulate';
 import type { useAoiField } from './use-area';
 import type { useFieldGrid } from './use-grid';
 import type { Experiment, useSimulation, usePcaSim } from './use-simulation';
@@ -45,7 +45,7 @@ export function FieldMap({
 }) {
   const { aoi, aoiPoly, fieldRing, drawKind, drawMode, onDrawDone, onPolyDone } = area;
   const { build, geojson, fieldGeojson, lineBox, psfCenter, psfSigmaM, psfSigmaXM, psfSigmaYM, psfFwhmXM, psfFwhmYM, setViewBounds } = gridApi;
-  const { layout, spacing, cropA, colB, nameA, nameB } = exp;
+  const { layout, layoutSig, spacing, colors, names } = exp;
   const { patternOrigin, simGeojson, simStyle, fieldOutlineStyle } = sim;
   // Metres between the ruled lines when the grid is too fine to rule every pixel
   // edge (0 when every edge is drawn). Named on the map so a coarse mesh is never
@@ -84,7 +84,7 @@ export function FieldMap({
               : <Rectangle bounds={[[aoi[1], aoi[0]], [aoi[3], aoi[2]]]} pathOptions={AOI_STYLE} />
           )}
           {showField && lineBox && build && aoi && patternOrigin && (
-            <TruthOverlay extent={lineBox} epsg={build.epsg} layout={layout} origin={patternOrigin.origin} colorA={cropA.color} colorB={colB} clipPoly={fieldRing ?? undefined} />
+            <TruthOverlay extent={lineBox} epsg={build.epsg} layout={layout} layoutSig={layoutSig} origin={patternOrigin.origin} colors={colors} clipPoly={fieldRing ?? undefined} />
           )}
           {showPsf && psfCenter && psfSigmaM > 0 && (
             <PsfOverlay center={psfCenter} sigmaXM={psfSigmaXM} sigmaYM={psfSigmaYM} fwhmXM={psfFwhmXM} fwhmYM={psfFwhmYM} light={BASEMAPS[basemap].light} />
@@ -189,15 +189,36 @@ export function FieldMap({
           <div className="pointer-events-none absolute bottom-7 left-2 z-[1000] rounded-md border border-white/10 bg-[#11151a]/85 px-2.5 py-2 text-[11px] text-slate-200 backdrop-blur">
             <div className="mb-1 font-medium text-slate-300">Mixture</div>
             <div className="space-y-1">
-              <div className="h-2.5 w-44 rounded-sm" style={{ background: `linear-gradient(to right, ${colB}, ${cropA.color})` }} />
-              <div className="flex w-44 items-baseline justify-between gap-1 text-[10px] text-slate-400">
-                <span className="truncate">all {nameB}</span>
-                <span className="shrink-0 text-slate-500">50/50</span>
-                <span className="truncate text-right">all {nameA}</span>
-              </div>
-              {spacing > 0 && (
+              {/* Two species still read best as one gradient (a pixel is some
+                  blend of exactly those two). Past two there is no single axis
+                  to run along, so the legend becomes a swatch list. */}
+              {colors.length === 2 ? (
+                <>
+                  <div className="h-2.5 w-44 rounded-sm" style={{ background: `linear-gradient(to right, ${colors[1]}, ${colors[0]})` }} />
+                  <div className="flex w-44 items-baseline justify-between gap-1 text-[10px] text-slate-400">
+                    <span className="truncate">all {names[1]}</span>
+                    <span className="shrink-0 text-slate-500">50/50</span>
+                    <span className="truncate text-right">all {names[0]}</span>
+                  </div>
+                </>
+              ) : (
+                <div className="grid w-44 grid-cols-2 gap-x-2 gap-y-0.5 text-[10px] text-slate-400">
+                  {names.map((n, i) => (
+                    <span key={i} className="flex items-center gap-1 truncate">
+                      <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: colors[i] }} />
+                      <span className="truncate">{n}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+              {(spacing > 0 || layout.pattern === 'block') && (
                 <div className="flex items-center gap-1 text-[10px] text-slate-400">
                   <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: BARE.color }} /> bare-soil alley
+                </div>
+              )}
+              {layout.pattern === 'block' && (
+                <div className="flex items-center gap-1 text-[10px] text-slate-400">
+                  <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: OFF_TRIAL.color }} /> outside the trial
                 </div>
               )}
             </div>
