@@ -82,3 +82,20 @@ export const inRange = (lo: number, hi: number) => (v: unknown) => isNum(v) && v
 export const isBool = (v: unknown): v is boolean => typeof v === 'boolean';
 export const oneOf = (...xs: readonly unknown[]) => (v: unknown) => xs.includes(v);
 export const isLngLat = (v: unknown) => Array.isArray(v) && v.length === 2 && v.every(isNum);
+
+/**
+ * Every field of an object must pass its own validator, and no field may be
+ * missing. For saved values that are a RECORD rather than a scalar: a block
+ * design is eight numbers, and a stale or hand-edited one must fall back to the
+ * default rather than reach the geometry, where a NaN plot width would silently
+ * produce a trial with no plots in it.
+ */
+export const shape = (spec: Record<string, (v: unknown) => boolean>) => (v: unknown) => {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+  const o = v as Record<string, unknown>;
+  return Object.entries(spec).every(([k, ok]) => k in o && ok(o[k]));
+};
+
+/** An array whose every item passes, with a length between min and max. */
+export const arrayOf = (item: (v: unknown) => boolean, min = 0, max = Number.MAX_SAFE_INTEGER) =>
+  (v: unknown) => Array.isArray(v) && v.length >= min && v.length <= max && v.every(item);

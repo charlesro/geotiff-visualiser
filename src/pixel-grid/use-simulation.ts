@@ -4,7 +4,8 @@ import { crsToProj4Def } from '../lib/geo';
 import {
   BARE, CROP_PRESETS, PATTERNS, TRUTH_TYPES, bestPhaseOffset, cropById, makeBetaSchedule, simulateField, simulatePatch,
   truthAt, utmEnvelope, TMAX,
-  type FieldParams, type FieldSim, type PatternType, type SensorParams, type SimLayout,
+  buildBlockPlan, layoutKey,
+  type BlockDesign, type FieldParams, type FieldSim, type PatternType, type SensorParams, type SimLayout,
 } from './simulate';
 import { aoiUtmOrigin, buildS2Grid, type LngLatBounds } from './s2-grid';
 import { cellCenter, pointInPoly, type Poly } from './geometry';
@@ -12,7 +13,7 @@ import { lerpHex, mix3 } from './util';
 import { PCA_SAMPLE, RES_LADDER } from './sensors';
 import type { SweepStep } from './PcaSweep';
 import type { useFieldGrid } from './use-grid';
-import { inRange, isNum, oneOf, usePersistentState } from './persist';
+import { inRange, isNum, oneOf, shape, usePersistentState } from './persist';
 
 /** A restored crop must still be a usable curve, not whatever happened to be stored. */
 const isFieldParams = (v: unknown): v is FieldParams => {
@@ -54,7 +55,18 @@ type GridApi = ReturnType<typeof useFieldGrid>;
  */
 
 /** Planting design, crop curves and noise. Sigma is owned by step 2 and passed in. */
-export function useExperiment({ sigmaX, sigmaY }: { sigmaX: number; sigmaY: number }) {
+export function useExperiment({ sigmaX, sigmaY, psfOffX, psfOffY, fieldCenter, pixelSize }: {
+  sigmaX: number; sigmaY: number; psfOffX: number; psfOffY: number;
+  /**
+   * The field's centre in UTM, and the chosen pixel size. A block design is a
+   * FINITE trial that has to be anchored on the field and snapped to the pixel
+   * lattice, and the plan is resolved HERE, once, next to the layout it belongs
+   * to. Building it anywhere else would give the map a second copy, and a plan
+   * resolved from a different extent draws one trial while the purity, the
+   * ladder and the PCA describe another, with no error anywhere.
+   */
+  fieldCenter: [number, number] | null; pixelSize: number;
+}) {
   // Experiment simulation (repo parameter set)
   const [pattern, setPattern] = usePersistentState<PatternType>('pattern', 'row', oneOf(...PATTERNS.map(p => p.id)));
   const [stripWidth, setStripWidth] = usePersistentState('stripWidth', 3, inRange(0.01, 1000));
@@ -78,10 +90,50 @@ export function useExperiment({ sigmaX, sigmaY }: { sigmaX: number; sigmaY: numb
   const [day] = useState(196);
   const [simView] = useState<'mixture' | 'purity' | 'ndvi'>('mixture');
 
+  /**
+   * The randomised block design. Persisted under its own key and validated
+   * field by field: a stale or hand-edited save must fall back to the default
+   * rather than reach the geometry, where a NaN plot width would quietly
+   * produce a trial with no plots in it.
+   */
+  const [blockDesign, setBlockDesign] = usePersistentState<BlockDesign>('blockDesign',
+    () => ({ nSpecies: 4, nBlocks: 4, plotLength: 8, plotWidth: 2, plotAlley: 0.5, blockAlley: 1.5, blocksPerRow: 1, seed: 1 }),
+    shape({
+      nSpecies: inRange(2, 8), nBlocks: inRange(1, 20),
+      plotLength: inRange(0.1, 1000), plotWidth: inRange(0.1, 1000),
+      plotAlley: inRange(0, 100), blockAlley: inRange(0, 100),
+      blocksPerRow: inRange(1, 20), seed: isNum,
+    }));
+
   // ----- experiment simulation (repo engine over the real grid) -----
-  const layout: SimLayout = { pattern, width: stripWidth, spacing, rotationDeg: rotation };
-  const sensor: SensorParams = { sigmaX, sigmaY, mixThreshold: threshold / 100 };
-  const sensorSig = `${sigmaX}_${sigmaY}_${threshold}`;
+  /**
+   * The design resolved against THIS field, built exactly once. Everything that
+   * draws or measures the trial reads this same object off `layout.block`, so
+   * the map and the numbers cannot describe different trials. Keyed on the
+   * primitives rather than the design object, which is a fresh literal whenever
+   * any field changes.
+   */
+  const blockPlan = useMemo(() => {
+    if (pattern !== 'block' || !fieldCenter) return undefined;
+    return buildBlockPlan(blockDesign, { centerU: fieldCenter[0], centerV: fieldCenter[1], snap: optimizePlacement ? pixelSize : 0 });
+  }, [pattern, fieldCenter?.[0], fieldCenter?.[1], pixelSize, optimizePlacement,
+      blockDesign.nSpecies, blockDesign.nBlocks, blockDesign.plotLength, blockDesign.plotWidth,
+      blockDesign.plotAlley, blockDesign.blockAlley, blockDesign.blocksPerRow, blockDesign.seed]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const layout: SimLayout = { pattern, width: stripWidth, spacing, rotationDeg: rotation, block: blockPlan };
+  /**
+   * Every layout dependency in one string, including the resolved corner. The
+   * memo deps, the map's remount key and the overlay's effect deps take THIS
+   * instead of hand-listing primitives: a field forgotten in one of those lists
+   * shows a stale design with no error, no type failure and no failing test.
+   */
+  const layoutSig = layoutKey(layout);
+  const sensor: SensorParams = { sigmaX, sigmaY, mixThreshold: threshold / 100, offX: psfOffX, offY: psfOffY };
+  // Every primitive the sensor depends on: `sensor` itself is a fresh literal each
+  // render and is deliberately kept out of dependency arrays, so this string is
+  // what tells the memos the PSF changed. Miss the offsets here and the page
+  // keeps showing the purity it computed for a centred kernel.
+  const sensorSig = `${sigmaX}_${sigmaY}_${threshold}_${psfOffX}_${psfOffY}`;
 
   // Same species picked for both (to tweak one parameter and compare) → recolour B
   // so the two are still distinguishable everywhere. Curves/names are untouched.
@@ -103,7 +155,8 @@ export function useExperiment({ sigmaX, sigmaY }: { sigmaX: number; sigmaY: numb
            optimizePlacement, setOptimizePlacement, cropA, setCropA, cropB, setCropB,
            presetA, setPresetA, presetB, setPresetB, magnitude, setMagnitude,
            alpha, setAlpha, beta, setBeta, threshold, setThreshold, day, simView,
-           layout, sensor, sensorSig, dupSpecies, colB, nameA, nameB, cropAd, cropBd, cropSig };
+           blockDesign, setBlockDesign, blockPlan,
+           layout, layoutSig, sensor, sensorSig, dupSpecies, colB, nameA, nameB, cropAd, cropBd, cropSig };
 }
 
 export type Experiment = ReturnType<typeof useExperiment>;
@@ -113,7 +166,7 @@ export function useSimulation({ aoi, aoiPoly, gridApi, exp, simOn }: {
   aoi: LngLatBounds | null; aoiPoly: Poly | null; gridApi: GridApi; exp: Experiment; simOn: boolean;
 }) {
   const { renderGrid, build, } = gridApi;
-  const { pattern, stripWidth, spacing, rotation, optimizePlacement, threshold, layout, sensor,
+  const { pattern, stripWidth, spacing, rotation, optimizePlacement, threshold, layout, layoutSig, sensor,
           sensorSig, cropA, cropB, colB, simView, day, magnitude, alpha, beta } = exp;
 
   // Pattern origin: the field corner, optionally slid to the phase that maximises
@@ -125,7 +178,9 @@ export function useSimulation({ aoi, aoiPoly, gridApi, exp, simOn }: {
     const [du, dv] = bestPhaseOffset(pattern, build.res, stripWidth, spacing, threshold / 100, base[0], base[1]);
     const t = (rotation * Math.PI) / 180, cos = Math.cos(t), sin = Math.sin(t);
     return { origin: [base[0] + du * cos - dv * sin, base[1] + du * sin + dv * cos] as [number, number], offset: [du, dv] as [number, number] };
-  }, [aoi, build?.epsg, build?.res, optimizePlacement, pattern, stripWidth, spacing, threshold, rotation]);
+    // layoutSig rather than the loose primitives: it also covers the block
+    // design, whose seed, plot size and alleys move none of them.
+  }, [aoi, build?.epsg, build?.res, optimizePlacement, layoutSig, threshold]);
 
   const sim = useMemo(
     () => (simOn && renderGrid && patternOrigin ? simulateField(renderGrid, patternOrigin.origin, layout, sensor) : null),
@@ -197,8 +252,8 @@ export function usePcaSim({ aoi, aoiPoly, gridApi, exp, patternOrigin, activeSte
   /** Also compute the ladder at 0° so the two can be shown side by side. */
   compareAligned: boolean;
 }) {
-  const { grid, build, buildOpts, sigmaX, sigmaY } = gridApi;
-  const { pattern, stripWidth, spacing, rotation, optimizePlacement, threshold, sensorSig } = exp;
+  const { grid, build, buildOpts, sigmaX, sigmaY, psfOffX, psfOffY } = gridApi;
+  const { pattern, stripWidth, spacing, rotation, optimizePlacement, threshold, sensorSig, layout, layoutSig } = exp;
   const [selectedPixels, setSelectedPixels] = useState<number[]>([]); // pixels picked in the PCA → highlight on map
 
   // The PCA always runs on the field itself — the full grid when it fits, else a
@@ -227,13 +282,19 @@ export function usePcaSim({ aoi, aoiPoly, gridApi, exp, patternOrigin, activeSte
     if (activeStep !== 'pca' || !pcaGrid || !patternOrigin) { setPcaSim(null); setPcaBusy(false); return; }
     setPcaBusy(true);
     const id = setTimeout(() => {
-      const layoutL: SimLayout = { pattern, width: stripWidth, spacing, rotationDeg: rotation };
-      const sensorL: SensorParams = { sigmaX, sigmaY, mixThreshold: threshold / 100 };
+      // The SHARED layout, not a rebuilt one: a literal assembled from loose
+      // primitives here would carry no block plan at all, so a randomised block
+      // design would be invisible to the PCA while the map drew it.
+      const layoutL: SimLayout = layout;
+      const sensorL: SensorParams = { sigmaX, sigmaY, mixThreshold: threshold / 100, offX: psfOffX, offY: psfOffY };
       setPcaSim(simulateField(pcaGrid, patternOrigin.origin, layoutL, sensorL));
       setPcaBusy(false);
     }, 30);
     return () => clearTimeout(id);
-  }, [activeStep, pcaGrid, patternOrigin, pattern, stripWidth, spacing, rotation, sensorSig]); // eslint-disable-line react-hooks/exhaustive-deps
+    // layoutSig, not the loose primitives: a changed seed, plot size or alley
+    // moves none of pattern/stripWidth/spacing/rotation, so the PCA would have
+    // gone on showing the design it computed before the edit.
+  }, [activeStep, pcaGrid, patternOrigin, layoutSig, sensorSig]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The PCA runs on the full bbox grid; restrict it to pixels INSIDE the traced
   // field so the scatter (and click/lasso → map highlight) only ever hits real
@@ -282,8 +343,11 @@ export function usePcaSim({ aoi, aoiPoly, gridApi, exp, patternOrigin, activeSte
   const stepAt = useCallback((rotationDeg: number, r: number): SweepStep | null => {
     if (!aoi || !build?.epsg) return null;
     const epsg = build.epsg;
-    const layoutL: SimLayout = { pattern, width: stripWidth, spacing, rotationDeg };
-    const sensorL: SensorParams = { sigmaX, sigmaY, mixThreshold: threshold / 100 };
+    // The SHARED layout, with only the rotation overridden: "vs aligned" reruns
+    // this identical code at 0 degrees. Rebuilding it from primitives would drop
+    // the block plan, so a randomised design would be invisible to the ladder.
+    const layoutL: SimLayout = { ...layout, rotationDeg };
+    const sensorL: SensorParams = { sigmaX, sigmaY, mixThreshold: threshold / 100, offX: psfOffX, offY: psfOffY };
     const [minE, minN, maxE, maxN] = utmEnvelope(aoi, epsg);
     const cx = (minE + maxE) / 2, cy = (minN + maxN) / 2;
     const fieldMin = Math.min(maxE - minE, maxN - minN);
@@ -291,14 +355,29 @@ export function usePcaSim({ aoi, aoiPoly, gridApi, exp, patternOrigin, activeSte
     const t = (rotationDeg * Math.PI) / 180, cos = Math.cos(t), sin = Math.sin(t);
     // Each size gets its own purity-optimal placement (matches the map when picked).
     let ox = base[0], oy = base[1];
-    if (optimizePlacement) {
+    // A block design is already anchored and snapped by buildBlockPlan, and its
+    // plots carry n species: searchPhaseOffset keeps two counters and assigns
+    // with `& 1`, so it would optimise "species 0 or 1 coverage" and ignore the
+    // rest. The trial is staked once, so the ladder reuses that placement and
+    // only the sampling window follows r.
+    if (optimizePlacement && layout.pattern !== 'block') {
       const [du, dv] = bestPhaseOffset(pattern, r, stripWidth, spacing, threshold / 100, base[0], base[1]);
       ox = base[0] + du * cos - dv * sin; oy = base[1] + du * sin + dv * cos;
     }
     const sizeM = Math.min(fieldMin, Math.max(r * 40, 20)); // ~40 px/side, bounded by the field
-    const p = simulatePatch(cx - sizeM / 2, cy - sizeM / 2, sizeM, r, ox, oy, layoutL, sensorL);
+    // SNAP the window to the same lattice the placement was optimised against
+    // (multiples of r, as bestPhaseOffset above and resolutionSweep both assume).
+    // An unsnapped corner measures the design against pixels half a phase out of
+    // step with the ones the map draws: on 20 m strips at 10 m that reads 50%
+    // pure instead of 100%, so the ladder understated every design it was meant
+    // to help choose between.
+    const pE = Math.floor((cx - sizeM / 2) / r) * r;
+    const pN = Math.floor((cy - sizeM / 2) / r) * r;
+    const p = simulatePatch(pE, pN, sizeM, r, ox, oy, layoutL, sensorL);
     return { res: r, proportionA: p.proportionA, proportionBare: p.proportionBare, purePct: p.purePct };
-  }, [aoi, build?.epsg, pattern, stripWidth, spacing, optimizePlacement, sigmaX, sigmaY, threshold]);
+    // layoutSig covers the whole design, block parameters included; the loose
+    // primitives it replaces move for none of them.
+  }, [aoi, build?.epsg, layoutSig, optimizePlacement, sigmaX, sigmaY, psfOffX, psfOffY, threshold]);
 
   // Bumped by every new run and every cancellation. A chunk that finds it changed
   // stops without writing, so a stale ladder can never land after a newer one.

@@ -57,7 +57,7 @@ export default function PixelGridApp() {
   // `build`; sigmaX/sigmaY are owned here (the PSF is a property of the chosen
   // sensor) and handed to the simulation hooks as plain scalars.
   const gridApi = useFieldGrid({ aoi, aoiPoly });
-  const { sigmaX, sigmaY, renderGrid, fieldAreaM2, gridSummary } = gridApi;
+  const { sigmaX, sigmaY, psfOffX, psfOffY, renderGrid, fieldAreaM2, gridSummary } = gridApi;
   const [basemap, setBasemap] = usePersistentState<BasemapKey>('basemap', 'satellite', v => typeof v === 'string' && v in BASEMAPS);
   const [showField, setShowField] = usePersistentState('showField', false, isBool);   // render the true planting pattern under the grid
   const [showPsf, setShowPsf] = usePersistentState('showPsf', false, isBool);        // draw the sensor PSF footprint on the map
@@ -70,24 +70,43 @@ export default function PixelGridApp() {
   const [pcaRetuneOpen, setPcaRetuneOpen] = usePersistentState('pcaRetuneOpen', false, isBool);
   const [compareAligned, setCompareAligned] = usePersistentState('compareAligned', false, isBool);  // rotated vs 0° ladders
   const [panelW, setPanelW] = useState(() => {          // drag the panel's left edge to widen it
-    const v = Number(localStorage.getItem('pgrid_panel_w'));
-    return v >= 320 && v <= 1400 ? v : 380;
+    const saved = readSaved<number>('panelW', inRange(320, 1400));
+    if (saved !== undefined) return saved;
+    // The pre-persist.ts key, read raw. In a private window or with storage full
+    // this access throws, and it used to do so from inside a pointer handler and
+    // a state initialiser, where every other saved value fails softly.
+    try {
+      const v = Number(localStorage.getItem('pgrid_panel_w'));
+      return v >= 320 && v <= 1400 ? v : 380;
+    } catch { return 380; }
   });
 
   // Steps 3 & 4 — the planting design, the sensor's view of it, and the PCA.
   // Order matters: the PCA reuses `patternOrigin` from the simulation rather than
   // recomputing it, so the drawn pattern and the simulated one can never drift.
-  const exp = useExperiment({ sigmaX, sigmaY });
+  // A block design is a finite trial: it is anchored on the field centre and
+  // snapped to the pixel lattice. Both come from `build`, so the plan lives in
+  // the same UTM frame as `patternOrigin` and the ladder's sampling window.
+  const fieldCenter = useMemo((): [number, number] | null => {
+    if (!gridApi.build?.utmBounds) return null;
+    const [mnE, mnN, mxE, mxN] = gridApi.build.utmBounds;
+    return [(mnE + mxE) / 2, (mnN + mxN) / 2];
+  }, [gridApi.build?.utmBounds]);
+  const exp = useExperiment({ sigmaX, sigmaY, psfOffX, psfOffY, fieldCenter, pixelSize: gridApi.build?.res ?? 10 });
   // Only what `geoKey` needs; the panels read the rest straight off `exp`.
-  const { pattern, stripWidth, spacing, rotation, optimizePlacement, day, simView, sensorSig, cropSig } = exp;
+  const { optimizePlacement, day, simView, layoutSig, sensorSig, cropSig } = exp;
 
   const simApi = useSimulation({ aoi, aoiPoly, gridApi, exp, simOn });
   const { patternOrigin, simSummary } = simApi;
 
   const pcaApi = usePcaSim({ aoi, aoiPoly, gridApi, exp, patternOrigin, activeStep, compareAligned });
 
+  // `layoutSig` stands in for the four layout segments this used to splice in
+  // (pattern, width, spacing, rotation). Those move for none of a block
+  // design's parameters, so a changed seed or plot size left the previous trial
+  // on the map: react-leaflet only repaints when this key changes.
   const geoKey = renderGrid
-    ? `${renderGrid.epsg}-${renderGrid.res}-${renderGrid.utmBounds.join(',')}-${basemap}-${simOn ? simView : 'off'}-${simOn && simView === 'ndvi' ? day : ''}-${pattern}-${stripWidth}-${spacing}-${rotation}-${optimizePlacement ? 'opt' : 'raw'}-${sensorSig}-${cropSig}`
+    ? `${renderGrid.epsg}-${renderGrid.res}-${renderGrid.utmBounds.join(',')}-${basemap}-${simOn ? simView : 'off'}-${simOn && simView === 'ndvi' ? day : ''}-${layoutSig}-${optimizePlacement ? 'opt' : 'raw'}-${sensorSig}-${cropSig}`
     : 'none';
 
   // The map reopens exactly where it was left; failing that, on the field.
@@ -126,7 +145,7 @@ export default function PixelGridApp() {
     const onUp = () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
-      setPanelW(w => { localStorage.setItem('pgrid_panel_w', String(w)); return w; });
+      setPanelW(w => { writeSaved('panelW', w); return w; });
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);

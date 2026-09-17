@@ -206,7 +206,7 @@ export function FieldMap({
 
         {lineStepM > 0 && (
           <div className={`pointer-events-none absolute left-2 z-[1000] rounded-md border border-white/10 bg-[#11151a]/85 px-2 py-1 text-[10px] text-slate-300 backdrop-blur ${simOn && simGeojson ? 'bottom-[7.5rem]' : 'bottom-7'}`}>
-            grid ruled every {lineStepM >= 1000 ? `${+(lineStepM / 1000).toFixed(1)} km` : `${Math.round(lineStepM)} m`}, not every pixel
+            grid ruled every {lineStepM >= 1000 ? `${+(lineStepM / 1000).toFixed(1)} km` : lineStepM < 10 ? `${+lineStepM.toFixed(2)} m` : `${Math.round(lineStepM)} m`}, not every pixel
           </div>
         )}
       </div>

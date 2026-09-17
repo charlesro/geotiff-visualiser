@@ -39,7 +39,7 @@ const reveal = (t, decl) => (t.includes('export ' + decl) ? t : t.replace(decl, 
 const REVEAL = { 'src/pixel-grid/simulate.ts': ['const strideFor =', 'function patternCultureUV('] };
 
 fs.rmSync(BUILD, { recursive: true, force: true });
-for (const rel of ['src/lib/geo.ts', 'src/pixel-grid/s2-grid.ts', 'src/pixel-grid/simulate.ts', 'src/pixel-grid/shapefile.ts']) {
+for (const rel of ['src/lib/geo.ts', 'src/pixel-grid/s2-grid.ts', 'src/pixel-grid/simulate.ts', 'src/pixel-grid/shapefile.ts', 'src/pixel-grid/util.ts']) {
   let ts = fs.readFileSync(path.join(ROOT, rel), 'utf8');
   for (const decl of REVEAL[rel] ?? []) ts = reveal(ts, decl);
   // esbuild only strips types; relative specifiers still need an extension to
@@ -60,8 +60,9 @@ const {
   simulateField, simulatePatch, bestPhaseOffset, cultureAt, utmEnvelope,
   resolutionSweep, truthAt, strideFor, patternCultureUV, coverStats,
   buildBlockPlan, blockPermutation, blockCoverUV, blockPlots, minFeatureM, layoutKey,
-  TMAX, DEFAULT_PARS, BARE, OFF_TRIAL, MIXED, MAX_COVER, MAX_PLOTS, PATTERNS, cropById, parsOf,
+  TMAX, DEFAULT_PARS, BARE, OFF_TRIAL, MIXED, MAX_COVER, MAX_PLOTS, PATTERNS, CROP_COLORS, cropById, parsOf,
 } = await import(path.join(BUILD, 'src/pixel-grid/simulate.mjs'));
+const { mix3, mixN, distinctColors } = await import(path.join(BUILD, 'src/pixel-grid/util.mjs'));
 const { gridToShapefileZip } = await import(path.join(BUILD, 'src/pixel-grid/shapefile.mjs'));
 
 /**
@@ -690,6 +691,63 @@ console.log('\nH3. the randomised block design: geometry and reproducibility');
       const moved = layoutKey({ ...L, block: buildBlockPlan(design, { centerU: 7, centerV: 0, snap: 0 }) });
       return new Set([base, ...perturbed, moved]).size === perturbed.length + 2;
     })());
+}
+
+console.log('\nH4. one blend in the codebase: mix3 is the two-species spelling of mixN');
+{
+  // mix3 paints the map's mixture overlay. It now delegates to mixN, so this
+  // pins the reduction against the arithmetic it replaced: same weights, same
+  // rounding, same hex. Without it "provably unchanged" is only an argument.
+  const hexRgb = (h) => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+  const mix3Old = (pA, pB, pBare, colA, colB) => {
+    const [aR, aG, aB] = hexRgb(colA), [bR, bG, bB] = hexRgb(colB), [sR, sG, sB] = hexRgb(BARE.color);
+    const w = pA + pB + pBare || 1;
+    const c = [(pA * aR + pB * bR + pBare * sR) / w, (pA * aG + pB * bG + pBare * sG) / w, (pA * aB + pB * bB + pBare * sB) / w];
+    return `#${c.map(v => Math.round(v).toString(16).padStart(2, '0')).join('')}`;
+  };
+  let worst = '';
+  const same = (() => {
+    for (const colA of ['#e69f00', '#0072b2', '#999999'])
+      for (const colB of ['#009e73', '#cc79a7', '#e69f00'])
+        for (let a = 0; a <= 1.0001; a += 0.1)
+          for (let b = 0; a + b <= 1.0001; b += 0.1) {
+            const bare = Math.max(0, 1 - a - b);
+            const got = mix3(a, b, bare, colA, colB), want = mix3Old(a, b, bare, colA, colB);
+            if (got !== want) { worst = `${a.toFixed(1)}/${b.toFixed(1)}/${bare.toFixed(1)} ${colA}+${colB}: ${got} vs ${want}`; return false; }
+          }
+    return true;
+  })();
+  ok('mix3 through mixN is byte-identical to the blend it replaced', same, worst || 'swept 3 x 3 colours x 66 fraction splits');
+  ok('mixN of one species at full cover is that species colour exactly',
+    mixN([1], ['#e69f00']) === '#e69f00' && mixN([0, 1], ['#e69f00', '#0072b2']) === '#0072b2');
+  ok('mixN weights four species evenly and stays inside the palette range',
+    (() => {
+      const c = mixN([0.25, 0.25, 0.25, 0.25], CROP_COLORS.slice(0, 4));
+      return /^#[0-9a-f]{6}$/.test(c) && c !== CROP_COLORS[0];
+    })());
+  ok('off-trial ground darkens a pixel without being counted as a species',
+    mixN([1], ['#e69f00'], 0, 0) === '#e69f00' && mixN([1], ['#e69f00'], 0, 1) !== '#e69f00');
+
+  // Two species on the same preset must not be drawn identically.
+  // The duplicate must move onto a colour NOBODY wants: filling from the first
+  // merely-unused colour hands it one a later species asked for, which then
+  // gets bumped in turn, and every species after it shifts by one.
+  const picked = distinctColors(['#e69f00', '#e69f00', '#0072b2'], CROP_COLORS);
+  ok('a duplicate moves aside without stealing a colour a later species asked for',
+    picked[0] === '#e69f00' && picked[2] === '#0072b2' &&
+    picked[1] !== '#e69f00' && picked[1] !== '#0072b2' &&
+    new Set(picked.map(c => c.toLowerCase())).size === 3, picked.join(' '));
+  ok('and the species that asked first keeps the colour, whatever its position',
+    (() => {
+      const p = distinctColors(['#0072b2', '#e69f00', '#0072b2', '#e69f00'], CROP_COLORS);
+      return p[0] === '#0072b2' && p[1] === '#e69f00' &&
+             p[2] !== '#0072b2' && p[3] !== '#e69f00' &&
+             new Set(p.map(c => c.toLowerCase())).size === 4;
+    })());
+  ok('and leaves an already-distinct set untouched',
+    distinctColors(CROP_COLORS.slice(0, 5), CROP_COLORS).join(',') === CROP_COLORS.slice(0, 5).join(','));
+  ok('the palette carries one colour per species up to the eight-species cap',
+    CROP_COLORS.length === 8 && new Set(CROP_COLORS).size === 8);
 }
 
 console.log('\nI. field purity — the documented 50% → 100% phase case');

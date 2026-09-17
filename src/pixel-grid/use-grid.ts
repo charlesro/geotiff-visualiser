@@ -37,9 +37,10 @@ import { inRange, oneOf, usePersistentState } from './persist';
  *  - `onDownload` is here because it is a pure function of the built grid.
  *
  * The three `[sourceId]`-keyed effects must stay in THIS order (sigma reset, GSD
- * seed, catalog fetch); `pickRes` deliberately races the GSD-seed effect, which
- * is why the first click on a sweep panel lands on a 1 m grid. That is existing
- * behaviour, pinned here rather than fixed.
+ * seed, catalog fetch). `pickRes` claims the GSD-seed guard before it switches
+ * source: without that it lost the race and every sweep-panel click landed on a
+ * 1 m grid instead of the size clicked. It deliberately leaves the sigma guard
+ * alone, so picking a size still reseeds the blur from the sensor.
  */
 export function useFieldGrid({ aoi, aoiPoly }: { aoi: LngLatBounds | null; aoiPoly: Poly | null }) {
   const [sourceId, setSourceId] = usePersistentState('sourceId', 's2-10', v => typeof v === 'string' && SOURCES.some(s => s.id === v));
@@ -48,6 +49,11 @@ export function useFieldGrid({ aoi, aoiPoly }: { aoi: LngLatBounds | null; aoiPo
   const [viewBounds, setViewBounds] = useState<LngLatBounds | null>(null);
   const [sigmaX, setSigmaX] = usePersistentState('sigmaX', () => SOURCES.find(s => s.id === 's2-10')!.psf, inRange(0, 5));
   const [sigmaY, setSigmaY] = usePersistentState('sigmaY', () => SOURCES.find(s => s.id === 's2-10')!.psf, inRange(0, 5));
+  // Where the blur actually sits, in PIXELS from the pixel centre. A real sensor's
+  // PSF is not perfectly centred on its own pixel, and the offset moves the crop
+  // fractions a pixel sees, so it belongs in the simulation, not just the drawing.
+  const [psfOffX, setPsfOffX] = usePersistentState('psfOffX', 0, inRange(-2, 2));
+  const [psfOffY, setPsfOffY] = usePersistentState('psfOffY', 0, inRange(-2, 2));
 
   const source = SOURCES.find(s => s.id === sourceId)!;
 
@@ -117,7 +123,20 @@ export function useFieldGrid({ aoi, aoiPoly }: { aoi: LngLatBounds | null; aoiPo
     }
     if (selectedGrid) return { res: source.res, anchor: selectedGrid };
     // Offline fallback: only exact for phase-0 grids (S2/HLS); Landsat needs the catalog.
-    if (gridState === 'error' && source.offlinePhase0) return { res: source.res };
+    if (gridState === 'error' && source.offlinePhase0) {
+      // South of the equator the false northing (10 000 000 m) is not a multiple
+      // of 30 or 60, so "origin at a multiple of the pixel size" misses the real
+      // lattice by 10 m at HLS 30 m and 20 m at S2 60 m — a third of a pixel,
+      // exported with no hint that it is less exact than the northern case.
+      // Anchoring on the false northing itself is exact in both hemispheres.
+      const zone = utmZoneForLng((aoi[0] + aoi[2]) / 2);
+      if ((aoi[1] + aoi[3]) / 2 >= 0) return { res: source.res };
+      if (source.offlineSouth === 'false-northing')
+        return { res: source.res, anchor: { epsg: utmEpsg(zone, true), ulx: 0, uly: 10_000_000 } };
+      if (source.offlineSouth === 'north-crs')
+        return { res: source.res, anchor: { epsg: utmEpsg(zone, false), ulx: 0, uly: 0 } };
+      return { res: source.res };
+    }
     return null;
   }, [aoi, sourceId, gsd, customAnchor, selectedGrid, gridState]);
 
@@ -173,7 +192,15 @@ export function useFieldGrid({ aoi, aoiPoly }: { aoi: LngLatBounds | null; aoiPo
   // Click a sweep panel → show the field at that pixel size (a custom grid @ res).
   // Stable identity: it is handed to the memoised PcaSweep, which would otherwise
   // redraw on every render just because a fresh function arrived.
-  const pickRes = useCallback((r: number) => { setSourceId('custom'); setGsd(r); }, []);
+  const pickRes = useCallback((r: number) => {
+    // Claim the GSD-seed guard BEFORE switching source. Otherwise the [sourceId]
+    // effect above sees 'custom' as a fresh choice and reseeds the GSD from that
+    // source's own 1 m default, so clicking the 2 m panel landed on a 1 m grid:
+    // the wrong size, and fine enough to trip the export cap.
+    gsdSource.current = 'custom';
+    setSourceId('custom');
+    setGsd(r);
+  }, []);
 
   const onDownload = () => {
     if (!grid) return;
@@ -196,6 +223,8 @@ export function useFieldGrid({ aoi, aoiPoly }: { aoi: LngLatBounds | null; aoiPo
   const psfRes = build?.res ?? pxSize;
   const psfSigmaXM = sigmaX * psfRes;
   const psfSigmaYM = sigmaY * psfRes;
+  const psfOffXM = psfOffX * psfRes;
+  const psfOffYM = psfOffY * psfRes;
   const psfFwhmXM = 2.3548 * psfSigmaXM;
   const psfFwhmYM = 2.3548 * psfSigmaYM;
   const psfAnisotropic = Math.abs(sigmaX - sigmaY) > 1e-9;
@@ -212,9 +241,11 @@ export function useFieldGrid({ aoi, aoiPoly }: { aoi: LngLatBounds | null; aoiPo
     const [cE, cN] = fwd.forward([(aoi[0] + aoi[2]) / 2, (aoi[1] + aoi[3]) / 2]);
     const pcE = mnE + (Math.floor((cE - mnE) / r) + 0.5) * r; // pixel centre
     const pcN = mnN + (Math.floor((cN - mnN) / r) + 0.5) * r;
-    const [lng, lat] = inv.forward([pcE, pcN]);
+    // Drawn where the blur actually sits, offset included, so the picture and
+    // the purity numbers can never tell two different stories.
+    const [lng, lat] = inv.forward([pcE + psfOffXM, pcN + psfOffYM]);
     return [lat, lng];
-  }, [aoi, build?.utmBounds, build?.epsg, build?.res]);
+  }, [aoi, build?.utmBounds, build?.epsg, build?.res, psfOffXM, psfOffYM]);
   const dims = grid
     ? {
         nx: Math.round((grid.utmBounds[2] - grid.utmBounds[0]) / grid.res),
@@ -256,6 +287,7 @@ export function useFieldGrid({ aoi, aoiPoly }: { aoi: LngLatBounds | null; aoiPo
 
   return { sourceId, setSourceId, source, gsd, setGsd, customAnchor, setCustomAnchor,
            sigmaX, setSigmaX, sigmaY, setSigmaY,
+           psfOffX, setPsfOffX, psfOffY, setPsfOffY, psfOffXM, psfOffYM,
            grids, gridState, selectedGridKey, setSelectedGridKey, selectedGrid,
            buildOpts, build, grid, renderGrid, clippedView, geojson, fieldGeojson, lineBox,
            viewBounds, setViewBounds, pxSize, psfSigmaM, psfFwhmM, psfCenter,

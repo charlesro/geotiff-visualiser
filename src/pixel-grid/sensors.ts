@@ -43,6 +43,21 @@ interface Source {
   psfSrc?: { url: string; label: string };
   /** Grid lattice phase is 0, so a rule-based offline grid is still exact (catalog only). */
   offlinePhase0?: boolean;
+  /**
+   * Which lattice an OFFLINE grid must use south of the equator, because the two
+   * products are distributed differently and the default rule fits neither:
+   *
+   *  'false-northing' — Sentinel-2: southern CRS (327xx). Its false northing,
+   *    10 000 000 m, is not a multiple of 60, so anchoring on 0 misses the real
+   *    60 m lattice by 20 m. Anchor on the false northing instead.
+   *  'north-crs' — HLS: keeps the NORTHERN CRS (326xx) with negative northings
+   *    south of the equator, so the offline grid must be built there too;
+   *    building it in the southern CRS misses the 30 m lattice by 10 m.
+   *
+   * Both measured against live product metadata at two southern sites; north of
+   * the equator every source is exact either way and this is not consulted.
+   */
+  offlineSouth?: 'false-northing' | 'north-crs';
   cfg?: SourceConfig;
 }
 
@@ -59,16 +74,16 @@ const SRC_LS = { url: 'https://www.usgs.gov/landsat-missions/spatial-performance
 const eo = (slug: string) => ({ url: `https://www.eoportal.org/satellite-missions/${slug}`, label: 'eoPortal' });
 const SRC_PLANET = { url: 'https://www.tandfonline.com/doi/full/10.1080/01431161.2024.2357839', label: 'SuperDove vs Landsat 8 (2024)' };
 const SOURCES: Source[] = [
-  { id: 's2-10', provider: 'Sentinel-2', resLabel: '10 m', res: 10, kind: 'catalog', group: FIXED, offlinePhase0: true, psf: 0.62, psfSrc: SRC_S2,
+  { id: 's2-10', provider: 'Sentinel-2', resLabel: '10 m', res: 10, kind: 'catalog', group: FIXED, offlinePhase0: true, offlineSouth: 'false-northing', psf: 0.62, psfSrc: SRC_S2,
     note: 'Blue, green, red and NIR bands: B02, B03, B04, B08.',
     cfg: { collection: 'sentinel-2-l2a', asset: 'B04', res: 10, gridLabel: s2Label, alt: esS2(10) } },
-  { id: 's2-20', provider: 'Sentinel-2', resLabel: '20 m', res: 20, kind: 'catalog', group: FIXED, offlinePhase0: true, psf: 0.62, psfSrc: SRC_S2,
+  { id: 's2-20', provider: 'Sentinel-2', resLabel: '20 m', res: 20, kind: 'catalog', group: FIXED, offlinePhase0: true, offlineSouth: 'false-northing', psf: 0.62, psfSrc: SRC_S2,
     note: 'Red-edge and SWIR bands: B05 to B07, B8A, B11, B12.',
     cfg: { collection: 'sentinel-2-l2a', asset: 'B04', res: 20, gridLabel: s2Label, alt: esS2(20) } },
-  { id: 's2-60', provider: 'Sentinel-2', resLabel: '60 m', res: 60, kind: 'catalog', group: FIXED, offlinePhase0: true, psf: 0.62, psfSrc: SRC_S2,
+  { id: 's2-60', provider: 'Sentinel-2', resLabel: '60 m', res: 60, kind: 'catalog', group: FIXED, offlinePhase0: true, offlineSouth: 'false-northing', psf: 0.62, psfSrc: SRC_S2,
     note: 'Aerosol and cirrus bands: B01, B09, B10.',
     cfg: { collection: 'sentinel-2-l2a', asset: 'B04', res: 60, gridLabel: s2Label, alt: esS2(60) } },
-  { id: 'hls-30', provider: 'Landsat · HLS', resLabel: '30 m', res: 30, kind: 'catalog', group: FIXED, offlinePhase0: true, psf: 0.55, psfSrc: SRC_LS,
+  { id: 'hls-30', provider: 'Landsat · HLS', resLabel: '30 m', res: 30, kind: 'catalog', group: FIXED, offlinePhase0: true, offlineSouth: 'north-crs', psf: 0.55, psfSrc: SRC_LS,
     note: 'Landsat and Sentinel-2 on one shared 30 m grid.',
     cfg: { collection: 'hls2-s30', asset: null, res: 30,
       gridLabel: it => (it.id?.split('.')?.[2] ?? '').replace(/^T/, '') } },

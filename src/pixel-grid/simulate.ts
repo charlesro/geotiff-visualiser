@@ -62,6 +62,16 @@ export const CROP_PRESETS: CropPreset[] = [
 
 export const cropById = (id: string): CropPreset => CROP_PRESETS.find(c => c.id === id) ?? CROP_PRESETS[0];
 
+/**
+ * The colour-blind-safe palette a species is drawn in, on the map, in the NDVI
+ * chart, in the PCA scatter and in every legend. Lives here rather than in a
+ * component so colour assignment can be checked headlessly, and because its
+ * LENGTH is what caps a design at eight species: beyond that two treatments
+ * would share a colour, and a trial you cannot tell apart on the map is worse
+ * than one you cannot fit on the field.
+ */
+export const CROP_COLORS = ['#e69f00', '#0072b2', '#009e73', '#cc79a7', '#56b4e9', '#d55e00', '#f0e442', '#999999'];
+
 export const parsOf = (f: FieldParams): number[] => [f.L1, f.k1, f.x01, f.k2, f.x02, f.tc];
 
 // ===== repo engine (verbatim, typed) =========================================

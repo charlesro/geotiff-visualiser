@@ -128,8 +128,20 @@ const RECORD_CONTENT_WORDS = 64; // fixed per cell: 128 content bytes / 2
 
 function writeShpShx(grid: S2Grid): { shp: Uint8Array; shx: Uint8Array } {
   const n = grid.cells.length;
-  const [minE, minN, maxE, maxN] = grid.utmBounds;
   const res = grid.res;
+  // The bounding box of the records ACTUALLY written, not of the area the grid
+  // was built over. A field-clipped export writes only the pixels inside the
+  // traced shape, and GIS software reads this header for "zoom to layer", so the
+  // old box framed ground that holds no polygons. Identical to grid.utmBounds
+  // whenever the grid is unclipped.
+  let minE = Infinity, minN = Infinity, maxE = -Infinity, maxN = -Infinity;
+  for (const c of grid.cells) {
+    if (c.east < minE) minE = c.east;
+    if (c.north < minN) minN = c.north;
+    if (c.east + res > maxE) maxE = c.east + res;
+    if (c.north + res > maxN) maxN = c.north + res;
+  }
+  if (!n) { minE = 0; minN = 0; maxE = 0; maxN = 0; }
 
   const shp = new ByteBuf();
   const shx = new ByteBuf();

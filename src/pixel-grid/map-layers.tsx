@@ -159,7 +159,14 @@ function GridLines({ box, res, epsg, color, weight, onStep }: {
   const step = res * stride;
   const data = useMemo(() => {
     const [minE, minN, maxE, maxN] = box;
-    const e0 = Math.ceil(minE / step) * step, n0 = Math.ceil(minN / step) * step;
+    // Anchored to the LATTICE, not to round numbers. box[0]/box[1] sit on a
+    // pixel edge, so (box mod res) is the lattice phase and is invariant as the
+    // clipped box moves: lines stay on real pixel edges and still do not crawl
+    // while panning. Plain multiples of the step drew the Sentinel-2 lattice on
+    // top of a Landsat grid, 15 m from the pixels the shapefile exports.
+    const pE = ((minE % res) + res) % res, pN = ((minN % res) + res) % res;
+    const e0 = Math.ceil((minE - pE) / step) * step + pE;
+    const n0 = Math.ceil((minN - pN) / step) * step + pN;
     const nx = Math.floor((maxE - e0) / step), ny = Math.floor((maxN - n0) / step);
     if (nx < 0 || ny < 0 || nx > 1500 || ny > 1500) return null;
     const inv = proj4(crsToProj4Def(`EPSG:${epsg}`), 'EPSG:4326');

@@ -13,7 +13,7 @@ import type { StepProps } from './props';
 export function GridStep(p: StepProps) {
   const { activeStep, toggleStep, gridSummary } = p;
   const { aoi, aoiPoly } = p.area;
-  const { sourceId, setSourceId, source, gsd, setGsd, customAnchor, setCustomAnchor, sigmaX, setSigmaX, sigmaY, setSigmaY, grids, gridState, selectedGridKey, setSelectedGridKey, selectedGrid, build, grid, pxSize, psfSigmaM, psfSigmaXM, psfSigmaYM, psfFwhmXM, psfFwhmYM, psfAnisotropic, dims, fieldAreaM2, maxAreaHa, fieldCellCount, gridNoun, nestsS2, onDownload } = p.gridApi;
+  const { sourceId, setSourceId, source, gsd, setGsd, customAnchor, setCustomAnchor, sigmaX, setSigmaX, sigmaY, setSigmaY, psfOffX, setPsfOffX, psfOffY, setPsfOffY, psfOffXM, psfOffYM, grids, gridState, selectedGridKey, setSelectedGridKey, selectedGrid, build, grid, pxSize, psfSigmaM, psfSigmaXM, psfSigmaYM, psfFwhmXM, psfFwhmYM, psfAnisotropic, dims, fieldAreaM2, maxAreaHa, fieldCellCount, gridNoun, nestsS2, onDownload } = p.gridApi;
 
   const fwhmTxt = psfAnisotropic
     ? `${psfFwhmXM < 10 ? psfFwhmXM.toFixed(1) : Math.round(psfFwhmXM)} × ${psfFwhmYM < 10 ? psfFwhmYM.toFixed(1) : Math.round(psfFwhmYM)}`
@@ -55,6 +55,21 @@ export function GridStep(p: StepProps) {
                 onChange={e => setSigmaY(Math.max(0, parseFloat(e.target.value) || 0))} className={NUM} />
               <span className="text-[11px] text-neutral-500">px</span>
             </div>
+            <div className="mt-1.5 flex items-center gap-2">
+              <span className="w-10 shrink-0 text-[11px] text-neutral-500">Offset</span>
+              <input type="number" min="-2" max="2" step="0.05" value={psfOffX}
+                onChange={e => setPsfOffX(Math.max(-2, Math.min(2, parseFloat(e.target.value) || 0)))} className={NUM} />
+              <span className="text-[11px] text-neutral-500">×</span>
+              <input type="number" min="-2" max="2" step="0.05" value={psfOffY}
+                onChange={e => setPsfOffY(Math.max(-2, Math.min(2, parseFloat(e.target.value) || 0)))} className={NUM} />
+              <span className="text-[11px] text-neutral-500">px</span>
+              <Explain align="right" text="Where the blur sits relative to the pixel centre. A sensor is never perfectly centred, and an off-centre blur pulls in crops from one side."><InfoDot /></Explain>
+            </div>
+            {(psfOffX !== 0 || psfOffY !== 0) && (
+              <p className="mt-1 text-[11px] leading-snug text-amber-300/80">
+                Blur centre {psfOffXM.toFixed(1)} m east, {psfOffYM.toFixed(1)} m north of the pixel centre.
+              </p>
+            )}
             <p className="mt-1 text-[11px] leading-snug text-neutral-500">
               {psfSigmaM > 0 ? (<>
                 <Explain text={<>Width at half the peak; 95% of the signal falls in a spot {psfAnisotropic ? `${p95(psfSigmaXM)} × ${p95(psfSigmaYM)}` : p95(psfSigmaXM)} m across{source.psfSrc && <> (default σ from <a href={source.psfSrc.url} target="_blank" rel="noopener noreferrer" className="text-sky-400 underline decoration-dotted hover:text-sky-300">{source.psfSrc.label} ↗</a>)</>}.</>}>
@@ -133,7 +148,7 @@ export function GridStep(p: StepProps) {
                   <Chip tone="amber">◇ grid you define</Chip>
                 </Explain>
               ) : gridState === 'error' ? (
-                <Explain below text={<>Computed without the catalog; exact except for 30 m and 60 m grids in the southern hemisphere.</>}>
+                <Explain below text={<>Computed without the catalog, from the standard lattice for this UTM zone.</>}>
                   <Chip tone="amber">⚠ offline grid</Chip>
                 </Explain>
               ) : null}

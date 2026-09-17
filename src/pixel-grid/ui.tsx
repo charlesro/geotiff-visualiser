@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ChevronDown, Info } from 'lucide-react';
-import { CROP_PRESETS, TRUTH_TYPES, type FieldParams } from './simulate';
+import { CROP_COLORS, CROP_PRESETS, TRUTH_TYPES, type FieldParams } from './simulate';
 
 /**
  * The page's own chrome: the numbered stepper section, the labelled slider, the
@@ -52,7 +52,6 @@ const Slider = ({ label, value, min, max, step, fmt, onChange }: {
  * built-in crop presets already draw from. It is colour-blind safe, which matters
  * for a figure that ends up in a thesis.
  */
-const CROP_COLORS = ['#e69f00', '#0072b2', '#009e73', '#cc79a7', '#56b4e9', '#d55e00', '#f0e442', '#999999'];
 
 function CropControl({ label, crop, preset, swatchColor, onCrop, onPreset, onColor, align = 'left' }: {
   label: string; crop: FieldParams; preset: string; swatchColor?: string;
