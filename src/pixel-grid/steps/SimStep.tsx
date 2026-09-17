@@ -1,5 +1,5 @@
 import { Disclosure, Explain, InfoDot, Step } from '../ui';
-import { CropPair, LayoutFields, LayoutSelect, SELECT } from './controls';
+import { BlockSummary, CropPair, LayoutFields, LayoutSelect, SELECT } from './controls';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer } from 'recharts';
 import type { StepProps } from './props';
 
@@ -13,7 +13,18 @@ export function SimStep(p: StepProps) {
   const { activeStep, toggleStep, simSummary, simAdvOpen, setSimAdvOpen,
           compareAligned, setCompareAligned, setActiveStep } = p;
   const { aoi } = p.area;
-  const { pattern, setPattern, stripWidth, setStripWidth, spacing, setSpacing, rotation, setRotation, cropA, setCropA, cropB, setCropB, presetA, setPresetA, presetB, setPresetB, magnitude, setMagnitude, alpha, setAlpha, beta, setBeta, threshold, setThreshold, dupSpecies, colB, day, simView } = p.exp;
+  const { build } = p.gridApi;
+  /**
+   * The purity the engine MEASURED, never an estimate.
+   *
+   * Prefer the map's own simulation. When the grid is too fine to render (a
+   * 0.3 m sensor over a hectare is past the cell cap) that one is null, but the
+   * PCA runs on the FIELD rather than the viewport and has measured the same
+   * design already, so fall back to it. Both are real measurements; if neither
+   * exists the card shows geometry and states no percentage at all.
+   */
+  const fieldSim = p.sim.sim ?? p.pca.pcaView?.sim ?? null;
+  const { pattern, setPattern, stripWidth, setStripWidth, spacing, setSpacing, rotation, setRotation, cropA, setCropA, cropB, setCropB, presetA, setPresetA, presetB, setPresetB, magnitude, setMagnitude, alpha, setAlpha, beta, setBeta, threshold, setThreshold, dupSpecies, colB, day, simView, blockDesign, setBlockDesign, blockPlan } = p.exp;
   const { ndviSeries } = p.sim;
 
   const NUM = 'w-full rounded-md border border-white/10 bg-neutral-900 px-2 py-1.5 text-sm text-neutral-100 focus:border-sky-500 focus:outline-none';
@@ -28,7 +39,9 @@ export function SimStep(p: StepProps) {
             <LayoutSelect pattern={pattern} setPattern={setPattern} selectClass={SELECT} />
             <LayoutFields stripWidth={stripWidth} setStripWidth={setStripWidth}
               spacing={spacing} setSpacing={setSpacing}
-              rotation={rotation} setRotation={setRotation} rotationLabel="Strip angle"
+              pattern={pattern} blockDesign={blockDesign} setBlockDesign={setBlockDesign}
+              rotation={rotation} setRotation={setRotation}
+              rotationLabel={pattern === 'block' ? 'Trial angle' : 'Strip angle'}
               rotationAction={
                 <button type="button" disabled={rotation === 0}
                   onClick={() => { setCompareAligned(true); setActiveStep('pca'); }}
@@ -41,6 +54,11 @@ export function SimStep(p: StepProps) {
               }
               spacingHint="Bare soil between strips, shown in brown."
               rotationHint="Angle from the pixel rows; 0° runs along them." />
+
+            {pattern === 'block' && (
+              <BlockSummary design={blockDesign} plan={blockPlan} res={build?.res}
+                threshold={threshold} purePct={fieldSim?.purePct} />
+            )}
 
             <CropPair wrapperClass="grid grid-cols-2 gap-2"
               cropA={cropA} setCropA={setCropA} presetA={presetA} setPresetA={setPresetA}

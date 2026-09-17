@@ -17,7 +17,7 @@ export function PcaStep(p: StepProps) {
   const { activeStep, toggleStep, } = p;
   const { aoi } = p.area;
   const { sourceId, setSourceId, build, pickRes } = p.gridApi;
-  const { pattern, setPattern, stripWidth, setStripWidth, spacing, setSpacing, rotation, setRotation, cropA, setCropA, cropB, setCropB, presetA, setPresetA, presetB, setPresetB, magnitude, colB, cropAd, cropBd } = p.exp;
+  const { pattern, setPattern, stripWidth, setStripWidth, spacing, setSpacing, rotation, setRotation, cropA, setCropA, cropB, setCropB, presetA, setPresetA, presetB, setPresetB, magnitude, colB, cropAd, cropBd, blockDesign, setBlockDesign } = p.exp;
   const { pcaBusy, pcaView, pcaSubsampled, setSelectedPixels, sweep, sweepBusy } = p.pca;
   const { pcaRetuneOpen, setPcaRetuneOpen, compareAligned, setCompareAligned } = p;
   const { sweepAligned } = p.pca;
@@ -99,6 +99,7 @@ export function PcaStep(p: StepProps) {
               </div>
               <LayoutFields stripWidth={stripWidth} setStripWidth={setStripWidth}
                 spacing={spacing} setSpacing={setSpacing}
+                pattern={pattern} blockDesign={blockDesign} setBlockDesign={setBlockDesign}
                 rotation={rotation} setRotation={setRotation} rotationLabel="Field rotation"
                 rotationAction={compareBtn} />
               <CropPair wrapperClass="grid grid-cols-2 gap-2"
