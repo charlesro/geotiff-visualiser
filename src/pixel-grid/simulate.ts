@@ -598,9 +598,46 @@ export function blockPermutation(nSpecies: number, block: number, seed: number):
  * It deliberately never enters searchPhaseOffset, whose scorer keeps two
  * counters and assigns crops with `& 1`, i.e. is two-species by construction.
  */
+/**
+ * Where a finite trial sits, in the frame the ENGINE actually samples.
+ *
+ * buildCropMap measures (u,v) from the PATTERN ORIGIN (the drawn field's
+ * corner), rotated by the layout angle. A plan anchored in raw UTM instead is
+ * some 620 km away in that frame, so `blockCoverUV`'s bounds guard rejects
+ * every point and the trial vanishes from the map, the purity and the PCA at
+ * once, with no error anywhere. Exported and pure precisely so the regression
+ * suite can exercise the SAME conversion the page runs, rather than a retyped
+ * copy of it that can agree with the test while disagreeing with the app.
+ *
+ * `phaseU/phaseV` carry the lattice. utmBounds' corner is a real pixel edge, so
+ * its offset inside this frame is where whole pixels begin; pixel edges are NOT
+ * generally round multiples of the pixel size (Landsat C2 sits at 15 m mod 30).
+ * Snapping is only meaningful for an unrotated trial, since rotated plot edges
+ * cannot be parallel to pixel edges, so at any other angle it is switched off
+ * rather than silently producing a misaligned "aligned" design.
+ */
+export function blockPlacement(
+  utmBounds: [number, number, number, number],
+  origin: [number, number],
+  rotationDeg: number,
+  res: number,
+  snapToPixels: boolean,
+): { centerU: number; centerV: number; snap: number; phaseU: number; phaseV: number } {
+  const [minE, minN, maxE, maxN] = utmBounds;
+  const t = (rotationDeg * Math.PI) / 180, cos = Math.cos(t), sin = Math.sin(t);
+  const toUV = (E: number, N: number): [number, number] => {
+    const dx = E - origin[0], dy = N - origin[1];
+    return [dx * cos + dy * sin, -dx * sin + dy * cos];
+  };
+  const [centerU, centerV] = toUV((minE + maxE) / 2, (minN + maxN) / 2);
+  const [phaseU, phaseV] = toUV(minE, minN);
+  const axisAligned = Math.abs(rotationDeg % 90) < 1e-9;
+  return { centerU, centerV, snap: snapToPixels && axisAligned && res > 0 ? res : 0, phaseU, phaseV };
+}
+
 export function buildBlockPlan(
   design: BlockDesign,
-  place: { centerU: number; centerV: number; snap?: number },
+  place: { centerU: number; centerV: number; snap?: number; phaseU?: number; phaseV?: number },
 ): BlockPlan {
   const nSpecies = Math.max(1, Math.min(MAX_COVER, design.nSpecies | 0));
   const plotLength = Math.max(0.01, design.plotLength);
@@ -634,7 +671,17 @@ export function buildBlockPlan(
   const snap = place.snap && place.snap > 0 ? place.snap : 0;
   let u0 = place.centerU - totalU / 2;
   let v0 = place.centerV - totalV / 2;
-  if (snap > 0) { u0 = Math.floor(u0 / snap) * snap; v0 = Math.floor(v0 / snap) * snap; }
+  if (snap > 0) {
+    // Snap to the PIXEL EDGES, which are not bare multiples of the pixel size:
+    // this frame is measured from the drawn field's corner, and the lattice is
+    // anchored on the product's own transform. Rounding to multiples of `snap`
+    // would put the plots near, but not on, real edges, and the page's promise
+    // of plots aligned to whole pixels would quietly become approximate.
+    const ph = (p: number | undefined) => (((p || 0) % snap) + snap) % snap;
+    const pu = ph(place.phaseU), pv = ph(place.phaseV);
+    u0 = Math.floor((u0 - pu) / snap) * snap + pu;
+    v0 = Math.floor((v0 - pv) / snap) * snap + pv;
+  }
 
   return { design: resolved, cols, rows, blockU, blockV, pitchU, pitchV, totalU, totalV, u0, v0, nPlots, plotSpecies };
 }

@@ -59,7 +59,7 @@ const {
   makeTruth, makeBetaSchedule, cultureForCell, aggregate, simulate,
   simulateField, simulatePatch, bestPhaseOffset, cultureAt, utmEnvelope,
   resolutionSweep, truthAt, strideFor, patternCultureUV, coverStats,
-  buildBlockPlan, blockPermutation, blockCoverUV, blockPlots, minFeatureM, layoutKey,
+  buildBlockPlan, blockPermutation, blockCoverUV, blockPlots, minFeatureM, layoutKey, blockPlacement,
   TMAX, DEFAULT_PARS, BARE, OFF_TRIAL, MIXED, MAX_COVER, MAX_PLOTS, PATTERNS, CROP_COLORS, cropById, parsOf,
 } = await import(path.join(BUILD, 'src/pixel-grid/simulate.mjs'));
 const { mix3, mixN, distinctColors } = await import(path.join(BUILD, 'src/pixel-grid/util.mjs'));
@@ -691,6 +691,50 @@ console.log('\nH3. the randomised block design: geometry and reproducibility');
       const moved = layoutKey({ ...L, block: buildBlockPlan(design, { centerU: 7, centerV: 0, snap: 0 }) });
       return new Set([base, ...perturbed, moved]).size === perturbed.length + 2;
     })());
+}
+
+console.log('\nH5. a block trial is anchored in the frame the engine samples');
+{
+  // Every check in H3 builds its plan at centerU/centerV = 0, where a frame
+  // error is invisible because zero is zero in every frame. This section uses
+  // the page's REAL inputs, which is how the wiring bug it pins got through.
+  const design = { nSpecies: 4, nBlocks: 4, plotLength: 8, plotWidth: 2, plotAlley: 0.5, blockAlley: 1.5, blocksPerRow: 1, seed: 1 };
+  const res = 10;
+  const origin = aoiUtmOrigin(AOI, 32631);           // what the engine measures (u,v) from
+  // A snapped grid whose edge is deliberately NOT a round multiple of the pixel
+  // size: Landsat C2 really does sit at 15 m mod 30.
+  const minE = Math.floor(origin[0] / res) * res + 5;
+  const minN = Math.floor(origin[1] / res) * res + 5;
+  const bounds = [minE, minN, minE + 150, minN + 120];
+  const place = blockPlacement(bounds, origin, 0, res, true);
+  const plan = buildBlockPlan(design, place);
+
+  ok('the trial lands on the field, not 620 km away in raw UTM',
+    blockPlots(plan).every(r => {
+      const E = origin[0] + (r.u0 + r.u1) / 2, N = origin[1] + (r.v0 + r.v1) / 2;
+      return E > bounds[0] && E < bounds[2] && N > bounds[1] && N < bounds[3];
+    }), `u0 ${plan.u0.toFixed(2)}, v0 ${plan.v0.toFixed(2)}`);
+  ok('every plot centre reads back as that plot through the engine frame',
+    blockPlots(plan).every(r => blockCoverUV((r.u0 + r.u1) / 2, (r.v0 + r.v1) / 2, plan) === r.plot));
+  ok('anchoring the plan in raw UTM instead puts the whole field off-trial',
+    (() => {
+      const wrong = buildBlockPlan(design, { centerU: (bounds[0] + bounds[2]) / 2, centerV: (bounds[1] + bounds[3]) / 2, snap: 0 });
+      for (let u = 0; u < 150; u += 7) for (let v = 0; v < 120; v += 7)
+        if (blockCoverUV(u, v, wrong) !== OFF_TRIAL.id) return false;
+      return true;
+    })());
+  ok('plot edges land on real pixel edges, whatever the lattice phase',
+    phaseOf(plan.u0 - place.phaseU, res) < 1e-9 && phaseOf(plan.v0 - place.phaseV, res) < 1e-9,
+    `u0 ${plan.u0.toFixed(2)}, lattice phase ${phaseOf(place.phaseU, res).toFixed(2)}`);
+  ok('and a snap to bare multiples of the pixel size would have missed them',
+    phaseOf(place.phaseU, res) > 1e-9 && phaseOf(place.phaseV, res) > 1e-9);
+  ok('snapping is off for a rotated trial, whose plots cannot be pixel-aligned',
+    blockPlacement(bounds, origin, 30, res, true).snap === 0 &&
+    blockPlacement(bounds, origin, 0, res, true).snap === res &&
+    blockPlacement(bounds, origin, 0, res, false).snap === 0);
+  ok('snapping moves the trial by less than one pixel, so it stays centred',
+    Math.abs(plan.u0 + plan.totalU / 2 - place.centerU) <= res &&
+    Math.abs(plan.v0 + plan.totalV / 2 - place.centerV) <= res);
 }
 
 console.log('\nH4. one blend in the codebase: mix3 is the two-species spelling of mixN');

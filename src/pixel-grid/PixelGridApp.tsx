@@ -6,6 +6,7 @@ import { inRange, isBool, isLngLat, oneOf, readSaved, resetSavedState, usePersis
 import { useAoiField, usePlaceSearch } from './use-area';
 import { useFieldGrid } from './use-grid';
 import { useExperiment, usePcaSim, useSimulation } from './use-simulation';
+import { aoiUtmOrigin } from './s2-grid';
 import { FieldMap } from './FieldMap';
 import { AreaStep } from './steps/AreaStep';
 import { GridStep } from './steps/GridStep';
@@ -84,19 +85,22 @@ export default function PixelGridApp() {
   // Steps 3 & 4 — the planting design, the sensor's view of it, and the PCA.
   // Order matters: the PCA reuses `patternOrigin` from the simulation rather than
   // recomputing it, so the drawn pattern and the simulated one can never drift.
-  // A block design is a finite trial: it is anchored on the field centre and
-  // snapped to the pixel lattice. Both come from `build`, so the plan lives in
-  // the same UTM frame as `patternOrigin` and the ladder's sampling window.
-  const fieldCenter = useMemo((): [number, number] | null => {
-    if (!gridApi.build?.utmBounds) return null;
-    const [mnE, mnN, mxE, mxN] = gridApi.build.utmBounds;
-    return [(mnE + mxE) / 2, (mnN + mxN) / 2];
-  }, [gridApi.build?.utmBounds]);
-  const exp = useExperiment({ sigmaX, sigmaY, psfOffX, psfOffY, fieldCenter, pixelSize: gridApi.build?.res ?? 10 });
+  // A block design is a finite trial: it is anchored on the field and snapped to
+  // the pixel lattice. The corner it is anchored on is computed ONCE, here, and
+  // given to both hooks: the experiment resolves the plan against it and the
+  // simulation measures its (u,v) from it, so the drawn trial and the simulated
+  // one cannot describe different ground.
+  const fieldOrigin = useMemo((): [number, number] | null =>
+    (aoi && gridApi.build?.epsg ? aoiUtmOrigin(aoi, gridApi.build.epsg) : null),
+    [aoi, gridApi.build?.epsg]);
+  const exp = useExperiment({
+    sigmaX, sigmaY, psfOffX, psfOffY,
+    fieldBounds: gridApi.build?.utmBounds ?? null, fieldOrigin, pixelSize: gridApi.build?.res ?? 10,
+  });
   // Only what `geoKey` needs; the panels read the rest straight off `exp`.
   const { optimizePlacement, day, simView, layoutSig, sensorSig, cropSig } = exp;
 
-  const simApi = useSimulation({ aoi, aoiPoly, gridApi, exp, simOn });
+  const simApi = useSimulation({ aoi, aoiPoly, gridApi, exp, simOn, fieldOrigin });
   const { patternOrigin, simSummary } = simApi;
 
   const pcaApi = usePcaSim({ aoi, aoiPoly, gridApi, exp, patternOrigin, activeStep, compareAligned });

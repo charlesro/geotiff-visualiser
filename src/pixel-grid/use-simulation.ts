@@ -2,18 +2,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import proj4 from 'proj4';
 import { crsToProj4Def } from '../lib/geo';
 import {
-  BARE, CROP_PRESETS, PATTERNS, TRUTH_TYPES, bestPhaseOffset, cropById, makeBetaSchedule, simulateField, simulatePatch,
+  BARE, CROP_COLORS, CROP_PRESETS, PATTERNS, TRUTH_TYPES, bestPhaseOffset, cropById, makeBetaSchedule, simulateField, simulatePatch,
   truthAt, utmEnvelope, TMAX,
-  buildBlockPlan, layoutKey,
+  blockPlacement, buildBlockPlan, layoutKey,
   type BlockDesign, type FieldParams, type FieldSim, type PatternType, type SensorParams, type SimLayout,
 } from './simulate';
 import { aoiUtmOrigin, buildS2Grid, type LngLatBounds } from './s2-grid';
 import { cellCenter, pointInPoly, type Poly } from './geometry';
-import { lerpHex, mix3 } from './util';
+import { distinctColors, lerpHex, mix3 } from './util';
 import { PCA_SAMPLE, RES_LADDER } from './sensors';
 import type { SweepStep } from './PcaSweep';
 import type { useFieldGrid } from './use-grid';
-import { inRange, isNum, oneOf, shape, usePersistentState } from './persist';
+import { arrayOf, inRange, isNum, oneOf, readSaved, shape, usePersistentState } from './persist';
 
 /** A restored crop must still be a usable curve, not whatever happened to be stored. */
 const isFieldParams = (v: unknown): v is FieldParams => {
@@ -55,17 +55,22 @@ type GridApi = ReturnType<typeof useFieldGrid>;
  */
 
 /** Planting design, crop curves and noise. Sigma is owned by step 2 and passed in. */
-export function useExperiment({ sigmaX, sigmaY, psfOffX, psfOffY, fieldCenter, pixelSize }: {
+export function useExperiment({ sigmaX, sigmaY, psfOffX, psfOffY, fieldBounds, fieldOrigin, pixelSize }: {
   sigmaX: number; sigmaY: number; psfOffX: number; psfOffY: number;
   /**
-   * The field's centre in UTM, and the chosen pixel size. A block design is a
-   * FINITE trial that has to be anchored on the field and snapped to the pixel
-   * lattice, and the plan is resolved HERE, once, next to the layout it belongs
-   * to. Building it anywhere else would give the map a second copy, and a plan
+   * The grid's snapped UTM extent and the pattern origin. A block design is a
+   * FINITE trial: it has to be anchored on the field, in the frame the ENGINE
+   * samples, and snapped to the real pixel lattice. Both come from `build`, and
+   * `fieldOrigin` is the SAME corner `patternOrigin` uses, computed once in the
+   * shell rather than here, so the drawn trial and the simulated one cannot
+   * drift. The plan is resolved HERE, once, next to the layout it belongs to;
+   * building it anywhere else would give the map a second copy, and a plan
    * resolved from a different extent draws one trial while the purity, the
    * ladder and the PCA describe another, with no error anywhere.
    */
-  fieldCenter: [number, number] | null; pixelSize: number;
+  fieldBounds: [number, number, number, number] | null;
+  fieldOrigin: [number, number] | null;
+  pixelSize: number;
 }) {
   // Experiment simulation (repo parameter set)
   const [pattern, setPattern] = usePersistentState<PatternType>('pattern', 'row', oneOf(...PATTERNS.map(p => p.id)));
@@ -75,10 +80,35 @@ export function useExperiment({ sigmaX, sigmaY, psfOffX, psfOffY, fieldCenter, p
   // Always on: plants slide to max purity. The switch left the UI, so a saved
   // "off" must not linger where nobody can turn it back on.
   const [optimizePlacement, setOptimizePlacement] = useState(true);
-  const [cropA, setCropA] = usePersistentState<FieldParams>('cropA', () => cropById('maize'), isFieldParams);
-  const [cropB, setCropB] = usePersistentState<FieldParams>('cropB', () => cropById('wheat'), isFieldParams);
-  const [presetA, setPresetA] = usePersistentState('presetA', 'maize', isPreset);
-  const [presetB, setPresetB] = usePersistentState('presetB', 'wheat', isPreset);
+  /**
+   * The species under test, 2 to 8 of them. Stored as ONE array under new keys
+   * rather than cropA/cropB, which could only ever describe two.
+   *
+   * Migration is a LAZY INITIALISER, never a mount effect: an effect that wrote
+   * on mount would overwrite the very value it was meant to restore (the trap
+   * that cost the sigma reset). readSaved returns undefined when a stored value
+   * fails its validator, so an old or hand-edited save falls back to the pair
+   * below instead of reaching the engine.
+   */
+  const [species, setSpecies] = usePersistentState<FieldParams[]>('species',
+    () => {
+      const a = readSaved<FieldParams>('cropA', isFieldParams) ?? cropById('maize');
+      const b = readSaved<FieldParams>('cropB', isFieldParams) ?? cropById('wheat');
+      return [a, b];
+    }, arrayOf(isFieldParams, 2, 8));
+  const [presets, setPresets] = usePersistentState<string[]>('presets',
+    () => [readSaved<string>('presetA', isPreset) ?? 'maize', readSaved<string>('presetB', isPreset) ?? 'wheat'],
+    arrayOf(isPreset, 2, 8));
+
+  // Aliases over species[0] and species[1]. Roughly forty call sites across
+  // eight files still speak in terms of two crops; they keep working untouched
+  // while each visual is converted to the array one at a time.
+  const cropA = species[0], cropB = species[1];
+  const setCropA = useCallback((c: FieldParams) => setSpecies(s => [c, ...s.slice(1)]), [setSpecies]);
+  const setCropB = useCallback((c: FieldParams) => setSpecies(s => [s[0], c, ...s.slice(2)]), [setSpecies]);
+  const presetA = presets[0], presetB = presets[1];
+  const setPresetA = useCallback((id: string) => setPresets(p => [id, ...p.slice(1)]), [setPresets]);
+  const setPresetB = useCallback((id: string) => setPresets(p => [p[0], id, ...p.slice(2)]), [setPresets]);
   const [magnitude, setMagnitude] = usePersistentState('magnitude', 0.04, inRange(0, 0.15));
   const [alpha, setAlpha] = usePersistentState('alpha', 2, inRange(0.1, 10));
   const [beta, setBeta] = usePersistentState('beta', 2, inRange(0.1, 10));
@@ -114,9 +144,11 @@ export function useExperiment({ sigmaX, sigmaY, psfOffX, psfOffY, fieldCenter, p
    * any field changes.
    */
   const blockPlan = useMemo(() => {
-    if (pattern !== 'block' || !fieldCenter) return undefined;
-    return buildBlockPlan(blockDesign, { centerU: fieldCenter[0], centerV: fieldCenter[1], snap: optimizePlacement ? pixelSize : 0 });
-  }, [pattern, fieldCenter?.[0], fieldCenter?.[1], pixelSize, optimizePlacement,
+    if (pattern !== 'block' || !fieldBounds || !fieldOrigin) return undefined;
+    // The conversion into the engine's (u,v) frame lives in simulate.ts, not
+    // here: a copy inlined in this hook is one the regression suite cannot run.
+    return buildBlockPlan(blockDesign, blockPlacement(fieldBounds, fieldOrigin, rotation, pixelSize, optimizePlacement));
+  }, [pattern, fieldBounds?.join(','), fieldOrigin?.[0], fieldOrigin?.[1], rotation, pixelSize, optimizePlacement,
       blockDesign.nSpecies, blockDesign.nBlocks, blockDesign.plotLength, blockDesign.plotWidth,
       blockDesign.plotAlley, blockDesign.blockAlley, blockDesign.blocksPerRow, blockDesign.seed]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -135,24 +167,54 @@ export function useExperiment({ sigmaX, sigmaY, psfOffX, psfOffY, fieldCenter, p
   // keeps showing the purity it computed for a centred kernel.
   const sensorSig = `${sigmaX}_${sigmaY}_${threshold}_${psfOffX}_${psfOffY}`;
 
-  // Same species picked for both (to tweak one parameter and compare) → recolour B
-  // so the two are still distinguishable everywhere. Curves/names are untouched.
+  /**
+   * The species as everything downstream should DRAW them: one distinct colour
+   * each, and a suffix when two share a name. Two entries on the same preset
+   * (maize compared against maize with one parameter changed) would otherwise
+   * be drawn and labelled identically on the map, in the scatter and in every
+   * legend. Decided in exactly one place, so those three cannot drift apart.
+   * Curves are never touched — only colour and label.
+   */
+  const colorSig = species.map(s => s.color).join(',');
+  const nameSig = species.map(s => s.name).join('|');
+  const colors = useMemo(() => distinctColors(species.map(s => s.color), CROP_COLORS), [colorSig]); // eslint-disable-line react-hooks/exhaustive-deps
+  const names = useMemo(() => {
+    const count = new Map<string, number>();
+    species.forEach(s => count.set(s.name, (count.get(s.name) ?? 0) + 1));
+    const seen = new Map<string, number>();
+    return species.map(s => {
+      if ((count.get(s.name) ?? 0) < 2) return s.name;
+      const k = seen.get(s.name) ?? 0;
+      seen.set(s.name, k + 1);
+      return `${s.name} (${String.fromCharCode(65 + k)})`;
+    });
+  }, [nameSig]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Memoised, and returning the ORIGINAL object when nothing had to change, so
+  // the memoised chart components can still skip redrawing.
+  const speciesD = useMemo<FieldParams[]>(
+    () => species.map((s, i) => (s.color === colors[i] && s.name === names[i] ? s : { ...s, color: colors[i], name: names[i] })),
+    [species, colors, names]);
+
+  // Two-species aliases. distinctColors gives the first claimer the colour it
+  // asked for, so colors[0] is always cropA's own and these keep the exact
+  // meaning the call sites were written against.
   const dupSpecies = cropA.color.toLowerCase() === cropB.color.toLowerCase();
-  const colB = dupSpecies
-    ? (['#0072b2', '#e69f00', '#009e73', '#cc79a7', '#d55e00'].find(c => c !== cropA.color.toLowerCase()) ?? '#0072b2')
-    : cropB.color;
-  const nameA = dupSpecies ? `${cropA.name} (A)` : cropA.name;
-  const nameB = dupSpecies ? `${cropB.name} (B)` : cropB.name;
-  // Memoised so the memoised chart components see the same object and can skip
-  // redrawing when nothing about the crops changed.
-  const cropAd = useMemo<FieldParams>(() => (dupSpecies ? { ...cropA, name: nameA } : cropA), [cropA, dupSpecies, nameA]);
-  const cropBd = useMemo<FieldParams>(() => (dupSpecies ? { ...cropB, color: colB, name: nameB } : cropB), [cropB, dupSpecies, colB, nameB]);
+  const colB = colors[1];
+  const nameA = names[0], nameB = names[1];
+  const cropAd = speciesD[0], cropBd = speciesD[1];
 
   const fsig = (c: FieldParams) => `${c.truth}_${c.L1}_${c.k1}_${c.x01}_${c.k2}_${c.x02}_${c.tc}`;
-  const cropSig = `${cropA.color}${colB}-${fsig(cropA)}-${fsig(cropB)}`;
+  /**
+   * Every species' drawn colour and curve in one string: the memo key for
+   * anything that redraws when a crop changes. Hashes the WHOLE array, so
+   * editing the third species is not a silent no-op.
+   */
+  const cropSig = `${colors.join('')}-${species.map(fsig).join('-')}`;
 
   return { pattern, setPattern, stripWidth, setStripWidth, spacing, setSpacing, rotation, setRotation,
-           optimizePlacement, setOptimizePlacement, cropA, setCropA, cropB, setCropB,
+           optimizePlacement, setOptimizePlacement,
+           species, setSpecies, presets, setPresets, colors, names, speciesD,
+           cropA, setCropA, cropB, setCropB,
            presetA, setPresetA, presetB, setPresetB, magnitude, setMagnitude,
            alpha, setAlpha, beta, setBeta, threshold, setThreshold, day, simView,
            blockDesign, setBlockDesign, blockPlan,
@@ -162,8 +224,10 @@ export function useExperiment({ sigmaX, sigmaY, psfOffX, psfOffY, fieldCenter, p
 export type Experiment = ReturnType<typeof useExperiment>;
 
 /** What the chosen sensor makes of the design, over the rendered grid. */
-export function useSimulation({ aoi, aoiPoly, gridApi, exp, simOn }: {
+export function useSimulation({ aoi, aoiPoly, gridApi, exp, simOn, fieldOrigin }: {
   aoi: LngLatBounds | null; aoiPoly: Poly | null; gridApi: GridApi; exp: Experiment; simOn: boolean;
+  /** The field corner, computed once in the shell and shared with useExperiment. */
+  fieldOrigin: [number, number] | null;
 }) {
   const { renderGrid, build, } = gridApi;
   const { pattern, stripWidth, spacing, rotation, optimizePlacement, threshold, layout, layoutSig, sensor,
@@ -172,15 +236,18 @@ export function useSimulation({ aoi, aoiPoly, gridApi, exp, simOn }: {
   // Pattern origin: the field corner, optionally slid to the phase that maximises
   // pure pixels (strip edges land on pixel edges). `offset` = [along-row, cross-row] m.
   const patternOrigin = useMemo((): { origin: [number, number]; offset: [number, number] } | null => {
-    if (!aoi || !build?.epsg) return null;
-    const base = aoiUtmOrigin(aoi, build.epsg);
+    if (!aoi || !build?.epsg || !fieldOrigin) return null;
+    // The SAME corner the block plan was anchored on. Recomputing it here would
+    // be two sources for one number, which is how the drawn and the simulated
+    // pattern drift apart.
+    const base = fieldOrigin;
     if (!optimizePlacement) return { origin: base, offset: [0, 0] };
     const [du, dv] = bestPhaseOffset(pattern, build.res, stripWidth, spacing, threshold / 100, base[0], base[1]);
     const t = (rotation * Math.PI) / 180, cos = Math.cos(t), sin = Math.sin(t);
     return { origin: [base[0] + du * cos - dv * sin, base[1] + du * sin + dv * cos] as [number, number], offset: [du, dv] as [number, number] };
     // layoutSig rather than the loose primitives: it also covers the block
     // design, whose seed, plot size and alleys move none of them.
-  }, [aoi, build?.epsg, build?.res, optimizePlacement, layoutSig, threshold]);
+  }, [aoi, build?.epsg, build?.res, optimizePlacement, layoutSig, threshold, fieldOrigin?.[0], fieldOrigin?.[1]]);
 
   const sim = useMemo(
     () => (simOn && renderGrid && patternOrigin ? simulateField(renderGrid, patternOrigin.origin, layout, sensor) : null),
@@ -237,9 +304,15 @@ export function useSimulation({ aoi, aoiPoly, gridApi, exp, simOn }: {
     return { type: 'FeatureCollection' as const, features };
   }, [sim, renderGrid, aoiPoly]);
 
+  // A block trial is not described by a strip width, and naming two crops is
+  // wrong when the design carries four: it would report a maize-and-wheat
+  // experiment for a trial containing neither in most of its plots.
+  const bd = exp.blockDesign;
   const simSummary = !aoi
     ? 'needs an area'
-    : `${cropA.name} × ${cropB.name} · ${stripWidth} m ${PATTERNS.find(p => p.id === pattern)?.label.toLowerCase() ?? ''}`;
+    : pattern === 'block'
+      ? `${bd.nSpecies} species × ${bd.nBlocks} blocks · ${bd.plotLength} × ${bd.plotWidth} m plots`
+      : `${cropA.name} × ${cropB.name} · ${stripWidth} m ${PATTERNS.find(p => p.id === pattern)?.label.toLowerCase() ?? ''}`;
 
   return { patternOrigin, sim, ndviSeries, simStyle, fieldOutlineStyle, simGeojson, simSummary };
 }
