@@ -7,6 +7,13 @@ import { useAoiField, usePlaceSearch } from './use-area';
 import { useFieldGrid } from './use-grid';
 import { useExperiment, usePcaSim, useSimulation } from './use-simulation';
 import { aoiUtmOrigin } from './s2-grid';
+import { readDesignFiles } from './design-import';
+import { convexHull } from './imported-plan';
+import { polyBbox } from './geometry';
+import { isAligned, nearestTurn, rotateImportedPlan, stakeOnGrid } from './imported-rotate';
+import proj4 from 'proj4';
+import { crsToProj4Def } from '../lib/geo';
+import type { ColorBy, ShapeBy } from './pca-field';
 import { FieldMap } from './FieldMap';
 import { AreaStep } from './steps/AreaStep';
 import { GridStep } from './steps/GridStep';
@@ -52,12 +59,17 @@ export default function PixelGridApp() {
   // in an arrow): the drawers reset in-progress geometry when `onDone`'s identity
   // changes, so a fresh one mid-trace would erase the user's vertices.
   const area = useAoiField(setActiveStep);
-  const { aoi, aoiPoly, initialCenter } = area;
+  const { aoi, aoiPoly, fieldRing, initialCenter } = area;
 
   // Step 2 — the satellite and its pixel lattice. Everything downstream hangs off
   // `build`; sigmaX/sigmaY are owned here (the PSF is a property of the chosen
   // sensor) and handed to the simulation hooks as plain scalars.
-  const gridApi = useFieldGrid({ aoi, aoiPoly });
+  // The FIELD is the traced shape, or else the drawn box itself. The hooks take
+  // it under their old name `aoiPoly`: a box used to pass null there, so its
+  // export, pixel count, map overlay and PCA all kept the edge pixels the grid
+  // overhangs by, while "In field only" hid them. `aoiPoly` itself still means
+  // "was a shape traced", which only the wording (field vs drawn) cares about.
+  const gridApi = useFieldGrid({ aoi, aoiPoly: fieldRing });
   const { sigmaX, sigmaY, psfOffX, psfOffY, renderGrid, fieldAreaM2, gridSummary } = gridApi;
   const [basemap, setBasemap] = usePersistentState<BasemapKey>('basemap', 'satellite', v => typeof v === 'string' && v in BASEMAPS);
   const [showField, setShowField] = usePersistentState('showField', false, isBool);   // render the true planting pattern under the grid
@@ -70,6 +82,9 @@ export default function PixelGridApp() {
   const [simAdvOpen, setSimAdvOpen] = usePersistentState('simAdvOpen', false, isBool);
   const [pcaRetuneOpen, setPcaRetuneOpen] = usePersistentState('pcaRetuneOpen', false, isBool);
   const [compareAligned, setCompareAligned] = usePersistentState('compareAligned', false, isBool);  // rotated vs 0° ladders
+  // PCA point encodings: shared by the big scatter and the ladder thumbnails.
+  const [pcaColorBy, setPcaColorBy] = usePersistentState<ColorBy>('pcaColorBy', 'mixing', oneOf('mixing', 'species', 'purity'));
+  const [pcaShapeBy, setPcaShapeBy] = usePersistentState<ShapeBy>('pcaShapeBy', 'species', oneOf('species', 'purity', 'none'));
   const [panelW, setPanelW] = useState(() => {          // drag the panel's left edge to widen it
     const saved = readSaved<number>('panelW', inRange(320, 1400));
     if (saved !== undefined) return saved;
@@ -96,14 +111,92 @@ export default function PixelGridApp() {
   const exp = useExperiment({
     sigmaX, sigmaY, psfOffX, psfOffY,
     fieldBounds: gridApi.build?.utmBounds ?? null, fieldOrigin, pixelSize: gridApi.build?.res ?? 10,
+    epsg: gridApi.build?.epsg ?? null,
   });
+
+  /**
+   * Importing a trial file. The busy flag and the error live here, in the shell,
+   * because step 3 unmounts when collapsed and a read can outlast that.
+   */
+  const [importBusy, setImportBusy] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [curvesOpen, setCurvesOpen] = usePersistentState('curvesOpen', false, isBool);
+  const { setImportedDesign, setImportedCurves, setPattern, setImportedTurn, setImportedShift } = exp;
+  const { setAoi, setAoiPoly } = area;
+  const onImportFiles = useCallback(async (files: File[]) => {
+    setImportBusy(true);
+    setImportError(null);
+    try {
+      const data = await Promise.all(files.map(async f => ({ name: f.name, data: await f.arrayBuffer() })));
+      const design = await readDesignFiles(data);
+      // The field becomes the trial's own outline, so the pixel count, the
+      // purity, the PCA and the export all describe the trial's pixels.
+      const hull = convexHull(design.plots.flatMap(p => p.rings.flat()));
+      if (hull.length < 3) throw new Error('The plots in this file do not enclose any area.');
+      setImportedDesign(design);
+      setImportedCurves({});
+      setImportedTurn(0);
+      setImportedShift([0, 0]);
+      setPattern('imported');
+      setAoiPoly(hull);
+      const box = polyBbox(hull);
+      setAoi(box);
+      mapRef.current?.fitBounds([[box[1], box[0]], [box[3], box[2]]], { padding: [40, 40], maxZoom: 19 });
+    } catch (e) {
+      setImportError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setImportBusy(false);
+    }
+  }, [setImportedDesign, setImportedCurves, setImportedTurn, setImportedShift, setPattern, setAoi, setAoiPoly]);
+  const importApi = {
+    busy: importBusy,
+    // A read failure first; otherwise what stops the loaded design from simulating.
+    error: importError ?? exp.importedError ?? null,
+    onFiles: onImportFiles,
+    onRemove: () => { setImportedDesign(null); setImportedCurves({}); setImportedTurn(0); setImportedShift([0, 0]); setImportError(null); setPattern('block'); },
+    /**
+     * Turn the trial to `deg` degrees from the pixel rows. The field follows it:
+     * the field is the trial's outline, and left behind it would cut the turned
+     * corners out of the pixel count, the purity and the export.
+     */
+    setAngle: (deg: number) => {
+      // The smallest turn to that angle: 0 and 90 degrees are the same to square pixels.
+      const turn = nearestTurn(exp.importedFileAngle, deg);
+      setImportedTurn(turn);
+      const base = exp.importedBasePlan, build = gridApi.build;
+      if (!base || !build?.epsg) { setImportedShift([0, 0]); return; }
+      let plan = rotateImportedPlan(base, turn);
+      /**
+       * Turned along the pixel rows, it is also STAKED on them: the best
+       * sub-pixel position of the whole trial at this pixel size. Decided here,
+       * on the click, and saved, so the trial cannot move under the field
+       * outline set from it, nor slide again at the next resolution.
+       */
+      let shift: [number, number] = [0, 0];
+      if (isAligned(exp.importedFileAngle + turn)) {
+        const sensor = { sigmaX, sigmaY, mixThreshold: exp.threshold / 100, offX: psfOffX, offY: psfOffY };
+        const staked = stakeOnGrid(plan, build.res, sensor, build.utmBounds);
+        shift = staked.shift;
+        plan = staked.plan;
+      }
+      setImportedShift(shift);
+      const toLngLat = proj4(crsToProj4Def(`EPSG:${build.epsg}`), 'EPSG:4326');
+      const ring = plan.footprint.map(p => toLngLat.forward(p) as [number, number]);
+      if (ring.length < 3) return;
+      setAoiPoly(ring);
+      setAoi(polyBbox(ring));
+    },
+    setVarietyColumn: (c: string) => setImportedDesign(d => (d ? { ...d, varietyColumn: c } : d)),
+    setNameColumn: (c: string) => setImportedDesign(d => (d ? { ...d, nameColumn: c } : d)),
+  };
   // Only what `geoKey` needs; the panels read the rest straight off `exp`.
   const { optimizePlacement, day, simView, layoutSig, sensorSig, cropSig } = exp;
 
-  const simApi = useSimulation({ aoi, aoiPoly, gridApi, exp, simOn, fieldOrigin });
+  const simApi = useSimulation({ aoi, aoiPoly: fieldRing, gridApi, exp, simOn, fieldOrigin });
   const { patternOrigin, simSummary } = simApi;
 
-  const pcaApi = usePcaSim({ aoi, aoiPoly, gridApi, exp, patternOrigin, activeStep, compareAligned });
+  // mapSim: when the PCA runs on the grid the map already simulated, it reuses that result.
+  const pcaApi = usePcaSim({ aoi, aoiPoly: fieldRing, gridApi, exp, patternOrigin, activeStep, compareAligned, mapSim: simApi.sim });
 
   // `layoutSig` stands in for the four layout segments this used to splice in
   // (pattern, width, spacing, rotation). Those move for none of a block
@@ -158,7 +251,8 @@ export default function PixelGridApp() {
   const stepProps = { activeStep, toggleStep, area, search, gridApi, exp, sim: simApi, pca: pcaApi,
                       areaSummary, gridSummary, simSummary, geoKey, showPsf, setShowPsf,
                       simAdvOpen, setSimAdvOpen, pcaRetuneOpen, setPcaRetuneOpen,
-                      compareAligned, setCompareAligned, setActiveStep };
+                      compareAligned, setCompareAligned, setActiveStep,
+                      pcaColorBy, setPcaColorBy, pcaShapeBy, setPcaShapeBy, importApi, curvesOpen, setCurvesOpen };
 
   return (
     <div className="flex h-full w-full bg-[#050505] text-neutral-200 font-sans">

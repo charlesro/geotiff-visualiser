@@ -1,5 +1,7 @@
 import proj4 from 'proj4';
 import { crsToProj4Def } from '../lib/geo';
+import { pointInPoly } from './geometry';
+import type { ImportedPlan } from './imported-types';
 import type { LngLatBounds, S2Grid } from './s2-grid';
 
 /**
@@ -21,7 +23,7 @@ export const TMAX = 366;
 export const DEFAULT_PARS: number[] = [0.78, 0.117, 104, 0.078, 221, 198];
 
 export type TruthType = 'double' | 'sine' | 'linear' | 'const';
-export type PatternType = 'row' | 'col' | 'checker' | 'strip-row-2' | 'strip-col-2' | 'block';
+export type PatternType = 'row' | 'col' | 'checker' | 'strip-row-2' | 'strip-col-2' | 'block' | 'imported';
 
 export const TRUTH_TYPES: { id: TruthType; label: string }[] = [
   { id: 'double', label: 'Double logistic' },
@@ -37,6 +39,7 @@ export const PATTERNS: { id: PatternType; label: string }[] = [
   { id: 'strip-row-2', label: 'Strip rows (2:2)' },
   { id: 'strip-col-2', label: 'Strip columns (2:2)' },
   { id: 'block', label: 'Randomised blocks (RCBD)' },
+  { id: 'imported', label: 'Imported trial (file)' },
 ];
 
 /** One field's parameters — the repo's per-field set, plus name/colour for UI. */
@@ -207,7 +210,8 @@ export const cultureForCell = (r: number, c: number, mode: PatternType): number 
  * PCA. Keep every comparison by symbol, never by the literal.
  */
 export const MIXED = 255;
-export const BARE = { id: 254, color: '#8a7355', ndvi: 0.13 } as const;
+// Bare soil carries no vegetation signal: NDVI 0.
+export const BARE = { id: 254, color: '#8a7355', ndvi: 0 } as const;
 /**
  * Ground inside the drawn area but outside a finite trial. NOT the same as an
  * alley: alley soil really does dilute the pixel a sensor reads, while ground
@@ -290,9 +294,258 @@ export function coverStats(args: {
 }
 
 /**
+ * Cover-id bookkeeping for `aggregate`, standing in for the Map it used to build
+ * per pixel. A cover id that is a byte (always, for a Uint8Array cover map read
+ * in bounds) is its own slot. Anything else gets slot 256, 257, ... through a
+ * real Map, so odd ids group exactly as Map keys them. `cnt` is a running count
+ * per slot, zero meaning "not seen yet in this pixel", and `ord` lists slots in
+ * first-seen order: the Map's iteration order, which the float sums depend on.
+ */
+interface CoverSlots { cnt: Float64Array; ord: Int32Array; keys: number[]; index: Map<number, number> }
+
+function coverSlot(st: CoverSlots, key: number): number {
+  let slot = st.index.get(key);
+  if (slot === undefined) {
+    slot = 256 + st.keys.length;
+    st.index.set(key, slot);
+    st.keys.push(key);
+    if (slot >= st.cnt.length) {
+      const cnt = new Float64Array(st.cnt.length * 2); cnt.set(st.cnt); st.cnt = cnt;
+      const ord = new Int32Array(st.ord.length * 2); ord.set(st.ord); st.ord = ord;
+    }
+  }
+  return slot;
+}
+
+/**
+ * True when a cover id is a byte number, the slot it keys directly. The typeof
+ * test comes first so a value that is not a number (a BigInt, an object with
+ * valueOf, a Symbol) is never coerced: it goes to `coverSlot` as a Map key, the
+ * way the original Map took it, and nothing runs that the original did not run.
+ */
+function isByteId(id: unknown): id is number {
+  return typeof id === 'number' && (id & 255) === id;
+}
+
+/**
+ * Adds `count` sightings of cover id `id` to the pixel's tally, as `count`
+ * consecutive `map.set(id, (map.get(id) || 0) + 1)` would: a first sighting
+ * appends the slot to the first-seen list, and the integer count is exact.
+ * Returns the new length of that list.
+ */
+function tally(st: CoverSlots, id: number, count: number, n: number): number {
+  const slot = isByteId(id) ? id : coverSlot(st, id);
+  const c = st.cnt[slot];
+  if (c === 0) st.ord[n++] = slot;
+  st.cnt[slot] = c + count;
+  return n;
+}
+
+/**
+ * `finalCropWeights.get(key) || 0` over aggregate's phase 2 scratch: the slot
+ * holds a weight for this pixel only when its stamp is this pixel's. Any key,
+ * byte or not, resolves to the same slot phase 1 gave it (none: weight 0).
+ */
+function finWeight(st: CoverSlots, seen: Int32Array, fin: Float64Array, stamp: number, key: unknown): number {
+  const slot = isByteId(key) ? key : st.index.get(key as number);
+  return slot !== undefined && seen[slot] === stamp ? fin[slot] || 0 : 0;
+}
+
+/**
+ * What phase 1 hands phase 2, per pixel: its mean series, whether any of its
+ * sub-samples landed on the fine grid, and its cover weights as the (slot,
+ * weight) pairs pairStart[k] .. pairStart[k + 1]. The pair ORDER is part of the
+ * answer, not an implementation detail: it is the order the float sums are
+ * added in, and the order that breaks a dominance tie.
+ *
+ * `aggregateImported` fills the same structure from exact polygon areas rather
+ * than from sub-samples, so an imported trial and a sampled one run ONE phase 2
+ * instead of two copies of it that can drift apart.
+ */
+interface PixelCovers {
+  T: number;
+  means: Float64Array[];
+  hasValid: Uint8Array;
+  pairStart: Int32Array;
+  pairSlot: Int32Array;
+  pairW: Float64Array;
+  slots: CoverSlots;
+}
+
+/**
+ * Phase 2, shared by both phase 1s: the PSF over the neighbouring pixels, the
+ * dominance / mixed classification, the species fold and the off-trial share.
+ * Reproduced expression for expression from the Map-based original, which a
+ * differential fuzz checks field by field.
+ *
+ * `centreCover` stands in for the cover map read at the pixel's centre, which
+ * is the one thing phase 2 takes from the fine grid: the exact path has no fine
+ * grid, and answers from its own geometry instead.
+ */
+function resolvePixels(
+  out: AggregateResult,
+  pc: PixelCovers,
+  nSp: number,
+  spScratch: Float64Array,
+  sigmaX: number, sigmaY: number, includeOutside: boolean, mixThreshold: number, offX: number, offY: number,
+  coverSpecies: Uint8Array | null,
+  centreCover: (gr: number, gc: number) => number,
+): void {
+  const { rowsAgg, colsAgg, cropMapCenter, cropMapMajority, cropMapMixed, cropMapProportionA, cropMapProportionBare,
+    cropMapSpecies, cropMapDominant, cropMapDominantFrac, cropMapDominantPlot, cropMapProportionOffTrial } = out;
+  const outGrid = out.simsGrid;
+  const { T, means, hasValid, pairStart, pairSlot, pairW, slots } = pc;
+  const none = new Float64Array(0);
+
+  // σ = 0 → no PSF: the window collapses to the pixel itself (sharp sensor).
+  // The window follows the OFFSET too: a kernel pushed off centre has its far
+  // tail outside the symmetric window, and clipping it would quietly renormalise
+  // the blur back towards the centre, hiding the very effect being simulated.
+  const windowX = Math.max(0, Math.ceil(3 * sigmaX + Math.abs(offX)));
+  const windowY = Math.max(0, Math.ceil(3 * sigmaY + Math.abs(offY)));
+
+  // A neighbour's PSF weight depends only on its offset (nr - gr, nc - gc), so
+  // it is evaluated once per offset with the same expression. Offsets beyond
+  // the aggregated grid are never in bounds and are left out of the table.
+  // That is only exact when the four inputs are plain numbers: anything else
+  // (an object with valueOf, a numeric string) is converted by the original
+  // once per in-bounds neighbour, so then the weight is computed inline, in the
+  // original's order, and the table stays empty.
+  // Row indices grow NORTHWARD here: buildCropMap fills row r at
+  // N = minN + (r + 0.5) * fineRes. So +offY peaks on the row to the
+  // north, subtracting exactly as +offX does on the east axis. Getting
+  // this backwards mirrors the answer about the pixel centre, which a
+  // symmetric design hides in the purity total.
+  const tabulate = typeof sigmaX === 'number' && typeof sigmaY === 'number' && typeof offX === 'number' && typeof offY === 'number';
+  const eY = Math.min(windowY, rowsAgg - 1);
+  const eX = Math.min(windowX, colsAgg - 1);
+  const kW = 2 * eX + 1;
+  const kernel = new Float64Array(tabulate && eX >= 0 && eY >= 0 ? (2 * eY + 1) * kW : 0);
+  if (tabulate) {
+    for (let i = 0; i <= 2 * eY; i++) {
+      for (let j = 0; j <= 2 * eX; j++) {
+        const dy = i - eY - offY;
+        const dx = j - eX - offX;
+        kernel[i * kW + j] = Math.exp(-0.5 * ((dx / (sigmaX || 0.5)) ** 2 + (dy / (sigmaY || 0.5)) ** 2));
+      }
+    }
+  }
+
+  // Phase 2 scratch standing in for the per-pixel Map: fin[slot] is the running
+  // weight, seen[slot] the (pixel + 1) that last touched it, finOrd the slots in
+  // first-seen order.
+  const nSlots = slots.cnt.length;
+  const fin = new Float64Array(nSlots);
+  const seen = new Int32Array(nSlots);
+  const finOrd = new Int32Array(nSlots);
+
+  for (let gr = 0; gr < rowsAgg; gr++) {
+    const r0 = Math.max(0, gr - windowY);
+    const r1 = Math.min(rowsAgg - 1, gr + windowY);
+    for (let gc = 0; gc < colsAgg; gc++) {
+      const idx = gr * colsAgg + gc;
+      const stamp = idx + 1;
+      const acc = T === 0 ? none : new Float64Array(T);
+      let totalWeight = 0;
+      let n = 0;
+      const c0 = Math.max(0, gc - windowX);
+      const c1 = Math.min(colsAgg - 1, gc + windowX);
+
+      for (let nr = r0; nr <= r1; nr++) {
+        const kRow = (nr - gr + eY) * kW + eX - gc;
+        for (let nc = c0; nc <= c1; nc++) {
+          const nIdx = nr * colsAgg + nc;
+          let weight: number;
+          if (tabulate) weight = kernel[kRow + nc];
+          else {
+            const dy = nr - gr - offY;
+            const dx = nc - gc - offX;
+            weight = Math.exp(-0.5 * ((dx / (sigmaX || 0.5)) ** 2 + (dy / (sigmaY || 0.5)) ** 2));
+          }
+          if (includeOutside || hasValid[nIdx]) {
+            totalWeight += weight;
+            if (T !== 0) { const mean = means[nIdx]; for (let t = 0; t < T; t++) acc[t] += mean[t] * weight; }
+            const pEnd = pairStart[nIdx + 1];
+            for (let p = pairStart[nIdx]; p < pEnd; p++) {
+              const slot = pairSlot[p];
+              if (seen[slot] !== stamp) { seen[slot] = stamp; fin[slot] = 0; finOrd[n++] = slot; }
+              fin[slot] = (fin[slot] || 0) + pairW[p] * weight;
+            }
+          }
+        }
+      }
+
+      const finalMean = new Float64Array(T);
+      if (totalWeight > 0) for (let t = 0; t < T; t++) finalMean[t] = acc[t] / totalWeight;
+      outGrid[idx] = finalMean;
+
+      let dominantCrop = 0;
+      let maxWeight = 0;
+      let totalCropWeight = 0;
+      for (let i = 0; i < n; i++) {
+        const slot = finOrd[i];
+        const w = fin[slot];
+        totalCropWeight += w;
+        if (w > maxWeight) { maxWeight = w; dominantCrop = slot < 256 ? slot : slots.keys[slot - 256]; }
+      }
+      const isMixed = totalCropWeight > 0 && maxWeight / totalCropWeight < mixThreshold;
+
+      if (cropMapSpecies) {
+        // Fold cover ids into species. Bare and off-trial stay OUT of the
+        // species vector but bare stays IN the denominator, because alley soil
+        // really is part of what the sensor reads. finalCropWeights holds at
+        // most nSpecies + 2 entries, so this is a handful of iterations.
+        const base = idx * nSp;
+        let offW = 0, domPlot = 0xffff, domPlotW = -1;
+        // Accumulate in FLOAT64 and divide before storing. Summing straight into
+        // the Float32Array rounds each partial sum to 32 bits, which left
+        // species 0 a full ULP away from proportionA (line 368 divides once and
+        // stores once). Same maths, one fewer rounding, and this vector feeds
+        // the PCA where the error would compound across the season.
+        spScratch.fill(0, 0, nSp);
+        for (let i = 0; i < n; i++) {
+          const slot = finOrd[i];
+          const coverId = slot < 256 ? slot : slots.keys[slot - 256];
+          const w = fin[slot];
+          if (coverId === OFF_TRIAL.id) { offW += w; continue; }
+          if (coverId > MAX_COVER) continue;                 // BARE
+          const s = coverSpecies ? coverSpecies[coverId] : coverId;
+          if (s < nSp) spScratch[s] += w;
+          if (w > domPlotW) { domPlotW = w; domPlot = coverId; }
+        }
+        let domS = 0, domF = 0;
+        if (totalCropWeight > 0) {
+          for (let s = 0; s < nSp; s++) {
+            const f = spScratch[s] / totalCropWeight;
+            cropMapSpecies[base + s] = f;
+            if (f > domF) { domF = f; domS = s; }
+          }
+        }
+        cropMapDominant![idx] = domS;
+        cropMapDominantFrac![idx] = domF;
+        cropMapDominantPlot![idx] = domPlot;
+        cropMapProportionOffTrial![idx] = totalCropWeight > 0 ? offW / totalCropWeight : 0;
+      }
+
+      const centerCrop = centreCover(gr, gc);
+
+      cropMapCenter[idx] = centerCrop;
+      cropMapMajority[idx] = dominantCrop;
+      cropMapMixed[idx] = isMixed ? MIXED : dominantCrop;
+      cropMapProportionA[idx] = totalCropWeight > 0 ? finWeight(slots, seen, fin, stamp, 0) / totalCropWeight : 0;
+      cropMapProportionBare[idx] = totalCropWeight > 0 ? finWeight(slots, seen, fin, stamp, BARE.id) / totalCropWeight : 0;
+    }
+  }
+}
+
+/**
  * Verbatim port of the repo's `aggregate` (PSF + SUB=4 sub-sampling + rotation
  * + majority/mixed classification). The only change: the mixed threshold is a
  * parameter (`mixThreshold`, default 0.8 = the repo's literal).
+ *
+ * Tuned for speed with bit-identical results: every float is produced by the
+ * same operations in the same order as the Map-based original, which a
+ * differential fuzz against a byte copy of that original checks field by field.
  */
 export function aggregate(
   simsGrid: Float64Array[],
@@ -356,162 +609,180 @@ export function aggregate(
   const sCenterR = rowsPad / 2;
   const sCenterC = colsPad / 2;
 
-  const idealGrid: { mean: Float64Array; hasValidPixels: boolean; weightSum: number; cropWeights: Map<number, number> }[] =
-    new Array(rowsAgg * colsAgg);
   const SUB = 4;
   const step = 1 / SUB;
+  const SS = SUB * SUB;
+
+  // Phase 1 ("ideal" pixels), flattened instead of one object and Map per
+  // pixel: pixel k's mean series is means[k], hasValid[k] says whether
+  // any sub-sample landed on the fine grid, and its cover counts are the
+  // (slot, count) pairs pairStart[k] .. pairStart[k + 1], in first-seen order.
+  //
+  // Exactness rule for everything below: any step that can run user code or
+  // coerce a value (reading simsGrid, a series or cropMap, arithmetic on a value
+  // read from them, arithmetic on an argument that may not be a number) is done
+  // the same number of times, in the same order, with the same expression as the
+  // Map-based original. Only pure arithmetic on numbers is restructured. The
+  // series buffers are allocated per pixel where the original allocated them,
+  // so a bad or huge T fails at the same allocation; with T = 0 nothing can
+  // fail and one empty array stands in for all of them.
+  const none = new Float64Array(0);
+  const means: Float64Array[] = new Array(T === 0 ? 0 : cells);
+  const hasValid = new Uint8Array(cells);
+  const pairStart = new Int32Array(cells + 1);
+  let pairCap = cells + 16;
+  let pairSlot = new Int32Array(pairCap);
+  let pairW = new Float64Array(pairCap);
+  let pairLen = 0;
+  const slots: CoverSlots = { cnt: new Float64Array(256), ord: new Int32Array(256), keys: [], index: new Map() };
+
+  // The unrotated, unpadded grid every simulateField / simulatePatch call uses.
+  // There cos = 1, sin = +-0 and sCenter === the fine centre, so the rotation
+  // is exact: fRelR = +-0 + relSRow === relSRow (relSRow is never zero, it has a
+  // fraction of 1/8, 3/8, 5/8 or 7/8), and ny = gr*g + sy + (ssy + 0.5) / 4 is
+  // exact too, so floor(ny - sCenterR + rCenter) === gr*g + sy. All SUB*SUB
+  // sub-samples of fine cell (gr*g + sy, gc*g + sx) land on that same cell, and
+  // since rows and cols are whole numbers (=== a number) that are multiples of g,
+  // every one of them is valid. The geometry is skipped, but each sub-sample
+  // still reads simsGrid, the series and cropMap exactly as the original did.
+  // What is saved is the float geometry and the Map: consecutive equal cover ids
+  // (===, which implies the same Map key) are one run, tallied in one step at
+  // the run's first sub-sample, which is where the Map first saw the id, so the
+  // first-seen order is unchanged. A run of id 0 with length 0 is where every
+  // pixel starts, which is the same as no run. A null simsGrid takes the general
+  // path, which throws exactly where the original did.
+  const aligned = cosA === 1 && sinA === 0 && rowsPad === rows && colsPad === cols && simsGrid != null;
 
   for (let gr = 0; gr < rowsAgg; gr++) {
     for (let gc = 0; gc < colsAgg; gc++) {
-      const acc = new Float64Array(T);
+      const k = gr * colsAgg + gc;
       let weightSum = 0;
       let hasValidPixels = false;
-      const cropWeights = new Map<number, number>();
+      let n = 0;
+      const acc = T === 0 ? none : new Float64Array(T);
 
-      for (let sy = 0; sy < g; sy++) {
-        for (let sx = 0; sx < g; sx++) {
-          for (let ssy = 0; ssy < SUB; ssy++) {
-            for (let ssx = 0; ssx < SUB; ssx++) {
-              const ny = gr * g + sy + (ssy + 0.5) * step;
-              const nx = gc * g + sx + (ssx + 0.5) * step;
-
-              const relSRow = ny - sCenterR;
-              const relSCol = nx - sCenterC;
-
-              const fRelC = relSCol * cosA + relSRow * sinA;
-              const fRelR = -relSCol * sinA + relSRow * cosA;
-
-              const fRow = Math.floor(fRelR + rCenter);
-              const fCol = Math.floor(fRelC + cCenter);
-
-              const isValid = fRow >= 0 && fRow < rows && fCol >= 0 && fCol < cols;
-              if (isValid) hasValidPixels = true;
-
-              if (includeOutside) weightSum += 1;
-              else if (isValid) weightSum += 1;
-
-              if (isValid) {
-                const srcSeries = simsGrid[fRow * cols + fCol];
+      if (aligned) {
+        let runId = 0;
+        let run = 0;
+        for (let sy = 0; sy < g; sy++) {
+          const rowBase = (gr * g + sy) * cols + gc * g;
+          for (let sx = 0; sx < g; sx++) {
+            const cell = rowBase + sx;
+            let q = 0;
+            if (T === 0) {
+              // With no series the original read simsGrid[cell] only to test it,
+              // which runs nothing, so the bare read is the same step. The inner
+              // loop makes no writes while the id repeats, which V8 runs fast.
+              while (q < SS) {
+                let cropId: number;
+                do {
+                  simsGrid[cell];
+                  cropId = cropMap[cell];
+                  q++;
+                  if (cropId !== runId) break;
+                  run++;
+                } while (q < SS);
+                if (cropId !== runId) {
+                  if (run > 0) n = tally(slots, runId, run, n);
+                  runId = cropId;
+                  run = 1;
+                }
+              }
+            } else {
+              for (; q < SS; q++) {
+                const srcSeries = simsGrid[cell];
                 if (srcSeries) for (let t = 0; t < T; t++) acc[t] += srcSeries[t];
-                const cropId = cropMap[fRow * cols + fCol];
-                cropWeights.set(cropId, (cropWeights.get(cropId) || 0) + 1);
+                const cropId = cropMap[cell];
+                if (cropId === runId) { run++; continue; }
+                if (run > 0) n = tally(slots, runId, run, n);
+                runId = cropId;
+                run = 1;
+              }
+            }
+          }
+        }
+        if (run > 0) n = tally(slots, runId, run, n);
+        hasValidPixels = true;
+        weightSum = SS * g * g;
+      } else {
+        for (let sy = 0; sy < g; sy++) {
+          for (let sx = 0; sx < g; sx++) {
+            for (let ssy = 0; ssy < SUB; ssy++) {
+              for (let ssx = 0; ssx < SUB; ssx++) {
+                const ny = gr * g + sy + (ssy + 0.5) * step;
+                const nx = gc * g + sx + (ssx + 0.5) * step;
+
+                const relSRow = ny - sCenterR;
+                const relSCol = nx - sCenterC;
+
+                const fRelC = relSCol * cosA + relSRow * sinA;
+                const fRelR = -relSCol * sinA + relSRow * cosA;
+
+                const fRow = Math.floor(fRelR + rCenter);
+                const fCol = Math.floor(fRelC + cCenter);
+
+                const isValid = fRow >= 0 && fRow < rows && fCol >= 0 && fCol < cols;
+                if (isValid) hasValidPixels = true;
+
+                if (includeOutside) weightSum += 1;
+                else if (isValid) weightSum += 1;
+
+                if (isValid) {
+                  const srcSeries = simsGrid[fRow * cols + fCol];
+                  if (srcSeries) for (let t = 0; t < T; t++) acc[t] += srcSeries[t];
+                  const cropId = cropMap[fRow * cols + fCol];
+                  n = tally(slots, cropId, 1, n);
+                }
               }
             }
           }
         }
       }
 
-      const mean = new Float64Array(T);
-      if (weightSum > 0) for (let t = 0; t < T; t++) mean[t] = acc[t] / weightSum;
-      idealGrid[gr * colsAgg + gc] = { mean, hasValidPixels, weightSum, cropWeights };
+      if (pairLen + n > pairCap) {
+        pairCap = Math.max(pairCap * 2, pairLen + n);
+        const nextSlot = new Int32Array(pairCap); nextSlot.set(pairSlot); pairSlot = nextSlot;
+        const nextW = new Float64Array(pairCap); nextW.set(pairW); pairW = nextW;
+      }
+      pairStart[k] = pairLen;
+      const cnt = slots.cnt, ord = slots.ord;
+      for (let i = 0; i < n; i++) {
+        const slot = ord[i];
+        pairSlot[pairLen] = slot;
+        pairW[pairLen++] = cnt[slot];
+        cnt[slot] = 0;
+      }
+      hasValid[k] = hasValidPixels ? 1 : 0;
+      if (T !== 0) {
+        const mean = new Float64Array(T);
+        if (weightSum > 0) for (let t = 0; t < T; t++) mean[t] = acc[t] / weightSum;
+        means[k] = mean;
+      }
     }
   }
+  pairStart[cells] = pairLen;
 
-  // σ = 0 → no PSF: the window collapses to the pixel itself (sharp sensor).
-  // The window follows the OFFSET too: a kernel pushed off centre has its far
-  // tail outside the symmetric window, and clipping it would quietly renormalise
-  // the blur back towards the centre, hiding the very effect being simulated.
-  const windowX = Math.max(0, Math.ceil(3 * sigmaX + Math.abs(offX)));
-  const windowY = Math.max(0, Math.ceil(3 * sigmaY + Math.abs(offY)));
+  // The cover at the pixel's centre, read from the fine grid exactly where the
+  // original read it: the same sub-sample position through the same rotation.
+  const centre = (gr: number, gc: number): number => {
+    let centerCrop = 0;
+    const sRow = gr * g + (g - 1) / 2;
+    const sCol = gc * g + (g - 1) / 2;
+    const relSRow = sRow - sCenterR;
+    const relSCol = sCol - sCenterC;
+    const fRelC = relSCol * cosA + relSRow * sinA;
+    const fRelR = -relSCol * sinA + relSRow * cosA;
+    const fRow = Math.floor(fRelR + rCenter);
+    const fCol = Math.floor(fRelC + cCenter);
+    if (fRow >= 0 && fRow < rows && fCol >= 0 && fCol < cols) centerCrop = cropMap[fRow * cols + fCol];
+    return centerCrop;
+  };
 
-  for (let gr = 0; gr < rowsAgg; gr++) {
-    for (let gc = 0; gc < colsAgg; gc++) {
-      const idx = gr * colsAgg + gc;
-      const acc = new Float64Array(T);
-      let totalWeight = 0;
-      const finalCropWeights = new Map<number, number>();
-
-      for (let nr = gr - windowY; nr <= gr + windowY; nr++) {
-        for (let nc = gc - windowX; nc <= gc + windowX; nc++) {
-          if (nr >= 0 && nr < rowsAgg && nc >= 0 && nc < colsAgg) {
-            const neighbor = idealGrid[nr * colsAgg + nc];
-            // Row indices grow NORTHWARD here: buildCropMap fills row r at
-            // N = minN + (r + 0.5) * fineRes. So +offY peaks on the row to the
-            // north, subtracting exactly as +offX does on the east axis. Getting
-            // this backwards mirrors the answer about the pixel centre, which a
-            // symmetric design hides in the purity total.
-            const dy = nr - gr - offY;
-            const dx = nc - gc - offX;
-            const weight = Math.exp(-0.5 * ((dx / (sigmaX || 0.5)) ** 2 + (dy / (sigmaY || 0.5)) ** 2));
-
-            if (includeOutside || neighbor.hasValidPixels) {
-              totalWeight += weight;
-              for (let t = 0; t < T; t++) acc[t] += neighbor.mean[t] * weight;
-              for (const [cropId, w] of neighbor.cropWeights.entries())
-                finalCropWeights.set(cropId, (finalCropWeights.get(cropId) || 0) + w * weight);
-            }
-          }
-        }
-      }
-
-      const finalMean = new Float64Array(T);
-      if (totalWeight > 0) for (let t = 0; t < T; t++) finalMean[t] = acc[t] / totalWeight;
-      outGrid[idx] = finalMean;
-
-      let dominantCrop = 0;
-      let maxWeight = 0;
-      let totalCropWeight = 0;
-      for (const [cropId, w] of finalCropWeights.entries()) {
-        totalCropWeight += w;
-        if (w > maxWeight) { maxWeight = w; dominantCrop = cropId; }
-      }
-      const isMixed = totalCropWeight > 0 && maxWeight / totalCropWeight < mixThreshold;
-
-      if (cropMapSpecies) {
-        // Fold cover ids into species. Bare and off-trial stay OUT of the
-        // species vector but bare stays IN the denominator, because alley soil
-        // really is part of what the sensor reads. finalCropWeights holds at
-        // most nSpecies + 2 entries, so this is a handful of iterations.
-        const base = idx * nSp;
-        let offW = 0, domPlot = 0xffff, domPlotW = -1;
-        // Accumulate in FLOAT64 and divide before storing. Summing straight into
-        // the Float32Array rounds each partial sum to 32 bits, which left
-        // species 0 a full ULP away from proportionA (line 368 divides once and
-        // stores once). Same maths, one fewer rounding, and this vector feeds
-        // the PCA where the error would compound across the season.
-        spScratch.fill(0, 0, nSp);
-        for (const [coverId, w] of finalCropWeights.entries()) {
-          if (coverId === OFF_TRIAL.id) { offW += w; continue; }
-          if (coverId > MAX_COVER) continue;                 // BARE
-          const s = coverSpecies ? coverSpecies[coverId] : coverId;
-          if (s < nSp) spScratch[s] += w;
-          if (w > domPlotW) { domPlotW = w; domPlot = coverId; }
-        }
-        let domS = 0, domF = 0;
-        if (totalCropWeight > 0) {
-          for (let s = 0; s < nSp; s++) {
-            const f = spScratch[s] / totalCropWeight;
-            cropMapSpecies[base + s] = f;
-            if (f > domF) { domF = f; domS = s; }
-          }
-        }
-        cropMapDominant![idx] = domS;
-        cropMapDominantFrac![idx] = domF;
-        cropMapDominantPlot![idx] = domPlot;
-        cropMapProportionOffTrial![idx] = totalCropWeight > 0 ? offW / totalCropWeight : 0;
-      }
-
-      let centerCrop = 0;
-      const sRow = gr * g + (g - 1) / 2;
-      const sCol = gc * g + (g - 1) / 2;
-      const relSRow = sRow - sCenterR;
-      const relSCol = sCol - sCenterC;
-      const fRelC = relSCol * cosA + relSRow * sinA;
-      const fRelR = -relSCol * sinA + relSRow * cosA;
-      const fRow = Math.floor(fRelR + rCenter);
-      const fCol = Math.floor(fRelC + cCenter);
-      if (fRow >= 0 && fRow < rows && fCol >= 0 && fCol < cols) centerCrop = cropMap[fRow * cols + fCol];
-
-      cropMapCenter[idx] = centerCrop;
-      cropMapMajority[idx] = dominantCrop;
-      cropMapMixed[idx] = isMixed ? MIXED : dominantCrop;
-      cropMapProportionA[idx] = totalCropWeight > 0 ? (finalCropWeights.get(0) || 0) / totalCropWeight : 0;
-      cropMapProportionBare[idx] = totalCropWeight > 0 ? (finalCropWeights.get(BARE.id) || 0) / totalCropWeight : 0;
-    }
-  }
-
-  return { rowsAgg, colsAgg, cropMapMixed, cropMapMajority, cropMapCenter, cropMapProportionA, cropMapProportionBare, simsGrid: outGrid,
-           cropMapSpecies, cropMapDominant, cropMapDominantFrac, cropMapDominantPlot, cropMapProportionOffTrial };
+  const result: AggregateResult = { rowsAgg, colsAgg, cropMapMixed, cropMapMajority, cropMapCenter, cropMapProportionA, cropMapProportionBare,
+                                    simsGrid: outGrid, cropMapSpecies, cropMapDominant, cropMapDominantFrac, cropMapDominantPlot, cropMapProportionOffTrial };
+  resolvePixels(result, { T, means, hasValid, pairStart, pairSlot, pairW, slots }, nSp, spScratch,
+                sigmaX, sigmaY, includeOutside, mixThreshold, offX, offY, coverSpecies, centre);
+  return result;
 }
 
 // ===== field driver (repo engine over the real S2 grid) ======================
@@ -726,6 +997,1123 @@ export function blockPlots(p: BlockPlan): BlockPlot[] {
   return out;
 }
 
+// ===== imported trial (a design uploaded as a file) ==========================
+
+/**
+ * The plan of an IMPORTED layout, or null. Keyed on the pattern as well as the
+ * plan, like every other reader of the cover map: a plan left on a layout that
+ * was switched back to strips must not fold strip ids through its plot table.
+ */
+function importedOf(layout: SimLayout): ImportedPlan | null {
+  return layout.pattern === 'imported' && layout.imported ? layout.imported : null;
+}
+
+/** A plot's cover id: its plot id, or its species once plots outnumber the ids. */
+const importedCoverId = (plan: ImportedPlan, plot: number): number => (plan.plotIds ? plot : plan.plots[plot].species);
+
+/**
+ * Box tests against an imported plan are widened by this much. pointInPoly's
+ * crossing abscissa is a rounded quotient that can land a few ulps outside its
+ * own edge's x range, so a box with no slack could reject a point the polygon
+ * test accepts. A millimetre dwarfs that error and changes no answer.
+ */
+const BOX_SLACK_M = 1e-3;
+
+/** Buckets of plot indices over the plan, so a point is tested against a few plots, not all. */
+interface ImportedIndex {
+  x0: number; y0: number; x1: number; y1: number;
+  sx: number; sy: number; nx: number; ny: number;
+  /** Plot indices whose slack box meets the bucket, ascending. */
+  buckets: number[][];
+  /** Each plot's slack box, [minE, minN, maxE, maxN] at 4 * plot. */
+  boxes: Float64Array;
+}
+const importedIndexes = new WeakMap<ImportedPlan, ImportedIndex>();
+
+function importedIndex(plan: ImportedPlan): ImportedIndex {
+  const hit = importedIndexes.get(plan);
+  if (hit) return hit;
+  const n = plan.plots.length;
+  const boxes = new Float64Array(4 * n);
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (let p = 0; p < n; p++) {
+    let b0 = Infinity, b1 = Infinity, b2 = -Infinity, b3 = -Infinity;
+    for (const ring of plan.plots[p].rings) for (const [x, y] of ring) {
+      if (x < b0) b0 = x;
+      if (x > b2) b2 = x;
+      if (y < b1) b1 = y;
+      if (y > b3) b3 = y;
+    }
+    boxes[4 * p] = b0 - BOX_SLACK_M; boxes[4 * p + 1] = b1 - BOX_SLACK_M;
+    boxes[4 * p + 2] = b2 + BOX_SLACK_M; boxes[4 * p + 3] = b3 + BOX_SLACK_M;
+    x0 = Math.min(x0, boxes[4 * p]); y0 = Math.min(y0, boxes[4 * p + 1]);
+    x1 = Math.max(x1, boxes[4 * p + 2]); y1 = Math.max(y1, boxes[4 * p + 3]);
+  }
+  // The footprint too, so the outer box holds everything that is not off-trial
+  // even for a hand-built plan whose footprint reaches past its plots.
+  for (const [x, y] of plan.footprint) {
+    x0 = Math.min(x0, x - BOX_SLACK_M); y0 = Math.min(y0, y - BOX_SLACK_M);
+    x1 = Math.max(x1, x + BOX_SLACK_M); y1 = Math.max(y1, y + BOX_SLACK_M);
+  }
+  // About one bucket per plot, capped so a sprawling plan cannot allocate a huge table.
+  const w = x1 - x0, h = y1 - y0;
+  const side = Math.sqrt((Math.max(w, 1e-3) * Math.max(h, 1e-3)) / Math.max(1, n));
+  const nx = Math.max(1, Math.min(512, Math.ceil(w / side) || 1));
+  const ny = Math.max(1, Math.min(512, Math.ceil(h / side) || 1));
+  const sx = w / nx || 1, sy = h / ny || 1;
+  const buckets: number[][] = Array.from({ length: nx * ny }, () => []);
+  const col = (x: number) => Math.min(nx - 1, Math.max(0, Math.floor((x - x0) / sx)));
+  const row = (y: number) => Math.min(ny - 1, Math.max(0, Math.floor((y - y0) / sy)));
+  for (let p = 0; p < n; p++) {
+    // A plot with no vertex has an inverted box and belongs to no bucket.
+    if (!(boxes[4 * p] <= boxes[4 * p + 2] && boxes[4 * p + 1] <= boxes[4 * p + 3])) continue;
+    const c1 = col(boxes[4 * p + 2]), r1 = row(boxes[4 * p + 3]);
+    for (let r = row(boxes[4 * p + 1]); r <= r1; r++)
+      for (let c = col(boxes[4 * p]); c <= c1; c++) buckets[r * nx + c].push(p);
+  }
+  const idx: ImportedIndex = { x0, y0, x1, y1, sx, sy, nx, ny, buckets, boxes };
+  importedIndexes.set(plan, idx);
+  return idx;
+}
+
+/**
+ * What covers a point of an imported trial, in metres of the plan's CRS: the
+ * LAST plot containing it (later plots overwrite earlier ones, as they do in the
+ * cover map), else bare alley inside the footprint, else off-trial. Containment
+ * is pointInPoly's even-odd rule over all of a plot's rings together, the very
+ * predicate the rasteriser reproduces, so this and the cover map agree on every
+ * fine cell centre.
+ *
+ * `steps`, when given, is charged one per plot looked at and one per vertex
+ * tested. A caller asking thousands of these of a file it did not draw (the
+ * resolver's strip search) bounds its work by what they really cost: under a
+ * pile of overlapping plots one answer can test every one of them.
+ */
+export function importedCoverAt(E: number, N: number, plan: ImportedPlan, steps?: { work: number }): number {
+  const idx = importedIndex(plan);
+  if (!(E >= idx.x0 && E <= idx.x1 && N >= idx.y0 && N <= idx.y1)) return OFF_TRIAL.id;
+  const c = Math.min(idx.nx - 1, Math.max(0, Math.floor((E - idx.x0) / idx.sx)));
+  const r = Math.min(idx.ny - 1, Math.max(0, Math.floor((N - idx.y0) / idx.sy)));
+  const list = idx.buckets[r * idx.nx + c], b = idx.boxes;
+  for (let q = list.length - 1; q >= 0; q--) {
+    const p = list[q];
+    if (E < b[4 * p] || E > b[4 * p + 2] || N < b[4 * p + 1] || N > b[4 * p + 3]) continue;
+    let inside = false;
+    for (const ring of plan.plots[p].rings) {
+      if (steps) steps.work += ring.length;
+      if (pointInPoly(E, N, ring)) inside = !inside;
+    }
+    if (inside) {
+      if (steps) steps.work += list.length - q;
+      return importedCoverId(plan, p);
+    }
+  }
+  if (steps) steps.work += list.length + plan.footprint.length;
+  return pointInPoly(E, N, plan.footprint) ? BARE.id : OFF_TRIAL.id;
+}
+
+/**
+ * First column whose centre, computed exactly as buildCropMap computes it, is
+ * at or east of x. Centres never decrease with the column, so the estimate is
+ * only ever walked a step or two to the exact boundary.
+ */
+function firstCentreAtOrAfter(x: number, minE: number, cols: number, fineRes: number): number {
+  let c = Math.ceil((x - minE) / fineRes - 0.5);
+  if (!(c > 0)) c = 0;
+  else if (c > cols) c = cols;
+  while (c > 0 && minE + (c - 1 + 0.5) * fineRes >= x) c--;
+  while (c < cols && minE + (c + 0.5) * fineRes < x) c++;
+  return c;
+}
+
+/**
+ * Paint `id` into every fine cell whose CENTRE is inside `rings`, by the
+ * even-odd rule over all of them together.
+ *
+ * Exact, not approximate: for each row it collects the crossings pointInPoly
+ * would compute at that row's centre line, from the same vertices in the same
+ * order with the same expression, so a centre is painted precisely when
+ * pointInPoly (XOR over the rings) accepts it, centres lying on an edge
+ * included. A centre is inside when an odd number of crossings lie strictly
+ * east of it, so sorting the crossings turns a row into runs filled with one
+ * `fill` each. Edges enter an active list in order of their southern end and
+ * leave it past their northern end, so a row only looks at edges spanning it.
+ */
+function fillRings(
+  map: Uint8Array, minE: number, minN: number, rows: number, cols: number, fineRes: number,
+  rings: [number, number][][], id: number,
+): void {
+  let total = 0;
+  for (const ring of rings) total += ring.length;
+  const ends = new Float64Array(4 * total);  // xi, yi, xj, yj: pointInPoly's i and j
+  const lo = new Float64Array(total), hi = new Float64Array(total);
+  let m = 0;
+  for (const ring of rings) {
+    const n = ring.length;
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      const yi = ring[i][1], yj = ring[j][1];
+      // A horizontal edge never crosses a row; one with a NaN end never toggles
+      // pointInPoly either, whatever its crossing test says.
+      if (!(yi < yj || yi > yj)) continue;
+      ends[4 * m] = ring[i][0]; ends[4 * m + 1] = yi; ends[4 * m + 2] = ring[j][0]; ends[4 * m + 3] = yj;
+      lo[m] = Math.min(yi, yj); hi[m] = Math.max(yi, yj);
+      m++;
+    }
+  }
+  if (!m) return;
+  const order = Array.from({ length: m }, (_, e) => e).sort((a, b) => lo[a] - lo[b]);
+  let yMax = -Infinity;
+  for (let e = 0; e < m; e++) yMax = Math.max(yMax, hi[e]);
+  // A row outside [lo, hi) has no crossing at all, so a row or two of slack on
+  // the estimate costs nothing and cannot drop a row that has one.
+  const r0 = Math.max(0, Math.floor((lo[order[0]] - minN) / fineRes - 0.5) - 1);
+  const r1 = Math.min(rows - 1, Math.ceil((yMax - minN) / fineRes - 0.5) + 1);
+  const active = new Int32Array(m);
+  const xs = new Float64Array(m);
+  let next = 0, nActive = 0;
+  for (let r = r0; r <= r1; r++) {
+    const N = minN + (r + 0.5) * fineRes;
+    while (next < m && lo[order[next]] <= N) active[nActive++] = order[next++];
+    let k = 0, kept = 0;
+    for (let a = 0; a < nActive; a++) {
+      const e = active[a];
+      if (hi[e] <= N) continue;            // rows only go north: this edge is done
+      active[kept++] = e;
+      const xi = ends[4 * e], yi = ends[4 * e + 1], xj = ends[4 * e + 2], yj = ends[4 * e + 3];
+      if ((yi > N) !== (yj > N)) {
+        const x = ((xj - xi) * (N - yi)) / (yj - yi) + xi;
+        if (x === x) xs[k++] = x;          // a NaN crossing never toggles pointInPoly
+      }
+    }
+    nActive = kept;
+    if (k > 16) xs.subarray(0, k).sort();
+    else for (let i = 1; i < k; i++) {
+      const x = xs[i];
+      let j = i - 1;
+      while (j >= 0 && xs[j] > x) { xs[j + 1] = xs[j]; j--; }
+      xs[j + 1] = x;
+    }
+    // West of every crossing a centre has all k of them east of it.
+    const base = r * cols;
+    let inside = (k & 1) === 1, from = 0;
+    for (let q = 0; q < k; q++) {
+      const to = firstCentreAtOrAfter(xs[q], minE, cols, fineRes);
+      if (inside && to > from) map.fill(id, base + from, base + to);
+      inside = !inside;
+      from = to;
+    }
+  }
+}
+
+/**
+ * The cover map of an imported trial: off-trial everywhere, the footprint bare,
+ * then every plot in file order with its cover id. A later plot overwrites an
+ * earlier one where the two overlap, which is also what importedCoverAt answers.
+ */
+function rasteriseImported(
+  map: Uint8Array, minE: number, minN: number, rows: number, cols: number, fineRes: number, plan: ImportedPlan,
+): void {
+  map.fill(OFF_TRIAL.id);
+  fillRings(map, minE, minN, rows, cols, fineRes, [plan.footprint], BARE.id);
+  for (let p = 0; p < plan.plots.length; p++) {
+    fillRings(map, minE, minN, rows, cols, fineRes, plan.plots[p].rings, importedCoverId(plan, p));
+  }
+}
+
+// ===== exact cover shares of an imported trial ===============================
+
+/**
+ * An imported plan flattened for exact area work, with everything that can be
+ * settled once for the whole plan rather than once per pixel.
+ *
+ * Coordinates stay in the plan's own metres, and every pixel moves the few
+ * vertices it needs to ITS OWN corner before clipping. That subtraction is
+ * exact (the two are within a factor of two of each other), it keeps a clipped
+ * area clear of the 1e-9 m granularity a six-figure UTM easting carries, and it
+ * makes a pixel's shares depend on the pixel alone rather than on where the
+ * grid it belongs to starts: a ladder rung over the trial's own extent then
+ * equals the whole-field run bit for bit, which the suite pins.
+ */
+interface PlanGeometry {
+  nPlots: number;
+  /** Every ring's vertices, repeated and closing ones dropped: ring k runs ringStart[k] .. ringStart[k + 1]. */
+  vx: Float64Array; vy: Float64Array; ringStart: Int32Array;
+  /** Plot p owns rings plotRing[p] .. plotRing[p + 1]. */
+  plotRing: Int32Array;
+  /** The footprint's ring, the one past every plot's. */
+  footRing: number;
+  /** [minE, minN, maxE, maxN] per plot at 4 * p, the footprint's at 4 * nPlots. */
+  box: Float64Array;
+  /** Each plot's cover id: its plot id, or its species where plots outnumber the ids. */
+  cover: Uint8Array;
+  /**
+   * 1 where a shape is ONE ring that never meets itself, so the |shoelace| of
+   * any clip of it IS its area: plot p at p, the footprint at nPlots. Anything
+   * else (a hole, several parts, a ring crossing itself) needs the sweep, which
+   * follows the even-odd rule without caring how the rings lie.
+   */
+  simple: Uint8Array;
+  /** Pairs of plots whose interiors may overlap, as p * nPlots + q with p < q. */
+  overlap: Set<number>;
+}
+
+const planGeometries = new WeakMap<ImportedPlan, PlanGeometry>();
+
+/** Two points are the same vertex, so the edge between them is no edge at all. */
+const samePoint = (x0: number, y0: number, x1: number, y1: number) => x0 === x1 && y0 === y1;
+
+function planGeometry(plan: ImportedPlan): PlanGeometry {
+  const hit = planGeometries.get(plan);
+  if (hit) return hit;
+  const nPlots = plan.plots.length;
+  let nRings = 1, nVerts = plan.footprint.length;
+  for (const p of plan.plots) { nRings += p.rings.length; for (const r of p.rings) nVerts += r.length; }
+  const vx = new Float64Array(nVerts), vy = new Float64Array(nVerts);
+  const ringStart = new Int32Array(nRings + 1);
+  const plotRing = new Int32Array(nPlots + 1);
+  const box = new Float64Array(4 * (nPlots + 1));
+  const cover = new Uint8Array(nPlots);
+  const simple = new Uint8Array(nPlots + 1);
+  let v = 0, k = 0;
+  const addRing = (ring: [number, number][]): void => {
+    const s = v;
+    for (const [x, y] of ring) {
+      if (v > s && samePoint(x, y, vx[v - 1], vy[v - 1])) continue;
+      vx[v] = x; vy[v] = y; v++;
+    }
+    // A shapefile ring repeats its first vertex; carrying it would only add a
+    // zero-length edge to every test below.
+    while (v - s > 1 && samePoint(vx[v - 1], vy[v - 1], vx[s], vy[s])) v--;
+    ringStart[k + 1] = v; k++;
+  };
+  for (let p = 0; p < nPlots; p++) {
+    plotRing[p] = k;
+    let b0 = Infinity, b1 = Infinity, b2 = -Infinity, b3 = -Infinity;
+    for (const ring of plan.plots[p].rings) {
+      addRing(ring);
+      for (const [x, y] of ring) {
+        if (x < b0) b0 = x;
+        if (x > b2) b2 = x;
+        if (y < b1) b1 = y;
+        if (y > b3) b3 = y;
+      }
+    }
+    box[4 * p] = b0; box[4 * p + 1] = b1; box[4 * p + 2] = b2; box[4 * p + 3] = b3;
+    cover[p] = importedCoverId(plan, p);
+  }
+  plotRing[nPlots] = k;
+  const footRing = k;
+  addRing(plan.footprint);
+  let f0 = Infinity, f1 = Infinity, f2 = -Infinity, f3 = -Infinity;
+  for (const [x, y] of plan.footprint) {
+    if (x < f0) f0 = x;
+    if (x > f2) f2 = x;
+    if (y < f1) f1 = y;
+    if (y > f3) f3 = y;
+  }
+  box[4 * nPlots] = f0; box[4 * nPlots + 1] = f1; box[4 * nPlots + 2] = f2; box[4 * nPlots + 3] = f3;
+
+  const geo: PlanGeometry = { nPlots, vx, vy, ringStart, plotRing, footRing, box, cover, simple, overlap: new Set<number>() };
+  for (let p = 0; p < nPlots; p++) {
+    simple[p] = plotRing[p + 1] - plotRing[p] === 1 && ringIsSimple(geo, plotRing[p]) ? 1 : 0;
+  }
+  simple[nPlots] = ringIsSimple(geo, footRing) ? 1 : 0;
+  findOverlaps(geo);
+  planGeometries.set(plan, geo);
+  return geo;
+}
+
+/**
+ * Do these two closed segments meet at all? Deliberately generous: a pair that
+ * only ALMOST touches is reported as meeting, because every caller answers
+ * "then take the slower, general path", and that path is exact either way.
+ */
+function segmentsMeet(
+  ax: number, ay: number, bx: number, by: number,
+  cx: number, cy: number, dx: number, dy: number,
+): boolean {
+  if (Math.min(ax, bx) > Math.max(cx, dx) || Math.min(cx, dx) > Math.max(ax, bx)) return false;
+  if (Math.min(ay, by) > Math.max(cy, dy) || Math.min(cy, dy) > Math.max(ay, by)) return false;
+  const abx = bx - ax, aby = by - ay, cdx = dx - cx, cdy = dy - cy;
+  const d1 = abx * (cy - ay) - aby * (cx - ax);
+  const d2 = abx * (dy - ay) - aby * (dx - ax);
+  const d3 = cdx * (ay - cy) - cdy * (ax - cx);
+  const d4 = cdx * (by - cy) - cdy * (bx - cx);
+  // A cross product is a length times a distance, so the slack is a length
+  // times the nanometre that separates "on the line" from "beside it".
+  const t1 = 1e-9 * (Math.abs(abx) + Math.abs(aby)) * (1 + Math.abs(cdx) + Math.abs(cdy));
+  const t2 = 1e-9 * (Math.abs(cdx) + Math.abs(cdy)) * (1 + Math.abs(abx) + Math.abs(aby));
+  const straddleAB = (d1 <= t1 && d2 >= -t1) || (d1 >= -t1 && d2 <= t1);
+  const straddleCD = (d3 <= t2 && d4 >= -t2) || (d3 >= -t2 && d4 <= t2);
+  return straddleAB && straddleCD;
+}
+
+/**
+ * Does this ring never meet itself? Neighbouring edges are skipped: they share
+ * a vertex by construction, and a spike that doubles back along one of them
+ * covers no ground, so neither the winding number nor the shoelace notices it.
+ *
+ * Dense rings are bucketed rather than compared pair by pair, and a ring that
+ * would exhaust the budget answers "no" instead of stalling the page: "no" only
+ * costs the sweep, while a wrong "yes" would cost the wrong area.
+ */
+function ringIsSimple(geo: PlanGeometry, ring: number): boolean {
+  const from = geo.ringStart[ring], m = geo.ringStart[ring + 1] - from;
+  if (m < 4) return true;                     // a triangle has no non-adjacent pair
+  const { vx, vy } = geo;
+  const meets = (i: number, j: number): boolean => {
+    if (i === j) return false;
+    const i2 = i + 1 === m ? 0 : i + 1, j2 = j + 1 === m ? 0 : j + 1;
+    if (i2 === j || j2 === i) return false;    // neighbours share that vertex
+    return segmentsMeet(vx[from + i], vy[from + i], vx[from + i2], vy[from + i2],
+                        vx[from + j], vy[from + j], vx[from + j2], vy[from + j2]);
+  };
+  if (m <= 48) {
+    for (let i = 0; i < m; i++) for (let j = i + 1; j < m; j++) if (meets(i, j)) return false;
+    return true;
+  }
+  // One bucket per handful of edges, so a ring's own neighbourhood is all each
+  // edge is compared against.
+  const side = Math.max(1, Math.min(256, Math.round(Math.sqrt(m / 4))));
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (let i = from; i < from + m; i++) {
+    if (vx[i] < x0) x0 = vx[i];
+    if (vx[i] > x1) x1 = vx[i];
+    if (vy[i] < y0) y0 = vy[i];
+    if (vy[i] > y1) y1 = vy[i];
+  }
+  if (!(x1 >= x0 && y1 >= y0)) return false;   // a NaN vertex: nothing can be trusted
+  const sx = (x1 - x0) / side || 1, sy = (y1 - y0) / side || 1;
+  const buckets: number[][] = Array.from({ length: side * side }, () => []);
+  let budget = 64 * m + 4096;
+  for (let i = 0; i < m; i++) {
+    const i2 = i + 1 === m ? 0 : i + 1;
+    const ax = vx[from + i], ay = vy[from + i], bx = vx[from + i2], by = vy[from + i2];
+    const c0 = Math.max(0, Math.min(side - 1, Math.floor((Math.min(ax, bx) - x0) / sx)));
+    const c1 = Math.max(0, Math.min(side - 1, Math.floor((Math.max(ax, bx) - x0) / sx)));
+    const r0 = Math.max(0, Math.min(side - 1, Math.floor((Math.min(ay, by) - y0) / sy)));
+    const r1 = Math.max(0, Math.min(side - 1, Math.floor((Math.max(ay, by) - y0) / sy)));
+    if ((c1 - c0 + 1) * (r1 - r0 + 1) > budget) return false;
+    for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) { buckets[r * side + c].push(i); budget--; }
+  }
+  for (const list of buckets) {
+    const n = list.length;
+    budget -= (n * (n - 1)) / 2;
+    if (budget < 0) return false;
+    for (let a = 0; a < n; a++) for (let b = a + 1; b < n; b++) if (meets(list[a], list[b])) return false;
+  }
+  return true;
+}
+
+/**
+ * Twice the signed area of a ring, by the shoelace formula about its own first
+ * vertex: a shoelace over raw eastings would multiply six-figure numbers to
+ * within a thousandth of a square metre of each other.
+ */
+function ringArea2(geo: PlanGeometry, ring: number): number {
+  const from = geo.ringStart[ring], to = geo.ringStart[ring + 1];
+  const { vx, vy } = geo;
+  const ox = vx[from], oy = vy[from];
+  let a = 0;
+  for (let i = from, j = to - 1; i < to; j = i++) a += (vx[j] - ox) * (vy[i] - oy) - (vx[i] - ox) * (vy[j] - oy);
+  return a;
+}
+
+/** Does this ring turn the same way at every corner? Only asked of simple rings, where that means convex. */
+function ringIsConvex(geo: PlanGeometry, ring: number): boolean {
+  const from = geo.ringStart[ring], m = geo.ringStart[ring + 1] - from;
+  if (m < 3) return false;
+  const { vx, vy } = geo;
+  let pos = false, neg = false;
+  for (let i = 0; i < m; i++) {
+    const a = from + i, b = from + (i + 1 === m ? 0 : i + 1), c = from + (i + 2 >= m ? i + 2 - m : i + 2);
+    const ux = vx[b] - vx[a], uy = vy[b] - vy[a], wx = vx[c] - vx[b], wy = vy[c] - vy[b];
+    const cross = ux * wy - uy * wx;
+    const tol = 1e-12 * (Math.abs(ux) + Math.abs(uy)) * (Math.abs(wx) + Math.abs(wy));
+    if (cross > tol) pos = true;
+    else if (cross < -tol) neg = true;
+    if (pos && neg) return false;
+  }
+  return true;
+}
+
+/**
+ * Clipping scratch: two ping-pong vertex buffers, grown on demand and reused by
+ * every pixel, because a 67,000-pixel run clips a few thousand rings and an
+ * array per clip would cost more than the arithmetic.
+ */
+let clipAx = new Float64Array(64), clipAy = new Float64Array(64);
+let clipBx = new Float64Array(64), clipBy = new Float64Array(64);
+
+function clipRoom(n: number): void {
+  if (clipAx.length >= n) return;
+  let size = clipAx.length;
+  while (size < n) size *= 2;
+  const ax = new Float64Array(size); ax.set(clipAx); clipAx = ax;
+  const ay = new Float64Array(size); ay.set(clipAy); clipAy = ay;
+  clipBx = new Float64Array(size);
+  clipBy = new Float64Array(size);
+}
+
+/** Loads a ring into the clip buffer, moved to (ox, oy). */
+function clipLoad(geo: PlanGeometry, ring: number, ox: number, oy: number): number {
+  const from = geo.ringStart[ring], to = geo.ringStart[ring + 1];
+  clipRoom(2 * (to - from) + 8);
+  let n = 0;
+  for (let i = from; i < to; i++) { clipAx[n] = geo.vx[i] - ox; clipAy[n] = geo.vy[i] - oy; n++; }
+  return n;
+}
+
+/**
+ * One Sutherland-Hodgman pass: keeps the part of the clip buffer on the inside
+ * of an axis-parallel line, and leaves the result in the clip buffer.
+ *
+ * A crossing lands exactly ON the line, so two neighbouring pixels cut the same
+ * edge at the same place and the ground between them is counted once.
+ */
+function clipHalfAxis(n: number, vertical: boolean, bound: number, keepGreater: boolean): number {
+  if (n === 0) return 0;
+  clipRoom(2 * n);
+  const ax = clipAx, ay = clipAy, bx = clipBx, by = clipBy;
+  let out = 0;
+  let px = ax[n - 1], py = ay[n - 1];
+  let pv = vertical ? py : px;
+  let pIn = keepGreater ? pv >= bound : pv <= bound;
+  for (let i = 0; i < n; i++) {
+    const cx = ax[i], cy = ay[i];
+    const cv = vertical ? cy : cx;
+    const cIn = keepGreater ? cv >= bound : cv <= bound;
+    if (cIn !== pIn) {
+      const t = (bound - pv) / (cv - pv);
+      if (vertical) { bx[out] = px + (cx - px) * t; by[out] = bound; }
+      else { bx[out] = bound; by[out] = py + (cy - py) * t; }
+      out++;
+    }
+    if (cIn) { bx[out] = cx; by[out] = cy; out++; }
+    px = cx; py = cy; pv = cv; pIn = cIn;
+  }
+  clipAx = bx; clipAy = by; clipBx = ax; clipBy = ay;
+  return out;
+}
+
+/** The same pass against an arbitrary line through (ax, ay) and (bx, by), keeping `sgn`'s side. */
+function clipHalfLine(n: number, ax: number, ay: number, bx: number, by: number, sgn: number): number {
+  if (n === 0) return 0;
+  clipRoom(2 * n);
+  const px0 = clipAx, py0 = clipAy, ox = clipBx, oy = clipBy;
+  const ex = bx - ax, ey = by - ay;
+  let out = 0;
+  let px = px0[n - 1], py = py0[n - 1];
+  let pd = sgn * (ex * (py - ay) - ey * (px - ax));
+  for (let i = 0; i < n; i++) {
+    const cx = px0[i], cy = py0[i];
+    const cd = sgn * (ex * (cy - ay) - ey * (cx - ax));
+    if ((cd >= 0) !== (pd >= 0)) {
+      const t = pd / (pd - cd);
+      ox[out] = px + (cx - px) * t; oy[out] = py + (cy - py) * t; out++;
+    }
+    if (cd >= 0) { ox[out] = cx; oy[out] = cy; out++; }
+    px = cx; py = cy; pd = cd;
+  }
+  clipAx = ox; clipAy = oy; clipBx = px0; clipBy = py0;
+  return out;
+}
+
+/** Twice the signed area of the clip buffer. */
+function clipArea2(n: number): number {
+  let a = 0;
+  for (let i = 0, j = n - 1; i < n; j = i++) a += clipAx[j] * clipAy[i] - clipAx[i] * clipAy[j];
+  return a;
+}
+
+/**
+ * A ring clipped to the pixel square [0, s] x [0, s] around (cE, cN), left in
+ * the clip buffer. The clipped ring winds around every point of the square
+ * exactly as the original does, whatever the original does elsewhere, so its
+ * signed area is the winding number integrated over the square and its
+ * crossings are the original's crossings.
+ */
+function clipRingToPixel(geo: PlanGeometry, ring: number, cE: number, cN: number, s: number): number {
+  let n = clipLoad(geo, ring, cE, cN);
+  if (n < 3) return 0;
+  n = clipHalfAxis(n, false, 0, true);
+  if (n < 3) return 0;
+  n = clipHalfAxis(n, false, s, false);
+  if (n < 3) return 0;
+  n = clipHalfAxis(n, true, 0, true);
+  if (n < 3) return 0;
+  return clipHalfAxis(n, true, s, false);
+}
+
+/** The area of a SIMPLE ring inside that pixel square: a simple ring winds 0 or 1 times, so this is the ground it holds. */
+function clipRingArea(geo: PlanGeometry, ring: number, cE: number, cN: number, s: number): number {
+  const n = clipRingToPixel(geo, ring, cE, cN, s);
+  return n < 3 ? 0 : Math.abs(clipArea2(n)) / 2;
+}
+
+/**
+ * Which plots might overlap, decided once for the plan: a pixel holding two
+ * plots that only touch can add their areas, which is most pixels of a
+ * contiguous trial, while a pixel holding two that really overlap has to be
+ * swept so the later plot wins the ground they share.
+ *
+ * A pair is called overlapping unless it can be PROVEN not to be: the proof is
+ * an exact clip of one against the other, which needs one of them convex, and
+ * an area below a billionth of the smaller plot, which is the width a shared
+ * edge acquires from rounding, never a strip of crop.
+ */
+function findOverlaps(geo: PlanGeometry): void {
+  const n = geo.nPlots;
+  if (n < 2) return;
+  const box = geo.box;
+  const order = Array.from({ length: n }, (_, p) => p).sort((a, b) => box[4 * a] - box[4 * b]);
+  const convex = new Uint8Array(n);
+  const area = new Float64Array(n);
+  for (let p = 0; p < n; p++) {
+    if (!geo.simple[p]) continue;
+    convex[p] = ringIsConvex(geo, geo.plotRing[p]) ? 1 : 0;
+    area[p] = Math.abs(ringArea2(geo, geo.plotRing[p])) / 2;
+  }
+  for (let a = 0; a < n; a++) {
+    const p = order[a];
+    for (let b = a + 1; b < n; b++) {
+      const q = order[b];
+      if (box[4 * q] >= box[4 * p + 2]) break;                       // sorted: no later plot can reach back
+      if (box[4 * p] >= box[4 * q + 2]) continue;
+      if (box[4 * p + 1] >= box[4 * q + 3] || box[4 * q + 1] >= box[4 * p + 3]) continue;
+      // Only simple plots are ever added up rather than swept, so a pair with a
+      // hole or several parts in it needs no answer here.
+      if (!geo.simple[p] || !geo.simple[q]) continue;
+      const lo = Math.min(p, q), hi = Math.max(p, q);
+      let shared: number;
+      if (convex[q]) shared = convexClipArea(geo, geo.plotRing[p], geo.plotRing[q]);
+      else if (convex[p]) shared = convexClipArea(geo, geo.plotRing[q], geo.plotRing[p]);
+      else shared = Infinity;                                        // neither is a clip window: assume the worst
+      if (shared > 1e-9 * Math.min(area[p], area[q])) geo.overlap.add(lo * n + hi);
+    }
+  }
+}
+
+/** The area `sub` shares with the CONVEX ring `win`, both moved to `win`'s first vertex. */
+function convexClipArea(geo: PlanGeometry, sub: number, win: number): number {
+  const from = geo.ringStart[win], to = geo.ringStart[win + 1], m = to - from;
+  if (m < 3) return 0;
+  const ox = geo.vx[from], oy = geo.vy[from];
+  const sgn = ringArea2(geo, win) >= 0 ? 1 : -1;
+  let n = clipLoad(geo, sub, ox, oy);
+  for (let i = 0; i < m && n >= 3; i++) {
+    const a = from + i, b = from + (i + 1 === m ? 0 : i + 1);
+    const ax = geo.vx[a] - ox, ay = geo.vy[a] - oy, bx = geo.vx[b] - ox, by = geo.vy[b] - oy;
+    // Two vertices a hair apart give no usable direction; skipping that side
+    // only widens the window, which can only overstate the shared ground.
+    if (Math.abs(bx - ax) + Math.abs(by - ay) < 1e-9) continue;
+    n = clipHalfLine(n, ax, ay, bx, by, sgn);
+  }
+  return n < 3 ? 0 : Math.abs(clipArea2(n)) / 2;
+}
+
+/**
+ * Sweep scratch: the clipped edges of one pixel, the heights where the order of
+ * those edges can change, and the working arrays of one slab.
+ */
+let swXLo = new Float64Array(64), swYLo = new Float64Array(64);
+let swXHi = new Float64Array(64), swYHi = new Float64Array(64);
+let swSrc = new Int32Array(64);
+let swXa = new Float64Array(64), swXb = new Float64Array(64);
+let swOrd = new Int32Array(64), swKey = new Float64Array(64);
+let swEv = new Float64Array(256);
+let swParity = new Uint8Array(16);
+
+function sweepRoom(n: number): void {
+  if (swXLo.length >= n) return;
+  let size = swXLo.length;
+  while (size < n) size *= 2;
+  const xl = new Float64Array(size); xl.set(swXLo); swXLo = xl;
+  const yl = new Float64Array(size); yl.set(swYLo); swYLo = yl;
+  const xh = new Float64Array(size); xh.set(swXHi); swXHi = xh;
+  const yh = new Float64Array(size); yh.set(swYHi); swYHi = yh;
+  const sr = new Int32Array(size); sr.set(swSrc); swSrc = sr;
+  swXa = new Float64Array(size); swXb = new Float64Array(size);
+  swOrd = new Int32Array(size); swKey = new Float64Array(size);
+}
+
+/**
+ * The exact share of one pixel taken by each of several covers that meet in it,
+ * by a slab sweep of their clipped rings.
+ *
+ * Sources are given LOWEST priority first, and the ground at a point belongs to
+ * the last source the even-odd rule puts it inside, which is what the
+ * rasteriser does when a later plot is painted over an earlier one. Ground no
+ * source covers belongs to the background, whose area comes back at index
+ * `nSrc`. The heights where two edges cross are cut points of the sweep, so
+ * inside a slab the edges keep their order and the ground between two of them
+ * is one trapezium: the answer is exact for holes, several parts, rings that
+ * cross each other or themselves, and plots that overlap, none of which the
+ * shoelace of a clipped ring could be trusted with.
+ */
+function sweepPixel(
+  geo: PlanGeometry, nSrc: number, srcFrom: Int32Array, srcTo: Int32Array, srcSimple: Uint8Array,
+  cE: number, cN: number, s: number, out: Float64Array,
+): void {
+  out.fill(0, 0, nSrc + 1);
+  if (swParity.length < nSrc) swParity = new Uint8Array(Math.max(2 * swParity.length, nSrc));
+  let nE = 0;
+  for (let q = 0; q < nSrc; q++) {
+    for (let r = srcFrom[q]; r < srcTo[q]; r++) {
+      const m = clipRingToPixel(geo, r, cE, cN, s);
+      if (m < 3) continue;
+      sweepRoom(nE + m);
+      for (let i = 0, j = m - 1; i < m; j = i++) {
+        const ya = clipAy[j], yb = clipAy[i];
+        if (!(ya !== yb)) continue;              // a horizontal edge crosses no row
+        if (ya < yb) { swXLo[nE] = clipAx[j]; swYLo[nE] = ya; swXHi[nE] = clipAx[i]; swYHi[nE] = yb; }
+        else { swXLo[nE] = clipAx[i]; swYLo[nE] = yb; swXHi[nE] = clipAx[j]; swYHi[nE] = ya; }
+        swSrc[nE] = q; nE++;
+      }
+    }
+  }
+  if (nE === 0) { out[nSrc] = s * s; return; }
+
+  let nY = 0;
+  const room = 2 * nE + 2 + (nE * (nE - 1)) / 2;
+  if (swEv.length < room) swEv = new Float64Array(room);
+  swEv[nY++] = 0; swEv[nY++] = s;
+  for (let i = 0; i < nE; i++) {
+    swEv[nY++] = swYLo[i] < 0 ? 0 : swYLo[i] > s ? s : swYLo[i];
+    swEv[nY++] = swYHi[i] < 0 ? 0 : swYHi[i] > s ? s : swYHi[i];
+  }
+  for (let i = 0; i < nE; i++) {
+    const si = swSrc[i];
+    for (let j = i + 1; j < nE; j++) {
+      const sj = swSrc[j];
+      // Two edges of one ring that never meets itself cannot cross, so only a
+      // pair from different covers, or from a shape that may cross itself, is
+      // worth the arithmetic.
+      if (si === sj && srcSimple[si]) continue;
+      const ya = Math.max(swYLo[i], swYLo[j]), yb = Math.min(swYHi[i], swYHi[j]);
+      if (!(yb > ya)) continue;
+      const da = sweepX(i, ya) - sweepX(j, ya), db = sweepX(i, yb) - sweepX(j, yb);
+      if (!((da < 0 && db > 0) || (da > 0 && db < 0))) continue;
+      const y = ya + ((yb - ya) * da) / (da - db);
+      if (y > ya && y < yb) swEv[nY++] = y;
+    }
+  }
+  const ev = swEv.subarray(0, nY);
+  ev.sort();
+
+  for (let e = 0; e + 1 < nY; e++) {
+    const ya = ev[e], yb = ev[e + 1];
+    const h = yb - ya;
+    if (!(h > 0)) continue;
+    let nA = 0;
+    for (let i = 0; i < nE; i++) {
+      if (!(swYLo[i] <= ya && swYHi[i] >= yb)) continue;
+      const xa = sweepX(i, ya), xb = sweepX(i, yb);
+      swXa[i] = xa; swXb[i] = xb;
+      const key = xa + xb;
+      let q = nA;
+      while (q > 0 && swKey[q - 1] > key) { swOrd[q] = swOrd[q - 1]; swKey[q] = swKey[q - 1]; q--; }
+      swOrd[q] = i; swKey[q] = key; nA++;
+    }
+    swParity.fill(0, 0, nSrc);
+    let curLo = 0, curHi = 0, vis = nSrc;
+    for (let t = 0; t < nA; t++) {
+      const i = swOrd[t];
+      const xa = swXa[i], xb = swXb[i];
+      out[vis] += ((xa - curLo) + (xb - curHi)) * h * 0.5;
+      const q = swSrc[i];
+      swParity[q] ^= 1;
+      vis = nSrc;
+      for (let u = nSrc - 1; u >= 0; u--) if (swParity[u]) { vis = u; break; }
+      curLo = xa; curHi = xb;
+    }
+    out[vis] += ((s - curLo) + (s - curHi)) * h * 0.5;
+  }
+}
+
+/** Where edge `i` of the sweep stands at height `y`, its own ends returned exactly. */
+function sweepX(i: number, y: number): number {
+  const yl = swYLo[i], yh = swYHi[i];
+  if (y <= yl) return swXLo[i];
+  if (y >= yh) return swXHi[i];
+  return swXLo[i] + ((swXHi[i] - swXLo[i]) * (y - yl)) / (yh - yl);
+}
+
+/** Crossing scratch for the scan: where one row's centre line meets the rings. */
+let scanXs = new Float64Array(64);
+
+/**
+ * What one cover does to every pixel of the grid: which pixels its boundary
+ * runs through (`touched`), which pixels it covers whole (`full`), and which
+ * pixel centres are inside it (`centre`, painted `centreId` like the rasteriser
+ * paints its fine cells).
+ *
+ * A pixel no edge comes near is inside or outside as a whole, so its centre
+ * decides it, by the very crossing count pointInPoly uses. Pixels the boundary
+ * runs through are left to exact clipping. The boundary is followed generously:
+ * a pixel wrongly called touched only costs a clip that returns the whole
+ * square or nothing, while a missed one would take a cover's share from it.
+ */
+function scanSource(
+  geo: PlanGeometry, ring0: number, ring1: number,
+  minE: number, minN: number, nx: number, ny: number, res: number, eps: number,
+  stamp: Int32Array, mark: number, touched: number[], full: number[],
+  centre: Uint8Array, centreId: number,
+): void {
+  const { vx, vy, ringStart } = geo;
+  let edges = 0;
+  for (let r = ring0; r < ring1; r++) edges += ringStart[r + 1] - ringStart[r];
+  if (scanXs.length < edges) scanXs = new Float64Array(Math.max(2 * scanXs.length, edges));
+
+  // The boundary, edge by edge, row band by row band.
+  let yMin = Infinity, yMax = -Infinity;
+  for (let r = ring0; r < ring1; r++) {
+    const from = ringStart[r], m = ringStart[r + 1] - from;
+    if (m < 2) continue;
+    for (let i = 0; i < m; i++) {
+      const a = from + i, b = from + (i + 1 === m ? 0 : i + 1);
+      const ax = vx[a] - minE, ay = vy[a] - minN, bx = vx[b] - minE, by = vy[b] - minN;
+      if (ay < yMin) yMin = ay;
+      if (ay > yMax) yMax = ay;
+      const ylo = ay < by ? ay : by, yhi = ay < by ? by : ay;
+      let j0 = Math.floor((ylo - eps) / res), j1 = Math.floor((yhi + eps) / res);
+      if (!(j1 >= 0) || !(j0 <= ny - 1)) continue;
+      if (j0 < 0) j0 = 0;
+      if (j1 > ny - 1) j1 = ny - 1;
+      const dx = bx - ax, dy = by - ay;
+      const eLo = ax < bx ? ax : bx, eHi = ax < bx ? bx : ax;
+      for (let j = j0; j <= j1; j++) {
+        let xlo = eLo, xhi = eHi;
+        if (dy !== 0) {
+          const lo = Math.max(ylo, j * res - eps), hi = Math.min(yhi, (j + 1) * res + eps);
+          const x1 = ax + dx * ((lo - ay) / dy), x2 = ax + dx * ((hi - ay) / dy);
+          // An edge that is nearly horizontal divides by a nearly zero dy, so
+          // where it enters a band is known only to within this much.
+          const slack = eps + (Math.abs(dx) * 2.3e-16 * (Math.abs(lo) + Math.abs(hi) + Math.abs(ay))) / Math.abs(dy);
+          xlo = Math.max(eLo, (x1 < x2 ? x1 : x2) - slack);
+          xhi = Math.min(eHi, (x1 < x2 ? x2 : x1) + slack);
+        }
+        let i0 = Math.floor((xlo - eps) / res), i1 = Math.floor((xhi + eps) / res);
+        if (!(i1 >= 0) || !(i0 <= nx - 1)) continue;
+        if (i0 < 0) i0 = 0;
+        if (i1 > nx - 1) i1 = nx - 1;
+        const base = j * nx;
+        for (let c = i0; c <= i1; c++) {
+          const k = base + c;
+          if (stamp[k] !== mark) { stamp[k] = mark; touched.push(k); }
+        }
+      }
+    }
+  }
+  if (!(yMax >= yMin)) return;
+
+  // Row by row, the centres the cover holds: pointInPoly's own crossings, so
+  // the pixel centres of this grid are classified exactly as the fine grid's
+  // cell centres are.
+  let j0 = Math.floor((yMin - eps) / res), j1 = Math.floor((yMax + eps) / res);
+  if (!(j1 >= 0) || !(j0 <= ny - 1)) return;
+  if (j0 < 0) j0 = 0;
+  if (j1 > ny - 1) j1 = ny - 1;
+  for (let j = j0; j <= j1; j++) {
+    const yc = (j + 0.5) * res;
+    let n = 0;
+    for (let r = ring0; r < ring1; r++) {
+      const from = ringStart[r], m = ringStart[r + 1] - from;
+      if (m < 2) continue;
+      for (let i = 0; i < m; i++) {
+        const a = from + i, b = from + (i + 1 === m ? 0 : i + 1);
+        const ay = vy[a] - minN, by = vy[b] - minN;
+        if ((ay > yc) === (by > yc)) continue;
+        const ax = vx[a] - minE, bx = vx[b] - minE;
+        const x = ((bx - ax) * (yc - ay)) / (by - ay) + ax;
+        if (x === x) scanXs[n++] = x;
+      }
+    }
+    if (n < 2) continue;
+    if (n > 16) scanXs.subarray(0, n).sort();
+    else for (let i = 1; i < n; i++) {
+      const x = scanXs[i];
+      let q = i - 1;
+      while (q >= 0 && scanXs[q] > x) { scanXs[q + 1] = scanXs[q]; q--; }
+      scanXs[q + 1] = x;
+    }
+    // A centre is inside when an odd number of crossings lie east of it, so the
+    // run that starts at crossing q holds n - 1 - q of them.
+    const base = j * nx;
+    for (let q = n - 1; q >= 0; q--) {
+      if (((n - 1 - q) & 1) === 0) continue;
+      let from = Math.ceil(scanXs[q] / res - 0.5);
+      let to = q + 1 < n ? Math.ceil(scanXs[q + 1] / res - 0.5) : nx;
+      if (from < 0) from = 0;
+      if (to > nx) to = nx;
+      for (let c = from; c < to; c++) {
+        const k = base + c;
+        centre[k] = centreId;
+        if (stamp[k] !== mark) full.push(k);
+      }
+    }
+  }
+}
+
+/** One pixel's working room: the covers it holds, and the plots whose boundary runs through it. */
+let shCover = new Int32Array(16), shW = new Float64Array(16);
+let listL = new Int32Array(16), capW = new Float64Array(16);
+let srcFrom = new Int32Array(16), srcTo = new Int32Array(16), srcSimple = new Uint8Array(16), sweepOut = new Float64Array(17);
+
+function shareRoom(n: number): void {
+  if (shCover.length >= n) return;
+  let size = shCover.length;
+  while (size < n) size *= 2;
+  shCover = new Int32Array(size); shW = new Float64Array(size);
+  listL = new Int32Array(size); capW = new Float64Array(size);
+  srcFrom = new Int32Array(size); srcTo = new Int32Array(size); srcSimple = new Uint8Array(size);
+  sweepOut = new Float64Array(size + 1);
+}
+
+/**
+ * Adds one cover's ground to the pixel's list, which is kept in ASCENDING COVER
+ * ID: that order is what phase 2 sums the weights in and what breaks a
+ * dominance tie, so it is fixed here rather than left to whichever plot the
+ * geometry happened to reach first. Plots sharing a cover id (a design with
+ * more plots than the cover map can number counts by species) are added up in
+ * file order, the order the rasteriser paints them in.
+ */
+function addShare(cover: number, w: number, n: number): number {
+  let i = n;
+  while (i > 0 && shCover[i - 1] > cover) i--;
+  if (i > 0 && shCover[i - 1] === cover) { shW[i - 1] += w; return n; }
+  for (let q = n; q > i; q--) { shCover[q] = shCover[q - 1]; shW[q] = shW[q - 1]; }
+  shCover[i] = cover; shW[i] = w;
+  return n + 1;
+}
+
+/**
+ * Phase 1 for an imported trial, from EXACT polygon areas: what each cover
+ * holds of every pixel of an nx x ny grid whose south-west corner is
+ * (minE, minN) and whose pixels are `res` metres square.
+ *
+ * Why not sample: the fine grid classifies each of g x g cells by its centre,
+ * so a pixel's share of a plot is rounded to 1/g^2, and g is 4 for plots wider
+ * than the pixel. Along a tilted edge those roundings cancel; along an edge
+ * PARALLEL to the pixel rows every pixel rounds the same way, so a trial staked
+ * along the grid lost pure pixels it really had, and the page told the
+ * agronomist that lining a trial up with the satellite was not worth it.
+ *
+ * The rules, all three visible in the shares that come back:
+ *  - a weight is the SQUARE METRES a cover holds of the pixel, and the weights
+ *    of a pixel add up to its area with nothing negative;
+ *  - ground inside the footprint that no plot covers is bare alley, ground
+ *    outside it is off-trial, and a plot painted over another wins what they
+ *    share, as the rasteriser and importedCoverAt have it;
+ *  - the covers of a pixel are listed in ascending cover id, then bare, then
+ *    off-trial.
+ */
+function importedPixelCovers(
+  plan: ImportedPlan, minE: number, minN: number, nx: number, ny: number, res: number,
+): { pc: PixelCovers; centre: Uint8Array } {
+  const geo = planGeometry(plan);
+  const nPlots = geo.nPlots;
+  const cells = nx * ny;
+  const A = res * res;
+  // The width below which a boundary is treated as running through a pixel
+  // rather than beside it, generous enough to swallow every rounding a metre
+  // coordinate of this grid carries.
+  const eps = 1e-9 * (res + nx * res + ny * res);
+
+  const centre = new Uint8Array(cells).fill(OFF_TRIAL.id);
+  const footState = new Uint8Array(cells);
+  const topFull = new Int32Array(cells).fill(-1);
+  const head = new Int32Array(cells).fill(-1);
+  const tail = new Int32Array(cells);
+  const poolNext: number[] = [];
+  const poolPlot: number[] = [];
+  const stamp = new Int32Array(cells);
+  const touched: number[] = [];
+  const full: number[] = [];
+
+  scanSource(geo, geo.footRing, geo.footRing + 1, minE, minN, nx, ny, res, eps, stamp, 1, touched, full, centre, BARE.id);
+  for (const k of touched) footState[k] = 2;
+  for (const k of full) footState[k] = 1;
+  for (let p = 0; p < nPlots; p++) {
+    touched.length = 0;
+    full.length = 0;
+    scanSource(geo, geo.plotRing[p], geo.plotRing[p + 1], minE, minN, nx, ny, res, eps, stamp, p + 2, touched, full, centre, geo.cover[p]);
+    for (const k of touched) {
+      const e = poolNext.length;
+      poolNext.push(-1);
+      poolPlot.push(p);
+      if (head[k] === -1) head[k] = e; else poolNext[tail[k]] = e;
+      tail[k] = e;
+    }
+    // A plot covering a whole pixel hides every earlier one there, so the list
+    // a pixel carries is only ever the plots drawn OVER its topmost full one.
+    for (const k of full) { topFull[k] = p; head[k] = -1; }
+  }
+
+  shareRoom(nPlots + 4);
+  const foot = geo.footRing;
+  const pairStart = new Int32Array(cells + 1);
+  let pairCap = cells + 16;
+  let pairSlot = new Int32Array(pairCap);
+  let pairW = new Float64Array(pairCap);
+  let pairLen = 0;
+
+  for (let j = 0; j < ny; j++) {
+    const cN = minN + j * res;
+    for (let i = 0; i < nx; i++) {
+      const k = j * nx + i;
+      const cE = minE + i * res;
+      const base = topFull[k];
+      let nL = 0;
+      for (let e = head[k]; e !== -1; e = poolNext[e]) listL[nL++] = poolPlot[e];
+      let nSh = 0, bare = 0, off = 0;
+
+      if (nL === 0) {
+        // No plot boundary in this pixel: it is one cover from edge to edge,
+        // unless the footprint's own edge crosses it.
+        if (base >= 0) nSh = addShare(geo.cover[base], A, nSh);
+        else if (footState[k] === 1) bare = A;
+        else if (footState[k] === 0) off = A;
+        else if (geo.simple[nPlots]) {
+          const h = Math.min(A, Math.max(0, clipRingArea(geo, foot, cE, cN, res)));
+          bare = h;
+          off = A - h;
+        } else {
+          srcFrom[0] = foot; srcTo[0] = foot + 1; srcSimple[0] = 0;
+          sweepPixel(geo, 1, srcFrom, srcTo, srcSimple, cE, cN, res, sweepOut);
+          bare = Math.max(0, sweepOut[0]);
+          off = Math.max(0, sweepOut[1]);
+        }
+      } else {
+        // Plots that only touch can be added up; a hole, several parts or two
+        // plots that really overlap need the sweep, and so does a pixel the
+        // footprint's edge crosses, where what is alley and what is off-trial
+        // is a question about the plots too.
+        let plain = true;
+        for (let q = 0; q < nL && plain; q++) if (!geo.simple[listL[q]]) plain = false;
+        // A trial whose plots only ever touch has nothing to look up here, and
+        // that is most of them.
+        for (let q = 0; q < nL && plain && geo.overlap.size > 0; q++) {
+          for (let u = q + 1; u < nL; u++) {
+            const a = listL[q], b = listL[u];
+            if (geo.overlap.has((a < b ? a : b) * nPlots + (a < b ? b : a))) { plain = false; break; }
+          }
+        }
+        const footPartial = base < 0 && footState[k] === 2;
+        if (plain && !footPartial) {
+          let remaining = A;
+          for (let q = nL - 1; q >= 0; q--) {
+            let a = clipRingArea(geo, geo.plotRing[listL[q]], cE, cN, res);
+            if (!(a > 0)) a = 0;
+            // Later plots are served first, so a rounding sliver, or a plot
+            // drawn over another the pair test could not separate, is taken
+            // from the earlier plot, never from the pixel's area.
+            if (a > remaining) a = remaining;
+            capW[q] = a;
+            remaining -= a;
+          }
+          if (!(remaining > 0)) remaining = 0;
+          if (base >= 0) nSh = addShare(geo.cover[base], remaining, nSh);
+          else if (footState[k] === 1) bare = remaining;
+          else off = remaining;
+          for (let q = 0; q < nL; q++) if (capW[q] > 0) nSh = addShare(geo.cover[listL[q]], capW[q], nSh);
+        } else {
+          let nSrc = 0;
+          if (footPartial) { srcFrom[0] = foot; srcTo[0] = foot + 1; srcSimple[0] = geo.simple[nPlots]; nSrc = 1; }
+          for (let q = 0; q < nL; q++) {
+            const p = listL[q];
+            srcFrom[nSrc] = geo.plotRing[p];
+            srcTo[nSrc] = geo.plotRing[p + 1];
+            srcSimple[nSrc] = geo.simple[p];
+            nSrc++;
+          }
+          sweepPixel(geo, nSrc, srcFrom, srcTo, srcSimple, cE, cN, res, sweepOut);
+          const bg = Math.max(0, sweepOut[nSrc]);
+          if (base >= 0) nSh = addShare(geo.cover[base], bg, nSh);
+          else if (footState[k] === 1) bare = bg;
+          else off = bg;
+          if (footPartial) bare += Math.max(0, sweepOut[0]);
+          for (let q = 0; q < nL; q++) {
+            const w = Math.max(0, sweepOut[footPartial ? q + 1 : q]);
+            if (w > 0) nSh = addShare(geo.cover[listL[q]], w, nSh);
+          }
+        }
+      }
+
+      if (pairLen + nSh + 2 > pairCap) {
+        pairCap = Math.max(pairCap * 2, pairLen + nSh + 2);
+        const nextSlot = new Int32Array(pairCap); nextSlot.set(pairSlot); pairSlot = nextSlot;
+        const nextW = new Float64Array(pairCap); nextW.set(pairW); pairW = nextW;
+      }
+      pairStart[k] = pairLen;
+      for (let q = 0; q < nSh; q++) {
+        if (!(shW[q] > 0)) continue;                 // a cover with no ground is no cover
+        pairSlot[pairLen] = shCover[q];
+        pairW[pairLen++] = shW[q];
+      }
+      if (bare > 0) { pairSlot[pairLen] = BARE.id; pairW[pairLen++] = bare; }
+      if (off > 0) { pairSlot[pairLen] = OFF_TRIAL.id; pairW[pairLen++] = off; }
+    }
+  }
+  pairStart[cells] = pairLen;
+
+  const pc: PixelCovers = {
+    T: 0, means: [], hasValid: new Uint8Array(cells).fill(1), pairStart, pairSlot, pairW,
+    slots: { cnt: new Float64Array(256), ord: new Int32Array(256), keys: [], index: new Map() },
+  };
+  return { pc, centre };
+}
+
+/**
+ * `aggregate` for an imported trial: the exact shares above, then the SAME
+ * phase 2 every other layout runs (the PSF, the dominance and mixed rules, the
+ * species fold and the off-trial share). Only phase 1 differs, which is the
+ * whole of the difference between sampling a pixel and measuring it.
+ */
+function aggregateImported(
+  plan: ImportedPlan, minE: number, minN: number, nx: number, ny: number, res: number,
+  sensor: SensorParams, coverSpecies: Uint8Array | null, nSpecies: number,
+): AggregateResult {
+  const rowsAgg = Math.max(1, ny), colsAgg = Math.max(1, nx);
+  const cells = rowsAgg * colsAgg;
+  const outGrid: Float64Array[] = new Array(cells);
+  const cropMapCenter = new Uint8Array(cells);
+  const cropMapMajority = new Uint8Array(cells);
+  const cropMapMixed = new Uint8Array(cells);
+  const cropMapProportionA = new Float32Array(cells);
+  const cropMapProportionBare = new Float32Array(cells);
+  const nSp = Math.max(0, nSpecies | 0);
+  const cropMapSpecies = nSp > 0 ? new Float32Array(cells * nSp) : null;
+  const cropMapDominant = nSp > 0 ? new Uint8Array(cells) : null;
+  const cropMapDominantFrac = nSp > 0 ? new Float32Array(cells) : null;
+  const cropMapDominantPlot = nSp > 0 ? new Uint16Array(cells) : null;
+  const cropMapProportionOffTrial = nSp > 0 ? new Float32Array(cells) : null;
+  const spScratch = nSp > 0 ? new Float64Array(nSp) : null!;
+
+  let pc: PixelCovers;
+  let centre: Uint8Array;
+  if (nx >= 1 && ny >= 1) {
+    const got = importedPixelCovers(plan, minE, minN, nx, ny, res);
+    pc = got.pc;
+    centre = got.centre;
+  } else {
+    // An extent with no pixels in it: one placeholder that sees nothing, as the
+    // sampled path's empty fine grid leaves it.
+    pc = {
+      T: 0, means: [], hasValid: new Uint8Array(cells), pairStart: new Int32Array(cells + 1),
+      pairSlot: new Int32Array(0), pairW: new Float64Array(0),
+      slots: { cnt: new Float64Array(256), ord: new Int32Array(256), keys: [], index: new Map() },
+    };
+    centre = new Uint8Array(cells);
+  }
+
+  const result: AggregateResult = { rowsAgg, colsAgg, cropMapMixed, cropMapMajority, cropMapCenter, cropMapProportionA, cropMapProportionBare,
+                                    simsGrid: outGrid, cropMapSpecies, cropMapDominant, cropMapDominantFrac, cropMapDominantPlot, cropMapProportionOffTrial };
+  resolvePixels(result, pc, nSp, spScratch, sensor.sigmaX, sensor.sigmaY, true, sensor.mixThreshold, sensor.offX ?? 0, sensor.offY ?? 0,
+                coverSpecies, (gr, gc) => centre[gr * colsAgg + gc]);
+  return result;
+}
+
 /**
  * The narrowest feature the fine grid must resolve. strideFor samples against
  * ONE width, but a block design's smallest feature is usually an alley, which
@@ -734,6 +2122,9 @@ export function blockPlots(p: BlockPlan): BlockPlot[] {
  * Identity on layout.width for the five two-species patterns.
  */
 export function minFeatureM(layout: SimLayout): number {
+  const imported = importedOf(layout);
+  // Measured once by the resolver: the narrowest plot or the narrowest gap.
+  if (imported) return imported.minFeature > 0 ? imported.minFeature : 0.05;
   if (layout.pattern !== 'block' || !layout.block) return layout.width;
   const d = layout.block.design;
   let m = Math.min(d.plotWidth, d.plotLength);
@@ -750,6 +2141,11 @@ export function minFeatureM(layout: SimLayout): number {
  * Includes the RESOLVED corner, so re-anchoring the trial also invalidates.
  */
 export function layoutKey(layout: SimLayout): string {
+  const imported = importedOf(layout);
+  // Rotation, width and spacing do not move an imported trial, so they are not
+  // part of its key: nudging a slider the engine ignores must not rebuild the
+  // cover map and every ladder rung.
+  if (imported) return `imported|${imported.sig}`;
   const base = `${layout.pattern}|${layout.width}|${layout.spacing}|${layout.rotationDeg}`;
   const p = layout.block;
   if (!p) return base;
@@ -765,6 +2161,12 @@ export interface SimLayout {
   rotationDeg: number;
   /** The RESOLVED plan for a 'block' layout. Built once, shared by every reader. */
   block?: BlockPlan;
+  /**
+   * The RESOLVED plan for an 'imported' layout, in metres of the grid's UTM CRS.
+   * Such a layout is placed where the file put it: the engine ignores
+   * rotationDeg, width, spacing and the pattern origin for it.
+   */
+  imported?: ImportedPlan;
 }
 
 /**
@@ -788,6 +2190,8 @@ function patternCultureUV(u: number, v: number, layout: SimLayout): number {
     // A block layout carries its resolved plan; without one there is no trial
     // here yet, so the ground is off-trial rather than silently species A.
     case 'block':       return layout.block ? blockCoverUV(u, v, layout.block) : OFF_TRIAL.id;
+    // An imported trial is not rotated or shifted: its callers pass (E, N) as (u, v).
+    case 'imported':    return layout.imported ? importedCoverAt(u, v, layout.imported) : OFF_TRIAL.id;
     default: {
       // Exhaustive: adding a pattern without handling it is a type error here,
       // instead of quietly painting the whole field species A at runtime.
@@ -826,6 +2230,13 @@ function buildCropMap(
   patternOx: number, patternOy: number, layout: SimLayout,
 ): Uint8Array {
   const map = new Uint8Array(rows * cols);
+  if (layout.pattern === 'imported') {
+    // Plain UTM, polygon by polygon: a per-cell point-in-polygon over every plot
+    // would cost plots x cells, the scanline costs the plots' own rows.
+    if (layout.imported) rasteriseImported(map, minE, minN, rows, cols, fineRes, layout.imported);
+    else map.fill(OFF_TRIAL.id);
+    return map;
+  }
   const t = (layout.rotationDeg * Math.PI) / 180;
   const cos = Math.cos(t), sin = Math.sin(t);
   for (let r = 0; r < rows; r++) {
@@ -844,16 +2255,130 @@ function buildCropMap(
 export interface FieldSim {
   proportionA: Float32Array;    // per sensor pixel, aligned to grid.cells order
   proportionBare: Float32Array; // fraction of bare-soil gap in the pixel
-  mixed: Uint8Array;            // 255 = mixed, else dominant crop id (0/1/2)
-  purePct: number;              // % pixels that are a pure single CROP (A or B)
-  pureA: number;
-  pureB: number;
+  mixed: Uint8Array;            // MIXED, a sentinel, else the dominant cover id
+  purePct: number;              // % of TRIAL pixels that are a pure single crop
   pureBare: number;
   total: number;
   meanPropA: number;
+  /** How many species this simulation covers. 2 for every periodic layout. */
+  nSpecies: number;
+  /** Pure pixels per species, over ALL species rather than the first two. */
+  pureBySpecies: Uint32Array;
+  /** Mean fraction of each species across TRIAL pixels; off-trial excluded. */
+  meanBySpecies: Float64Array;
+  /** Per-pixel species composition at [k * nSpecies + s], null if unavailable. */
+  proportionBySpecies: Float32Array | null;
+  /**
+   * Per-pixel fraction of ground OUTSIDE the trial. Anything that colours a
+   * pixel needs this: a pixel with no species and no alley is not an empty
+   * mixture, it is land the design never covered, and a blend that is not told
+   * so has nothing to weight and renders black.
+   */
+  proportionOffTrial: Float32Array | null;
+  /**
+   * Species 0 and 1 by their old names. Kept so the two-species readers keep
+   * working while they are converted one at a time; new code should read
+   * pureBySpecies, which does not stop at two.
+   */
+  pureA: number;
+  pureB: number;
 }
 
 const EMPTY = new Float64Array(0);
+
+/**
+ * The pixels whose PSF puts no weight at all on the simulated grid, or null
+ * when there are none (every normal sensor: a pixel always weighs itself).
+ *
+ * A narrow kernel pushed off centre, sigma 0.05 px shifted 2 px say, underflows
+ * to exactly 0 on every cell a pixel at the grid's edge can reach. aggregate
+ * then has nothing to divide by and leaves that pixel as cover id 0 with no
+ * off-trial share, so it was counted as a PURE trial pixel of plot 0's species,
+ * and a ladder rung over a smaller extent disagreed with the whole field about
+ * which pixels those were. The sensor read ground outside the grid, of which
+ * nothing is known: callers treat such a pixel as off-trial.
+ *
+ * Same window, same bounds and the same weight expression as aggregate, so a
+ * pixel is listed exactly when every weight aggregate sums for it is 0.
+ */
+function psfBlindPixels(rowsAgg: number, colsAgg: number, sensor: SensorParams): Uint8Array | null {
+  const { sigmaX, sigmaY } = sensor;
+  const offX = sensor.offX ?? 0, offY = sensor.offY ?? 0;
+  const weight = (dx: number, dy: number) => Math.exp(-0.5 * ((dx / (sigmaX || 0.5)) ** 2 + (dy / (sigmaY || 0.5)) ** 2));
+  const windowX = Math.max(0, Math.ceil(3 * sigmaX + Math.abs(offX)));
+  const windowY = Math.max(0, Math.ceil(3 * sigmaY + Math.abs(offY)));
+  if (weight(0 - offX, 0 - offY) > 0 && windowX >= 0 && windowY >= 0) return null;
+  let blind: Uint8Array | null = null;
+  for (let gr = 0; gr < rowsAgg; gr++) {
+    const r0 = Math.max(0, gr - windowY), r1 = Math.min(rowsAgg - 1, gr + windowY);
+    for (let gc = 0; gc < colsAgg; gc++) {
+      const c0 = Math.max(0, gc - windowX), c1 = Math.min(colsAgg - 1, gc + windowX);
+      let seen = false;
+      for (let nr = r0; nr <= r1 && !seen; nr++) {
+        for (let nc = c0; nc <= c1 && !seen; nc++) seen = weight(nc - gc - offX, nr - gr - offY) !== 0;
+      }
+      if (!seen) (blind ??= new Uint8Array(rowsAgg * colsAgg))[gr * colsAgg + gc] = 1;
+    }
+  }
+  return blind;
+}
+
+/** Marks the pixels psfBlindPixels lists as wholly off-trial, in place. */
+function markPsfBlind(agg: AggregateResult, sensor: SensorParams): Uint8Array | null {
+  const blind = psfBlindPixels(agg.rowsAgg, agg.colsAgg, sensor);
+  if (blind) {
+    for (let k = 0; k < blind.length; k++) {
+      if (!blind[k]) continue;
+      agg.cropMapMixed[k] = OFF_TRIAL.id;
+      if (agg.cropMapProportionOffTrial) agg.cropMapProportionOffTrial[k] = 1;
+    }
+  }
+  return blind;
+}
+
+/**
+ * How a layout's cover ids map to species.
+ *
+ * A block design puts PLOT ids in the cover map so per-plot coverage can be
+ * counted, and BlockPlan.plotSpecies is exactly the plot-to-species table the
+ * engine needs. Every other layout's cover id IS the species already. Both
+ * `aggregate` and `coverStats` have accepted this pair from the start; nothing
+ * was passing it, which is why a sixteen-plot trial reported on two species.
+ */
+export function speciesChannel(layout: SimLayout): { coverSpecies: Uint8Array | null; nSpecies: number } {
+  // Every variety of an imported design is its own species; plots of one
+  // variety are its repetitions and fold into it here.
+  const imported = importedOf(layout);
+  if (imported) return { coverSpecies: imported.coverSpecies, nSpecies: Math.max(2, imported.nSpecies) };
+  const b = layout.block;
+  return b
+    ? { coverSpecies: b.plotSpecies, nSpecies: Math.max(2, b.design.nSpecies) }
+    : { coverSpecies: null, nSpecies: 2 };
+}
+
+/**
+ * Mean fraction of each species, averaged over the pixels that actually sample
+ * the trial. Off-trial ground is EXCLUDED from the denominator: it is not a
+ * dilute crop, it is land the design never touched, and counting it drags every
+ * species' mean toward zero in proportion to how much of the field the trial
+ * happens to occupy. A periodic layout has no off-trial pixels, so this is
+ * identity for all five of them.
+ */
+export function meanPerSpecies(
+  species: Float32Array | null, nSpecies: number, pixels: number, offTrial: Float32Array | null,
+): Float64Array {
+  const out = new Float64Array(Math.max(0, nSpecies));
+  if (!species || !nSpecies || !pixels) return out;
+  let used = 0;
+  for (let k = 0; k < pixels; k++) {
+    if (offTrial && offTrial[k] > 0.5) continue;
+    used++;
+    const base = k * nSpecies;
+    for (let s = 0; s < nSpecies; s++) out[s] += species[base + s];
+  }
+  if (used) for (let s = 0; s < nSpecies; s++) out[s] /= used;
+  return out;
+}
 
 /** Run the repo aggregate over the real grid's sensor cells. */
 export function simulateField(grid: S2Grid, patternOrigin: [number, number], layout: SimLayout, sensor: SensorParams): FieldSim {
@@ -861,23 +2386,36 @@ export function simulateField(grid: S2Grid, patternOrigin: [number, number], lay
   const [minE, minN, maxE, maxN] = grid.utmBounds;
   const nx = Math.round((maxE - minE) / res);
   const ny = Math.round((maxN - minN) / res);
-  const g = strideFor(res, minFeatureM(layout));
-  const fineRes = res / g;
-  const rows = ny * g, cols = nx * g;
-  const cropMap = buildCropMap(minE, minN, rows, cols, fineRes, patternOrigin[0], patternOrigin[1], layout);
-  const simsGrid: Float64Array[] = new Array(rows * cols).fill(EMPTY);
-  const agg = aggregate(simsGrid, rows, cols, g, sensor.sigmaX, sensor.sigmaY, true, 0, cropMap, sensor.mixThreshold, sensor.offX ?? 0, sensor.offY ?? 0);
+  const { coverSpecies, nSpecies } = speciesChannel(layout);
+  const imported = importedOf(layout);
+  let agg: AggregateResult;
+  if (imported) {
+    agg = aggregateImported(imported, minE, minN, nx, ny, res, sensor, coverSpecies, nSpecies);
+  } else {
+    const g = strideFor(res, minFeatureM(layout));
+    const fineRes = res / g;
+    const rows = ny * g, cols = nx * g;
+    const cropMap = buildCropMap(minE, minN, rows, cols, fineRes, patternOrigin[0], patternOrigin[1], layout);
+    const simsGrid: Float64Array[] = new Array(rows * cols).fill(EMPTY);
+    agg = aggregate(simsGrid, rows, cols, g, sensor.sigmaX, sensor.sigmaY, true, 0, cropMap, sensor.mixThreshold, sensor.offX ?? 0, sensor.offY ?? 0, coverSpecies, nSpecies);
+  }
+  markPsfBlind(agg, sensor);
 
   const mixed = agg.cropMapMixed;
   const proportionA = agg.cropMapProportionA;
   const proportionBare = agg.cropMapProportionBare;
   let sumP = 0;
   for (let k = 0; k < mixed.length; k++) sumP += proportionA[k];
-  const st = coverStats({ mixed, offTrial: agg.cropMapProportionOffTrial });
+  const st = coverStats({ mixed, coverSpecies, nSpecies, offTrial: agg.cropMapProportionOffTrial });
   return {
     proportionA, proportionBare, mixed,
-    purePct: st.purePct, pureA: st.pureBySpecies[0], pureB: st.pureBySpecies[1], pureBare: st.pureBare,
+    purePct: st.purePct, pureBare: st.pureBare,
     total: st.total, meanPropA: mixed.length ? sumP / mixed.length : 0.5,
+    nSpecies, pureBySpecies: st.pureBySpecies,
+    meanBySpecies: meanPerSpecies(agg.cropMapSpecies, nSpecies, mixed.length, agg.cropMapProportionOffTrial),
+    proportionBySpecies: agg.cropMapSpecies,
+    proportionOffTrial: agg.cropMapProportionOffTrial,
+    pureA: st.pureBySpecies[0], pureB: st.pureBySpecies[1],
   };
 }
 
@@ -885,6 +2423,8 @@ export interface SweepPoint { gsd: number; purePct: number; }
 
 /** Culture (0/1) at a UTM point, for rendering the crisp ground-truth pattern. */
 export function cultureAt(E: number, N: number, layout: SimLayout, ox: number, oy: number): number {
+  // An imported trial is already in metres of the grid's CRS: no origin, no rotation.
+  if (layout.pattern === 'imported') return patternCultureUV(E, N, layout);
   const t = (layout.rotationDeg * Math.PI) / 180;
   const cos = Math.cos(t), sin = Math.sin(t);
   const dx = E - ox, dy = N - oy;
@@ -914,6 +2454,8 @@ const PHASE_CACHE_MAX = 512;
 export function bestPhaseOffset(
   pattern: PatternType, res: number, width: number, spacing: number, threshold: number, ox0: number, oy0: number,
 ): [number, number] {
+  // An imported trial sits where the file put it; there is no phase to slide.
+  if (pattern === 'imported') return [0, 0];
   const key = `${pattern}|${res}|${width}|${spacing}|${ox0}|${oy0}`;
   const hit = phaseCache.get(key);
   if (hit) return [hit[0], hit[1]]; // a copy: callers must never share the cached tuple
@@ -964,7 +2506,14 @@ export interface PatchSim {
   proportionBare: Float32Array;
   mixed: Uint8Array;
   nx: number; ny: number;       // sensor pixels across / up
-  purePct: number;              // % pixels that are a pure single CROP (A or B)
+  purePct: number;              // % of TRIAL pixels that are a pure single crop
+  nSpecies: number;
+  /** Per-pixel species composition at [k * nSpecies + s], null if unavailable. */
+  proportionBySpecies: Float32Array | null;
+  /** Mean fraction of each species across TRIAL pixels; off-trial excluded. */
+  meanBySpecies: Float64Array;
+  /** Per-pixel fraction of ground outside the trial. Same meaning as FieldSim's. */
+  proportionOffTrial: Float32Array | null;
 }
 
 /** Run the repo aggregate over a square UTM patch at a given GSD (for thumbnails). */
@@ -974,17 +2523,28 @@ export function simulatePatch(
 ): PatchSim {
   const nx = Math.max(1, Math.round(sizeM / gsd));
   const ny = nx;
-  const g = strideFor(gsd, minFeatureM(layout));
-  const fineRes = gsd / g;
-  const rows = ny * g, cols = nx * g;
-  const cropMap = buildCropMap(minE, minN, rows, cols, fineRes, patternOx, patternOy, layout);
-  const simsGrid: Float64Array[] = new Array(rows * cols).fill(EMPTY);
-  const agg = aggregate(simsGrid, rows, cols, g, sensor.sigmaX, sensor.sigmaY, true, 0, cropMap, sensor.mixThreshold, sensor.offX ?? 0, sensor.offY ?? 0);
-  const st = coverStats({ mixed: agg.cropMapMixed, offTrial: agg.cropMapProportionOffTrial });
+  const { coverSpecies, nSpecies } = speciesChannel(layout);
+  const imported = importedOf(layout);
+  let agg: AggregateResult;
+  if (imported) {
+    agg = aggregateImported(imported, minE, minN, nx, ny, gsd, sensor, coverSpecies, nSpecies);
+  } else {
+    const g = strideFor(gsd, minFeatureM(layout));
+    const fineRes = gsd / g;
+    const rows = ny * g, cols = nx * g;
+    const cropMap = buildCropMap(minE, minN, rows, cols, fineRes, patternOx, patternOy, layout);
+    const simsGrid: Float64Array[] = new Array(rows * cols).fill(EMPTY);
+    agg = aggregate(simsGrid, rows, cols, g, sensor.sigmaX, sensor.sigmaY, true, 0, cropMap, sensor.mixThreshold, sensor.offX ?? 0, sensor.offY ?? 0, coverSpecies, nSpecies);
+  }
+  markPsfBlind(agg, sensor);
+  const st = coverStats({ mixed: agg.cropMapMixed, coverSpecies, nSpecies, offTrial: agg.cropMapProportionOffTrial });
   return {
     proportionA: agg.cropMapProportionA, proportionBare: agg.cropMapProportionBare, mixed: agg.cropMapMixed,
     nx: agg.colsAgg, ny: agg.rowsAgg,
     purePct: st.purePct,
+    nSpecies, proportionBySpecies: agg.cropMapSpecies,
+    meanBySpecies: meanPerSpecies(agg.cropMapSpecies, nSpecies, agg.cropMapMixed.length, agg.cropMapProportionOffTrial),
+    proportionOffTrial: agg.cropMapProportionOffTrial,
   };
 }
 
@@ -1008,21 +2568,47 @@ export function resolutionSweep(
   const [minE, minN, maxE, maxN] = utmEnvelope(bounds, epsg);
   const cx = (minE + maxE) / 2, cy = (minN + maxN) / 2;
   const half = 50; // bounded window — purity of a periodic pattern is stationary
-  const wMinE = Math.max(minE, cx - half), wMaxE = Math.min(maxE, cx + half);
-  const wMinN = Math.max(minN, cy - half), wMaxN = Math.min(maxN, cy + half);
+  let wMinE = Math.max(minE, cx - half), wMaxE = Math.min(maxE, cx + half);
+  let wMinN = Math.max(minN, cy - half), wMaxN = Math.min(maxN, cy + half);
+  const imported = importedOf(layout);
+  if (imported) {
+    // A finite trial is not stationary, and a window at the field centre can
+    // miss it altogether: measure the trial itself, over its own pixels.
+    wMinE = Math.max(minE, imported.bbox[0]); wMaxE = Math.min(maxE, imported.bbox[2]);
+    wMinN = Math.max(minN, imported.bbox[1]); wMaxN = Math.min(maxN, imported.bbox[3]);
+  }
+  const channel = imported ? speciesChannel(layout) : { coverSpecies: null, nSpecies: 0 };
   return gsds.map(gsd => {
     const oMinE = Math.floor(wMinE / gsd) * gsd;
     const oMinN = Math.floor(wMinN / gsd) * gsd;
     const nx = Math.max(1, Math.ceil((wMaxE - oMinE) / gsd));
     const ny = Math.max(1, Math.ceil((wMaxN - oMinN) / gsd));
-    const g = strideFor(gsd, minFeatureM(layout));
-    const fineRes = gsd / g;
-    const rows = ny * g, cols = nx * g;
-    const cropMap = buildCropMap(oMinE, oMinN, rows, cols, fineRes, minE, minN, layout);
-    const simsGrid: Float64Array[] = new Array(rows * cols).fill(EMPTY);
-    const agg = aggregate(simsGrid, rows, cols, g, sensor.sigmaX, sensor.sigmaY, true, 0, cropMap, sensor.mixThreshold, sensor.offX ?? 0, sensor.offY ?? 0);
-    let pure = 0;
-    for (let k = 0; k < agg.cropMapMixed.length; k++) if (agg.cropMapMixed[k] !== 255) pure++;
-    return { gsd, purePct: agg.cropMapMixed.length ? (100 * pure) / agg.cropMapMixed.length : 0 };
+    let agg: AggregateResult;
+    if (imported) {
+      agg = aggregateImported(imported, oMinE, oMinN, nx, ny, gsd, sensor, channel.coverSpecies, channel.nSpecies);
+    } else {
+      const g = strideFor(gsd, minFeatureM(layout));
+      const fineRes = gsd / g;
+      const rows = ny * g, cols = nx * g;
+      const cropMap = buildCropMap(oMinE, oMinN, rows, cols, fineRes, minE, minN, layout);
+      const simsGrid: Float64Array[] = new Array(rows * cols).fill(EMPTY);
+      // null and 0 are aggregate's own defaults: a periodic layout runs exactly as before.
+      agg = aggregate(simsGrid, rows, cols, g, sensor.sigmaX, sensor.sigmaY, true, 0, cropMap, sensor.mixThreshold, sensor.offX ?? 0, sensor.offY ?? 0,
+        channel.coverSpecies, channel.nSpecies);
+    }
+    // A periodic layout has no off-trial channel to mark, so its blind pixels
+    // are skipped here by name.
+    const blind = markPsfBlind(agg, sensor);
+    // Off-trial ground is not a resolved pixel of an imported trial; the
+    // off-trial channel only exists for one, so periodic layouts count every pixel.
+    const off = imported ? agg.cropMapProportionOffTrial : null;
+    let pure = 0, counted = 0;
+    for (let k = 0; k < agg.cropMapMixed.length; k++) {
+      if (blind && blind[k]) continue;
+      if (off && off[k] > 0.5) continue;
+      counted++;
+      if (agg.cropMapMixed[k] !== 255 && !(off && agg.cropMapMixed[k] === OFF_TRIAL.id)) pure++;
+    }
+    return { gsd, purePct: counted ? (100 * pure) / counted : 0 };
   });
 }

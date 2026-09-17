@@ -13,7 +13,8 @@
     "engine": "python3 server/engine.py",
     "test:clustering": "node scripts/clustering-regress.mjs",
     "test:pixel-grid": "node scripts/pixel-grid-regress.mjs",
-    "test": "npm run test:phenology && npm run test:clustering && npm run test:pixel-grid"
+    "test:design-import": "node scripts/design-import-regress.mjs",
+    "test": "npm run test:phenology && npm run test:clustering && npm run test:pixel-grid && npm run test:design-import"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",

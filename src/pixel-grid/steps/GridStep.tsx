@@ -12,7 +12,7 @@ import type { StepProps } from './props';
  */
 export function GridStep(p: StepProps) {
   const { activeStep, toggleStep, gridSummary } = p;
-  const { aoi, aoiPoly } = p.area;
+  const { aoi } = p.area;
   const { sourceId, setSourceId, source, gsd, setGsd, customAnchor, setCustomAnchor, sigmaX, setSigmaX, sigmaY, setSigmaY, psfOffX, setPsfOffX, psfOffY, setPsfOffY, psfOffXM, psfOffYM, grids, gridState, selectedGridKey, setSelectedGridKey, selectedGrid, build, grid, pxSize, psfSigmaM, psfSigmaXM, psfSigmaYM, psfFwhmXM, psfFwhmYM, psfAnisotropic, dims, fieldAreaM2, maxAreaHa, fieldCellCount, gridNoun, nestsS2, onDownload } = p.gridApi;
 
   const fwhmTxt = psfAnisotropic
@@ -133,13 +133,13 @@ export function GridStep(p: StepProps) {
             </p>
           </>) : build && grid && dims ? (<>
             <Hero
-              value={fmt(aoiPoly ? (fieldCellCount ?? 0) : build.cellCount)}
-              unit={aoiPoly ? 'px in field' : 'px'}
+              value={fmt(fieldCellCount ?? build.cellCount)}
+              unit="px in field"
               right={`${fmt(Math.round(fieldAreaM2))} m²`} />
 
             {/* The ONE place the tile and the CRS are printed. */}
             <p className="mt-1 font-mono text-[11px] text-neutral-500">
-              {source.provider} · {grid.res} m{grid.tile && <> · {grid.tile}</>} · EPSG:{grid.epsg} · {dims.nx} × {dims.ny}{aoiPoly ? ' bbox' : ''}{selectedGrid?.catalog && <> · read from {selectedGrid.catalog}</>}
+              {source.provider} · {grid.res} m{grid.tile && <> · {grid.tile}</>} · EPSG:{grid.epsg} · {dims.nx} × {dims.ny} bbox{selectedGrid?.catalog && <> · read from {selectedGrid.catalog}</>}
             </p>
 
             <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px]">

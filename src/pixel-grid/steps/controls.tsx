@@ -1,6 +1,8 @@
 import React from 'react';
 import { CropControl, Explain, InfoDot } from '../ui';
 import { PATTERNS, cropById, type BlockDesign, type FieldParams, type PatternType } from '../simulate';
+import type { ImportedPlan } from '../imported-types';
+import { fmt } from '../util';
 
 /**
  * The planting controls steps 3 and 4 both carry.
@@ -92,6 +94,18 @@ export function LayoutFields({ pattern, stripWidth, setStripWidth, spacing, setS
     <NumField label={rotationLabel} value={rotation} onChange={setRotation} min={0} max={90} unit="°"
       hint={rotationHint} action={rotationAction} />
   );
+
+  // An imported trial's geometry is the file's; only its angle can be changed.
+  // Tenths of a degree, since a file's own angle is rarely a whole number.
+  if (pattern === 'imported') {
+    return (
+      // Two columns rather than three: its label carries two actions.
+      <div className="grid grid-cols-2 gap-2">
+        <NumField label={rotationLabel} value={Math.round(rotation * 10) / 10} onChange={setRotation}
+          min={0} max={90} step={0.1} unit="°" hint={rotationHint} action={rotationAction} />
+      </div>
+    );
+  }
 
   if (pattern === 'block' && blockDesign && setBlockDesign) {
     const d = blockDesign;
@@ -191,28 +205,95 @@ export function BlockSummary({ design, plan, res, threshold, purePct }: {
 }
 
 /**
+ * What an imported trial is, and what the chosen sensor makes of it: the same
+ * job as BlockSummary, for plots that came from a file. Sizes are measured off
+ * the resolved plan (the grid's metres), never off the file's degrees.
+ */
+export function ImportedSummary({ plan, res, threshold, purePct }: {
+  plan: ImportedPlan;
+  res?: number;
+  threshold: number;
+  purePct?: number;
+}) {
+  // Plot area by the shoelace sum over all of a plot's rings: holes and outer
+  // rings wind opposite ways in both shapefiles and GeoJSON, so they subtract.
+  const areas = plan.plots.map(p => Math.abs(p.rings.reduce((acc, r) => {
+    let a = 0;
+    for (let i = 0, j = r.length - 1; i < r.length; j = i++) a += (r[j][0] + r[i][0]) * (r[j][1] - r[i][1]);
+    return acc + a / 2;
+  }, 0))).sort((x, y) => x - y);
+  const median = areas.length ? areas[Math.floor(areas.length / 2)] : 0;
+  const side = Math.sqrt(median);
+  const sidePx = res ? side / res : null;
+  const [e0, n0, e1, n1] = plan.bbox;
+  const note = sidePx != null && sidePx < 1
+    ? `A typical plot is smaller than one ${res} m pixel, so no pixel can sit inside one. Pick a finer sensor.`
+    : purePct === 0 && res
+      ? `The sensor's blur reaches across every plot edge at ${res} m. Lowering the purity threshold below ${threshold}% is what recovers pixels here, not a finer grid.`
+      : null;
+  return (
+    <div className="rounded-md border border-white/10 bg-white/[0.02] px-2.5 py-2 text-[11px] text-neutral-300">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+        <span>Trial <span className="font-mono text-neutral-100">{(e1 - e0).toFixed(0)} × {(n1 - n0).toFixed(0)} m</span></span>
+        <span><span className="font-mono text-neutral-100">{fmt(plan.plots.length)}</span> plots of about <span className="font-mono text-neutral-100">{median.toFixed(0)} m²</span></span>
+        {sidePx != null && <span>about <span className="font-mono text-neutral-100">{sidePx.toFixed(1)}</span> px across</span>}
+      </div>
+      {purePct != null && (
+        <div className="mt-1">
+          Pure plot pixels <span className={`font-mono ${purePct > 0 ? 'text-sky-300' : 'text-amber-400'}`}>{purePct.toFixed(0)}%</span>
+          <span className="text-neutral-500"> at {threshold}% purity</span>
+        </div>
+      )}
+      {!plan.plotIds && (
+        <div className="mt-1 text-neutral-400">
+          More plots than the simulation can tell apart one by one: a pixel spanning two plots of the same variety counts as pure.
+        </div>
+      )}
+      {note && <div className="mt-1 text-neutral-400">{note}</div>}
+    </div>
+  );
+}
+
+/**
  * The two crop curve editors. Step 3 stacks them, step 4 puts them side by side.
  *
  * `onColor` deliberately bypasses `onCrop`: the colour is display only, so
  * recolouring must NOT flip the preset to "Custom" the way editing the growth
  * curve does — the crop is still maize, it is just drawn differently.
  */
-export function CropPair({ wrapperClass, cropA, setCropA, presetA, setPresetA, cropB, setCropB, presetB, setPresetB, colB }: {
+/**
+ * One editor per species in the design, 2 to 8 of them.
+ *
+ * This replaces a fixed pair of "Crop A" and "Crop B" editors, which could not
+ * reach species 3 onward at all: a four-species trial ran with two species the
+ * user could edit and two padded in behind their back. CropControl itself needed
+ * no change, since nothing in it assumed a pair.
+ *
+ * Labelled by each species' own drawn name rather than by a letter, and given
+ * `swatchColor` so the dot matches what the map paints, which is not always the
+ * stored colour once distinctColors has separated two species that clashed.
+ * `align="right"` on the right-hand column keeps the colour popover from
+ * overflowing the sidebar.
+ */
+export function SpeciesList({ wrapperClass, species, presets, colors, names, setSpeciesAt, setPresetAt }: {
   wrapperClass: string;
-  cropA: FieldParams; setCropA: (c: FieldParams) => void; presetA: string; setPresetA: (id: string) => void;
-  cropB: FieldParams; setCropB: (c: FieldParams) => void; presetB: string; setPresetB: (id: string) => void;
-  colB: string;
+  /** The species as drawn: already padded to the design's count and recoloured. */
+  species: FieldParams[];
+  presets: string[];
+  colors: string[];
+  names: string[];
+  setSpeciesAt: (i: number, c: FieldParams) => void;
+  setPresetAt: (i: number, id: string) => void;
 }) {
   return (
     <div className={wrapperClass}>
-      <CropControl label="Crop A" crop={cropA} preset={presetA}
-        onCrop={c => { setCropA(c); setPresetA('custom'); }}
-        onPreset={id => { setCropA(cropById(id)); setPresetA(id); }}
-        onColor={hex => setCropA({ ...cropA, color: hex })} />
-      <CropControl label="Crop B" crop={cropB} preset={presetB} swatchColor={colB} align="right"
-        onCrop={c => { setCropB(c); setPresetB('custom'); }}
-        onPreset={id => { setCropB(cropById(id)); setPresetB(id); }}
-        onColor={hex => setCropB({ ...cropB, color: hex })} />
+      {species.map((s, i) => (
+        <CropControl key={i} label={names[i] ?? s.name} crop={s} preset={presets[i] ?? 'custom'}
+          swatchColor={colors[i]} align={i % 2 === 1 ? 'right' : 'left'}
+          onCrop={c => { setSpeciesAt(i, c); setPresetAt(i, 'custom'); }}
+          onPreset={id => { setSpeciesAt(i, cropById(id)); setPresetAt(i, id); }}
+          onColor={hex => setSpeciesAt(i, { ...s, color: hex })} />
+      ))}
     </div>
   );
 }

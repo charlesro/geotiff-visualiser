@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { Disclosure, Explain, InfoDot, Step, Spinner } from '../ui';
-import { CropPair, LayoutFields, LayoutSelect, SELECT } from './controls';
+import { LayoutFields, LayoutSelect, SpeciesList, SELECT } from './controls';
+import { ImportPanel } from './ImportPanel';
 import { fmt } from '../util';
 import { FIXED, RES_LADDER, SOURCES, TASK } from '../sensors';
 import PcaSimVisual from '../PcaSimVisual';
@@ -17,16 +18,43 @@ export function PcaStep(p: StepProps) {
   const { activeStep, toggleStep, } = p;
   const { aoi } = p.area;
   const { sourceId, setSourceId, build, pickRes } = p.gridApi;
-  const { pattern, setPattern, stripWidth, setStripWidth, spacing, setSpacing, rotation, setRotation, cropA, setCropA, cropB, setCropB, presetA, setPresetA, presetB, setPresetB, magnitude, colB, cropAd, cropBd, blockDesign, setBlockDesign } = p.exp;
+  const { pattern, setPattern, stripWidth, setStripWidth, spacing, setSpacing, rotation, setRotation, cropA, setCropA, cropB, setCropB, presetA, setPresetA, presetB, setPresetB, magnitude, threshold, colB, cropAd, cropBd, blockDesign, setBlockDesign, speciesD, presetsActive, colors, names, setSpeciesAt, setPresetAt, importedDesign, varieties, importedPlan, importedAngle } = p.exp;
+  const imported = pattern === 'imported';
+  // The angle the ladder compares: the trial's own for an imported one.
+  const angle = imported ? importedAngle : rotation;
+  const angleLabel = Math.round(angle * 10) / 10;
+  const aligned = Math.min(angle, 90 - angle) < 0.05;
   const { pcaBusy, pcaView, pcaSubsampled, setSelectedPixels, sweep, sweepBusy } = p.pca;
-  const { pcaRetuneOpen, setPcaRetuneOpen, compareAligned, setCompareAligned } = p;
+  const { pcaRetuneOpen, setPcaRetuneOpen, compareAligned, setCompareAligned, pcaColorBy, setPcaColorBy, pcaShapeBy, setPcaShapeBy } = p;
   const { sweepAligned } = p.pca;
+  // The big chart's simulation, for the thumbnail of the size it was computed at.
+  // Right after a click the grid is already the new size while the chart still
+  // shows the old one; until the new one lands that thumbnail draws its own rung.
+  const activeSim = pcaView && build && Math.abs(pcaView.res - build.res) < 1e-9 ? pcaView.sim : null;
+  /**
+   * The two ladders compared size by size, as the percentage of each trial's
+   * own pixels that are pure (both counted over the pixels overlapping their
+   * own outline), only where both rungs are complete: a placeholder or a central
+   * window is not the trial. Within one point is called a tie, about what
+   * nudging the threshold by a tenth moves.
+   */
+  const comparison = (() => {
+    if (!sweep || !sweepAligned) return null;
+    const rows = sweepAligned.flatMap(al => {
+      const own = sweep.find(s => Math.abs(s.res - al.res) < 1e-9);
+      if (!own || own.current || own.partial || al.partial) return [];
+      if (!Number.isFinite(own.purePct) || !Number.isFinite(al.purePct) || (own.purePct === 0 && al.purePct === 0)) return [];
+      return [{ res: al.res, drawn: own.purePct, aligned: al.purePct }];
+    });
+    if (!rows.length) return null;
+    return { first: rows[0], worse: rows.filter(x => x.aligned < x.drawn - 1).map(x => x.res) };
+  })();
   // A fresh array every render would defeat PcaSweep's memo; keyed on the angle only.
-  const pairLabels = useMemo<[string, string]>(() => [`at ${rotation}° · your design`, 'at 0° · rows along the pixels'], [rotation]);
+  const pairLabels = useMemo<[string, string]>(() => [`at ${angleLabel}° · your design`, 'at 0° · on the pixel grid'], [angleLabel]);
 
   const compareBtn = (
-    <button type="button" onClick={() => setCompareAligned(v => !v)} disabled={rotation === 0}
-      title={rotation === 0
+    <button type="button" onClick={() => setCompareAligned(v => !v)} disabled={aligned}
+      title={aligned
         ? 'Already aligned with the pixels'
         : 'Compare with rows aligned to the pixels'}
       className={`ml-auto rounded px-1.5 py-0.5 text-[10px] font-normal normal-case tracking-normal transition-colors disabled:opacity-30 ${compareAligned ? 'bg-sky-500/15 text-sky-300' : 'text-neutral-500 hover:text-neutral-300'}`}>
@@ -35,12 +63,13 @@ export function PcaStep(p: StepProps) {
   );
 
   return (
-        <Step n={4} title="PCA simulation" summary={`${cropA.name} × ${cropB.name} → PCA`} open={activeStep === 'pca'} onClick={() => toggleStep('pca')} enabled={!!aoi}>
+        <Step n={4} title="PCA simulation" summary={`${pattern === 'imported' ? `${names.length} ${names.length === 1 ? 'variety' : 'varieties'}` : names.length > 4 ? `${names.length} species` : names.join(' × ')} → PCA`} open={activeStep === 'pca'} onClick={() => toggleStep('pca')} enabled={!!aoi}>
         {!aoi ? (
           <p className="text-xs text-neutral-400">Draw an experiment area in step&nbsp;1 first.</p>
         ) : pcaView ? (
           <div className="space-y-3">
-            <PcaSimVisual sim={pcaView.sim} cropA={cropAd} cropB={cropBd} magnitude={magnitude}
+            <PcaSimVisual sim={pcaView.sim} species={speciesD} colors={colors} names={names} magnitude={magnitude} threshold={threshold}
+              colorBy={pcaColorBy} setColorBy={setPcaColorBy} shapeBy={pcaShapeBy} setShapeBy={setPcaShapeBy}
               onSelect={setSelectedPixels} busy={pcaBusy} />
             {pcaSubsampled && (
               <p className="text-[11px] leading-snug text-neutral-500">
@@ -66,21 +95,34 @@ export function PcaStep(p: StepProps) {
                   <div className="space-y-2">
                     <PcaSweep steps={sweep} pairWith={sweepAligned}
                       pairLabels={pairLabels}
-                      cropA={cropAd} cropB={cropBd} magnitude={magnitude} activeRes={build?.res} onPick={pickRes} />
-                    <p className="text-[11px] leading-snug text-neutral-500">
-                      Pure pixels at {RES_LADDER[0]} m: <span className="font-mono text-sky-300">{sweep[0].purePct.toFixed(0)}%</span> rotated
-                      vs <span className="font-mono text-neutral-300">{sweepAligned[0].purePct.toFixed(0)}%</span> aligned.
-                      Rotating away from the pixel rows costs purity at every size. This is how much.
-                    </p>
+                      species={speciesD} colors={colors} magnitude={magnitude} colorBy={pcaColorBy}
+                      activeRes={build?.res} activeSim={activeSim} activePartial={pcaView?.subsampled} onPick={pickRes} />
+                    {comparison ? (
+                      <p className="text-[11px] leading-snug text-neutral-500">
+                        Pure pixels at {comparison.first.res} m: <span className="font-mono text-sky-300">{comparison.first.drawn.toFixed(0)}%</span> at {angleLabel}°
+                        vs <span className="font-mono text-neutral-300">{comparison.first.aligned.toFixed(0)}%</span> along the pixel rows.
+                        {/* Said only as far as the numbers show it. */}
+                        {comparison.worse.length === 0
+                          ? ' Along the rows is at least as pure at every size compared.'
+                          : ` Along the rows is less pure at ${comparison.worse.join(', ')} m.`}
+                      </p>
+                    ) : (
+                      <p className="text-[11px] leading-snug text-neutral-500">Comparing the two ladders…</p>
+                    )}
                   </div>
                 ) : (
-                  <PcaSweep steps={sweep} cropA={cropAd} cropB={cropBd} magnitude={magnitude} activeRes={build?.res} onPick={pickRes} />
+                  <PcaSweep steps={sweep} species={speciesD} colors={colors} magnitude={magnitude} colorBy={pcaColorBy}
+                    activeRes={build?.res} activeSim={activeSim} activePartial={pcaView?.subsampled} onPick={pickRes} />
                 )
               ) : <p className="text-[11px] leading-snug text-neutral-500">Computing the PCA at {RES_LADDER[0]}–{RES_LADDER[RES_LADDER.length - 1]} m…</p>}
             </div>
 
             <Disclosure
-              label={`Retune design: ${cropA.name} × ${cropB.name} · ${stripWidth} m strips · ${rotation}°`}
+              label={pattern === 'imported'
+                ? `Retune design: ${names.length} ${names.length === 1 ? 'variety' : 'varieties'} · ${importedDesign ? `${angleLabel}°` : 'no file yet'}`
+                : pattern === 'block'
+                ? `Retune design: ${names.length} species · ${blockDesign.nBlocks} blocks · ${rotation}°`
+                : `Retune design: ${names.join(' × ')} · ${stripWidth} m strips · ${rotation}°`}
               open={pcaRetuneOpen} onToggle={() => setPcaRetuneOpen(v => !v)}>
               <div className="grid grid-cols-2 gap-2">
                 <div>
@@ -97,14 +139,36 @@ export function PcaStep(p: StepProps) {
                 </div>
                 <LayoutSelect pattern={pattern} setPattern={setPattern} selectClass={SELECT} />
               </div>
-              <LayoutFields stripWidth={stripWidth} setStripWidth={setStripWidth}
-                spacing={spacing} setSpacing={setSpacing}
-                pattern={pattern} blockDesign={blockDesign} setBlockDesign={setBlockDesign}
-                rotation={rotation} setRotation={setRotation} rotationLabel="Field rotation"
-                rotationAction={compareBtn} />
-              <CropPair wrapperClass="grid grid-cols-2 gap-2"
-                cropA={cropA} setCropA={setCropA} presetA={presetA} setPresetA={setPresetA}
-                cropB={cropB} setCropB={setCropB} presetB={presetB} setPresetB={setPresetB} colB={colB} />
+              {pattern === 'imported' ? (
+                <>
+                  <ImportPanel design={importedDesign} varieties={varieties} {...p.importApi} />
+                  {importedPlan && (
+                    <LayoutFields stripWidth={stripWidth} setStripWidth={setStripWidth}
+                      spacing={spacing} setSpacing={setSpacing} pattern={pattern}
+                      rotation={angle} setRotation={p.importApi.setAngle} rotationLabel="Trial angle"
+                      rotationAction={compareBtn} />
+                  )}
+                  {varieties.length > 0 && (
+                    <Disclosure label={`Growth curves · ${names.length} ${names.length === 1 ? 'variety' : 'varieties'}`}
+                      open={p.curvesOpen} onToggle={() => p.setCurvesOpen(v => !v)}>
+                      <SpeciesList wrapperClass="grid grid-cols-2 gap-2"
+                        species={speciesD} presets={presetsActive} colors={colors} names={names}
+                        setSpeciesAt={setSpeciesAt} setPresetAt={setPresetAt} />
+                    </Disclosure>
+                  )}
+                </>
+              ) : (
+                <>
+                  <LayoutFields stripWidth={stripWidth} setStripWidth={setStripWidth}
+                    spacing={spacing} setSpacing={setSpacing}
+                    pattern={pattern} blockDesign={blockDesign} setBlockDesign={setBlockDesign}
+                    rotation={rotation} setRotation={setRotation} rotationLabel="Field rotation"
+                    rotationAction={compareBtn} />
+                  <SpeciesList wrapperClass="grid grid-cols-2 gap-2"
+                    species={speciesD} presets={presetsActive} colors={colors} names={names}
+                    setSpeciesAt={setSpeciesAt} setPresetAt={setPresetAt} />
+                </>
+              )}
             </Disclosure>
           </div>
         ) : (

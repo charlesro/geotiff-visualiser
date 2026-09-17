@@ -1,11 +1,14 @@
-import { useCallback, useState } from 'react';
-import { MapContainer, TileLayer, Rectangle, Polygon, GeoJSON, ScaleControl } from 'react-leaflet';
+import { useCallback, useMemo, useState } from 'react';
+import { MapContainer, TileLayer, Rectangle, Polygon, GeoJSON, Pane, ScaleControl } from 'react-leaflet';
 import L from 'leaflet';
 import { AOI_STYLE, BASEMAPS, GridLines, PolyDrawer, PsfOverlay, RectDrawer, TruthOverlay, ViewTracker, type BasemapKey } from './map-layers';
 import { BARE, OFF_TRIAL } from './simulate';
 import type { useAoiField } from './use-area';
 import type { useFieldGrid } from './use-grid';
 import type { Experiment, useSimulation, usePcaSim } from './use-simulation';
+
+/** Most species keys the map legend lists before summarising the rest. */
+const LEGEND_MAX = 12;
 
 /**
  * The map half of the page: basemap, the drawn field, the pixel the
@@ -53,6 +56,20 @@ export function FieldMap({
   const [lineStepM, setLineStepM] = useState(0);
   const onGridStep = useCallback((m: number) => setLineStepM(m), []);
   const { selectedPixels, selectionGeojson } = pca;
+  /**
+   * The simulation overlay with "In field only" applied. Both simulation views
+   * used to draw simGeojson straight through, so while step 3 or 4 was open the
+   * toggle changed nothing on screen. Filtered by the same col/row key as the
+   * in-field pixel list, so the two can never disagree about which pixels count.
+   */
+  const shownSim = useMemo(() => {
+    if (!fieldOnly || !fieldGeojson || !simGeojson) return simGeojson;
+    const keep = new Set((fieldGeojson.features as any[]).map(f => `${f.properties.col},${f.properties.row}`));
+    return { ...simGeojson, features: simGeojson.features.filter(f => keep.has(`${f.properties.col},${f.properties.row}`)) };
+  }, [fieldOnly, fieldGeojson, simGeojson]);
+  // react-leaflet never redraws a <GeoJSON> when its data changes, so the key
+  // has to move with the toggle or the filtered overlay would not appear.
+  const fieldKey = fieldOnly ? '-in' : '';
 
   return (
       <div className="relative flex-1">
@@ -89,10 +106,16 @@ export function FieldMap({
           {showPsf && psfCenter && psfSigmaM > 0 && (
             <PsfOverlay center={psfCenter} sigmaXM={psfSigmaXM} sigmaYM={psfSigmaYM} fwhmXM={psfFwhmXM} fwhmYM={psfFwhmYM} light={BASEMAPS[basemap].light} />
           )}
-          {selectionGeojson && (
-            <GeoJSON key={`sel-${selectedPixels.length}-${selectedPixels[0] ?? ''}`} data={selectionGeojson}
-              style={() => ({ color: '#fde047', weight: 2, fillColor: '#fde047', fillOpacity: 0.35, interactive: false }) as L.PathOptions} />
-          )}
+          {/* The PCA selection lives in its OWN pane above the overlay pane. On the
+              shared canvas, layers paint in the order they were added, so anything
+              that remounted the simulation layer (a basemap switch, the In field
+              only toggle) repainted it over the yellow highlight and hid it. */}
+          <Pane name="selection" style={{ zIndex: 450 }}>
+            {selectionGeojson && (
+              <GeoJSON key={`sel-${selectedPixels.length}-${selectedPixels[0] ?? ''}`} data={selectionGeojson}
+                style={() => ({ color: '#fde047', weight: 2, fillColor: '#fde047', fillOpacity: 0.35, interactive: false }) as L.PathOptions} />
+            )}
+          </Pane>
           {(() => {
             const gridLines = lineBox && build
               ? <GridLines box={lineBox} res={build.res} epsg={build.epsg} color={BASEMAPS[basemap].light ? '#0f172a' : '#f1f5f9'} weight={0.6} onStep={onGridStep} />
@@ -100,12 +123,12 @@ export function FieldMap({
             if (showField) {
               // Per-cell outlines (with not-pure rings) when cells are available;
               // otherwise just the pixel-grid lines, so a thin grid never vanishes.
-              const d = simGeojson ?? (fieldOnly ? fieldGeojson : null) ?? geojson;
+              const d = shownSim ?? (fieldOnly ? fieldGeojson : null) ?? geojson;
               return d
-                ? <GeoJSON key={geoKey + '-field'} data={d as any} style={fieldOutlineStyle} />
+                ? <GeoJSON key={geoKey + '-field' + fieldKey} data={d as any} style={fieldOutlineStyle} />
                 : gridLines;
             }
-            if (simOn && simGeojson) return <GeoJSON key={geoKey} data={simGeojson} style={(f: any) => simStyle(f?.properties?.f ?? 0, f?.properties?.b ?? 0, f?.properties?.mx ?? 0)} />;
+            if (simOn && shownSim) return <GeoJSON key={geoKey + fieldKey} data={shownSim} style={(f: any) => simStyle(f?.properties?.f ?? 0, f?.properties?.b ?? 0, f?.properties?.mx ?? 0, f?.properties?.sp, f?.properties?.off ?? 0)} />;
             // "In field only": draw the kept cells as squares instead of ruling
             // lines across the whole bounding box. Same colour as the lines so it
             // reads as the same grid, just trimmed.
@@ -154,9 +177,9 @@ export function FieldMap({
         <button
           onClick={() => setFieldOnly(v => !v)}
           disabled={!build || !fieldGeojson}
-          title={fieldGeojson
-            ? 'Show only the exported pixels (centred inside the field)'
-            : 'Trace a field shape in step 1 to use this'}
+          title={!fieldGeojson
+            ? (aoi ? 'Zoom in until the pixels are drawn to use this' : 'Draw a field in step 1 to use this')
+            : 'Show only the exported pixels (centred inside the field)'}
           className={`absolute right-3 top-[5.25rem] z-[1000] rounded-md border px-3 py-1.5 text-xs backdrop-blur transition-colors disabled:opacity-40 ${
             fieldOnly ? 'border-sky-400/70 bg-[#11151acc] text-sky-300' : 'border-white/10 bg-[#11151acc] text-slate-300 hover:text-slate-100'
           }`}
@@ -203,20 +226,26 @@ export function FieldMap({
                 </>
               ) : (
                 <div className="grid w-44 grid-cols-2 gap-x-2 gap-y-0.5 text-[10px] text-slate-400">
-                  {names.map((n, i) => (
+                  {/* An imported trial can carry dozens of varieties; past a
+                      dozen the key would cover the map it explains. The full
+                      list, with counts, is the PCA's Purity tab. */}
+                  {names.slice(0, names.length > LEGEND_MAX ? LEGEND_MAX - 1 : LEGEND_MAX).map((n, i) => (
                     <span key={i} className="flex items-center gap-1 truncate">
                       <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: colors[i] }} />
                       <span className="truncate">{n}</span>
                     </span>
                   ))}
+                  {names.length > LEGEND_MAX && (
+                    <span className="col-span-2 text-slate-500">+ {names.length - (LEGEND_MAX - 1)} more varieties</span>
+                  )}
                 </div>
               )}
-              {(spacing > 0 || layout.pattern === 'block') && (
+              {(spacing > 0 || layout.pattern === 'block' || layout.pattern === 'imported') && (
                 <div className="flex items-center gap-1 text-[10px] text-slate-400">
                   <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: BARE.color }} /> bare-soil alley
                 </div>
               )}
-              {layout.pattern === 'block' && (
+              {(layout.pattern === 'block' || layout.pattern === 'imported') && (
                 <div className="flex items-center gap-1 text-[10px] text-slate-400">
                   <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: OFF_TRIAL.color }} /> outside the trial
                 </div>

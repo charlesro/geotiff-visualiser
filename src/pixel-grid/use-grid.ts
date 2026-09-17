@@ -16,7 +16,8 @@ import {
   type LngLatBounds,
 } from './s2-grid';
 import { gridToShapefileZip } from './shapefile';
-import { cellCenter, pointInPoly, polyAreaHa, type Poly } from './geometry';
+import { polyAreaHa, type Poly } from './geometry';
+import { cellInFieldTest } from './field-membership';
 import { fmt } from './util';
 import { SOURCES } from './sensors';
 import { inRange, oneOf, usePersistentState } from './persist';
@@ -161,13 +162,19 @@ export function useFieldGrid({ aoi, aoiPoly }: { aoi: LngLatBounds | null; aoiPo
    * rather than a second, differently-clipped version of it.
    * Null when there is no traced polygon: a box AOI has nothing to clip away.
    */
+  /**
+   * The pixels that overlap the field, for "In field only".
+   *
+   * `aoiPoly` is the field ring: the traced shape, the drawn box, or an
+   * imported trial's outline (see PixelGridApp). Every pixel sharing any area
+   * with it counts (field-membership.ts), the same rule the export and the
+   * pixel count use, so the three always agree. It used to be "centre inside",
+   * which left a tilted field's corners covered by no pixel at all.
+   */
   const fieldGeojson = useMemo(() => {
     if (!renderGrid || !aoiPoly) return null;
-    const inside = renderGrid.cells.filter(c => {
-      const [lng, lat] = cellCenter(c.ring);
-      return pointInPoly(lng, lat, aoiPoly);
-    });
-    return gridToGeoJson({ ...renderGrid, cells: inside });
+    const inField = cellInFieldTest(aoiPoly, renderGrid.epsg, renderGrid.res);
+    return gridToGeoJson({ ...renderGrid, cells: inField ? renderGrid.cells.filter(inField) : renderGrid.cells });
   }, [renderGrid, aoiPoly]);
 
   const lineBox = useMemo((): [number, number, number, number] | null => {
@@ -207,10 +214,9 @@ export function useFieldGrid({ aoi, aoiPoly }: { aoi: LngLatBounds | null; aoiPo
     const slug = source.provider.toLowerCase().replace(/[^a-z0-9]+/g, '');
     const where = grid.tile ? `_${grid.tile}` : `_z${grid.zone}${grid.south ? 'S' : 'N'}`;
     const stem = `${slug}_pixels_${grid.res}m${where}`;
-    // Clip the exported pixels to the traced field shape (centre inside the polygon).
-    const out = aoiPoly
-      ? { ...grid, cells: grid.cells.filter(c => { const [lng, lat] = cellCenter(c.ring); return pointInPoly(lng, lat, aoiPoly); }) }
-      : grid;
+    // The exported pixels are the ones overlapping the field, as on the map.
+    const inField = cellInFieldTest(aoiPoly, grid.epsg, grid.res);
+    const out = inField ? { ...grid, cells: grid.cells.filter(inField) } : grid;
     saveAs(gridToShapefileZip(out, stem), `${stem}.zip`);
   };
 
@@ -262,12 +268,13 @@ export function useFieldGrid({ aoi, aoiPoly }: { aoi: LngLatBounds | null; aoiPo
    *  internally for the cell-count cap, which is quoted in ha. */
   const fieldAreaM2 = fieldAreaHa * 10_000;
   const maxAreaHa = (40_000 * pxSize * pxSize) / 10_000;
-  // Pixels whose centre falls inside the traced field (what the export contains).
+  // Pixels overlapping the field (what the export contains).
   const fieldCellCount = useMemo(() => {
     if (!grid) return null;
-    if (!aoiPoly) return grid.cells.length;
+    const inField = cellInFieldTest(aoiPoly, grid.epsg, grid.res);
+    if (!inField) return grid.cells.length;
     let c = 0;
-    for (const cell of grid.cells) { const [lng, lat] = cellCenter(cell.ring); if (pointInPoly(lng, lat, aoiPoly)) c++; }
+    for (const cell of grid.cells) if (inField(cell)) c++;
     return c;
   }, [grid, aoiPoly]);
   /** S2/HLS use the MGRS tile word; Landsat uses a UTM zone. */
@@ -280,7 +287,9 @@ export function useFieldGrid({ aoi, aoiPoly }: { aoi: LngLatBounds | null; aoiPo
   const gridSummary = !aoi
     ? 'needs an area'
     : grid
-      ? `${source.provider} · ${grid.tile ?? `${grid.zone}${grid.south ? 'S' : 'N'}`} · ${fmt(build!.cellCount)} px`
+      // The pixels that will actually be exported (centre inside the field), not
+      // every pixel of the rounded-out grid: the header and the export agree.
+      ? `${source.provider} · ${grid.tile ?? `${grid.zone}${grid.south ? 'S' : 'N'}`} · ${fmt(fieldCellCount ?? build!.cellCount)} px`
       : build?.capped
         ? `${source.provider} · ${fmt(build.cellCount)} px (zoom to view)`
         : gridState === 'loading' ? 'identifying…' : 'pick a satellite & resolution';

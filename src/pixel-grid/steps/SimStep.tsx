@@ -1,6 +1,8 @@
 import { Disclosure, Explain, InfoDot, Step } from '../ui';
-import { BlockSummary, CropPair, LayoutFields, LayoutSelect, SELECT } from './controls';
+import { BlockSummary, ImportedSummary, LayoutFields, LayoutSelect, SpeciesList, SELECT } from './controls';
+import { ImportPanel } from './ImportPanel';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer } from 'recharts';
+import { BARE } from '../simulate';
 import type { StepProps } from './props';
 
 /**
@@ -24,8 +26,27 @@ export function SimStep(p: StepProps) {
    * exists the card shows geometry and states no percentage at all.
    */
   const fieldSim = p.sim.sim ?? p.pca.pcaView?.sim ?? null;
-  const { pattern, setPattern, stripWidth, setStripWidth, spacing, setSpacing, rotation, setRotation, cropA, setCropA, cropB, setCropB, presetA, setPresetA, presetB, setPresetB, magnitude, setMagnitude, alpha, setAlpha, beta, setBeta, threshold, setThreshold, dupSpecies, colB, day, simView, blockDesign, setBlockDesign, blockPlan } = p.exp;
+  const { pattern, setPattern, stripWidth, setStripWidth, spacing, setSpacing, rotation, setRotation, cropA, setCropA, cropB, setCropB, presetA, setPresetA, presetB, setPresetB, magnitude, setMagnitude, alpha, setAlpha, beta, setBeta, threshold, setThreshold, dupSpecies, colB, day, simView, blockDesign, setBlockDesign, blockPlan, colors, names, speciesD, presetsActive, setSpeciesAt, setPresetAt, importedDesign, varieties, importedPlan, importedAngle, importedFileAngle, importedTurn } = p.exp;
+  // The angle the controls show and edit: the trial's own for an imported one.
+  const imported = pattern === 'imported';
+  const angle = imported ? importedAngle : rotation;
+  const aligned = Math.min(angle, 90 - angle) < 0.05;
   const { ndviSeries } = p.sim;
+  /**
+   * One line per distinct growth CURVE, not per species. An imported trial can
+   * carry dozens of varieties on one crop's curve, and forty identical wheat
+   * lines drew as one line under a legend of forty. Each line is named by its
+   * first species, with how many more share it.
+   */
+  const curveLines = (() => {
+    const groups = new Map<string, { i: number; n: number }>();
+    speciesD.forEach((s, i) => {
+      const k = `${s.truth}_${s.L1}_${s.k1}_${s.x01}_${s.k2}_${s.x02}_${s.tc}`;
+      const g = groups.get(k);
+      if (g) g.n++; else groups.set(k, { i, n: 1 });
+    });
+    return [...groups.values()];
+  })();
 
   const NUM = 'w-full rounded-md border border-white/10 bg-neutral-900 px-2 py-1.5 text-sm text-neutral-100 focus:border-sky-500 focus:outline-none';
 
@@ -37,32 +58,64 @@ export function SimStep(p: StepProps) {
           <div className="space-y-3">
 
             <LayoutSelect pattern={pattern} setPattern={setPattern} selectClass={SELECT} />
+            {/* An imported trial's geometry is the file's: what it has is the
+                file, and the angle the whole trial is turned to. */}
+            {imported && <ImportPanel design={importedDesign} varieties={varieties} {...p.importApi} />}
+            {(!imported || importedPlan) && (
             <LayoutFields stripWidth={stripWidth} setStripWidth={setStripWidth}
               spacing={spacing} setSpacing={setSpacing}
               pattern={pattern} blockDesign={blockDesign} setBlockDesign={setBlockDesign}
-              rotation={rotation} setRotation={setRotation}
-              rotationLabel={pattern === 'block' ? 'Trial angle' : 'Strip angle'}
-              rotationAction={
-                <button type="button" disabled={rotation === 0}
+              rotation={angle} setRotation={imported ? p.importApi.setAngle : setRotation}
+              rotationLabel={pattern === 'block' || imported ? 'Trial angle' : 'Strip angle'}
+              rotationAction={<>
+                {/* Back to the file's own angle, which is rarely a round number to retype. */}
+                {imported && importedTurn !== 0 && (
+                  <button type="button" onClick={() => p.importApi.setAngle(importedFileAngle)}
+                    title={`Back to the file's angle, ${importedFileAngle.toFixed(1)}°`}
+                    className="ml-auto rounded px-1.5 py-0.5 text-[10px] font-normal normal-case tracking-normal text-neutral-500 transition-colors hover:text-neutral-300">
+                    as in file
+                  </button>
+                )}
+                <button type="button" disabled={aligned}
                   onClick={() => { setCompareAligned(true); setActiveStep('pca'); }}
-                  title={rotation === 0
+                  title={aligned
                     ? 'Already aligned with the pixels'
-                    : 'Compare with strips aligned to the pixels'}
-                  className={`ml-auto rounded px-1.5 py-0.5 text-[10px] font-normal normal-case tracking-normal transition-colors disabled:opacity-30 ${compareAligned ? 'bg-sky-500/15 text-sky-300' : 'text-neutral-500 hover:text-neutral-300'}`}>
+                    : imported ? 'Compare with the trial turned to the pixel rows' : 'Compare with strips aligned to the pixels'}
+                  className={`${imported && importedTurn !== 0 ? '' : 'ml-auto'} rounded px-1.5 py-0.5 text-[10px] font-normal normal-case tracking-normal transition-colors disabled:opacity-30 ${compareAligned ? 'bg-sky-500/15 text-sky-300' : 'text-neutral-500 hover:text-neutral-300'}`}>
                   vs aligned
                 </button>
-              }
+              </>}
               spacingHint="Bare soil between strips, shown in brown."
-              rotationHint="Angle from the pixel rows; 0° runs along them." />
+              rotationHint={imported
+                ? `The file draws the trial at ${importedFileAngle.toFixed(1)}°. Changing it turns the whole trial about its centre; 0° lines the plots up with the pixel rows.`
+                : 'Angle from the pixel rows; 0° runs along them.'} />
+            )}
 
             {pattern === 'block' && (
               <BlockSummary design={blockDesign} plan={blockPlan} res={build?.res}
                 threshold={threshold} purePct={fieldSim?.purePct} />
             )}
 
-            <CropPair wrapperClass="grid grid-cols-2 gap-2"
-              cropA={cropA} setCropA={setCropA} presetA={presetA} setPresetA={setPresetA}
-              cropB={cropB} setCropB={setCropB} presetB={presetB} setPresetB={setPresetB} colB={colB} />
+            {pattern === 'imported' && importedPlan && (
+              <ImportedSummary plan={importedPlan} res={build?.res} threshold={threshold} purePct={fieldSim?.purePct} />
+            )}
+
+            {/* Dozens of varieties would bury the rest of the step, so an imported
+                trial folds its curve editors away; they open on demand. */}
+            {pattern === 'imported' ? (
+              varieties.length > 0 && (
+                <Disclosure label={`Growth curves · ${names.length} ${names.length === 1 ? 'variety' : 'varieties'}`}
+                  open={p.curvesOpen} onToggle={() => p.setCurvesOpen(v => !v)}>
+                  <SpeciesList wrapperClass="grid grid-cols-2 gap-2"
+                    species={speciesD} presets={presetsActive} colors={colors} names={names}
+                    setSpeciesAt={setSpeciesAt} setPresetAt={setPresetAt} />
+                </Disclosure>
+              )
+            ) : (
+              <SpeciesList wrapperClass="grid grid-cols-2 gap-2"
+                species={speciesD} presets={presetsActive} colors={colors} names={names}
+                setSpeciesAt={setSpeciesAt} setPresetAt={setPresetAt} />
+            )}
 
             {ndviSeries && (
               <div className="space-y-1">
@@ -79,8 +132,17 @@ export function SimStep(p: StepProps) {
                       {simView === 'ndvi' && <ReferenceLine x={day} stroke="#666" strokeDasharray="3 3" />}
                       {magnitude > 0 && <Line type="monotone" dataKey="hi" stroke="#64748b" dot={false} strokeWidth={0.75} name="noise +σ" />}
                       {magnitude > 0 && <Line type="monotone" dataKey="lo" stroke="#64748b" dot={false} strokeWidth={0.75} name="noise −σ" />}
-                      <Line type="monotone" dataKey="A" stroke={cropA.color} dot={false} strokeWidth={1.5} name={cropA.name} />
-                      <Line type="monotone" dataKey="B" stroke={colB} dot={false} strokeWidth={1.5} name={dupSpecies ? `${cropB.name} (B)` : cropB.name} />
+                      {/* One line per species. Two hardcoded series plotted
+                          maize and wheat for a four-species trial and simply
+                          omitted the rest, with nothing to show it had. */}
+                      {curveLines.map(({ i, n }) => (
+                        <Line key={i} type="monotone" dataKey={`s${i}`} stroke={colors[i]}
+                          dot={false} strokeWidth={1.5} name={n > 1 ? `${names[i]} and ${n - 1} more` : names[i]} />
+                      ))}
+                      {/* Bare soil drawn like a crop: its own season, flat because
+                          soil has no phenology. It is a real part of every pixel
+                          that touches an alley, and the mixed curve weights it in. */}
+                      <Line type="monotone" dataKey="soil" stroke={BARE.color} dot={false} strokeWidth={1.5} name="Bare soil" />
                       <Line type="monotone" dataKey="mix" stroke="#e5e7eb" strokeDasharray="4 3" dot={false} strokeWidth={1.5} name="Mixed pixel" />
                     </LineChart>
                   </ResponsiveContainer>

@@ -74,7 +74,65 @@ const distinctColors = (wanted: string[], palette: string[]): string[] => {
   });
 };
 
+/**
+ * `n` colours that stay apart, for an imported trial that can carry dozens of
+ * varieties. The first ones are `base` (the colour-blind-safe palette the
+ * presets use). Past it, hues step by the golden angle, so varieties next to
+ * each other in the list never sit next to each other on the colour wheel, at
+ * three lightness levels. Saturation stays high: bare soil's brown and
+ * off-trial grey already mean something on the map and in the PCA, and a
+ * variety must not look like either.
+ */
+const categoricalColors = (n: number, base: string[]): string[] => {
+  const out = base.slice(0, n);
+  const hex = (h: number, s: number, l: number) => {
+    const a = s * Math.min(l, 1 - l);
+    const f = (k: number) => {
+      const t = (k + h / 30) % 12;
+      return l - a * Math.max(-1, Math.min(t - 3, 9 - t, 1));
+    };
+    return `#${[f(0), f(8), f(4)].map(v => Math.round(v * 255).toString(16).padStart(2, '0')).join('')}`;
+  };
+  const taken = new Set(out.map(c => c.toLowerCase()));
+  for (let i = 0; out.length < n; i++) {
+    const c = hex((i * 137.508) % 360, 0.72, [0.56, 0.7, 0.44][i % 3]);
+    if (taken.has(c)) continue;
+    taken.add(c);
+    out.push(c);
+  }
+  return out;
+};
+
+/** What dominates a pixel: a species (by index), bare alley soil, or ground outside the trial. */
+type CoverKind = 'species' | 'bare' | 'off';
+
+/**
+ * A pixel's cover as shares of its WHOLE footprint: every species, bare alley
+ * soil and ground outside the trial, summing to 1, plus what dominates it.
+ *
+ * Normalising over the species alone is what labelled a pixel lying in an
+ * alley "50% maize · 50% grass": its crop cover was two slivers of blur spill
+ * from the plots on either side, and dividing those slivers by each other
+ * threw away the bare soil that was most of the pixel. Every place that names,
+ * colours or classifies a single pixel should read it through here.
+ */
+const coverShares = (fr: ArrayLike<number>, bare = 0, off = 0) => {
+  let total = Math.max(0, bare) + Math.max(0, off);
+  for (let i = 0; i < fr.length; i++) total += Math.max(0, fr[i] || 0);
+  if (total <= 0) {
+    return { species: Array.from(fr, () => 0), bare: 0, off: 0, dominant: { kind: 'off' as CoverKind, i: -1, share: 0 } };
+  }
+  const species = Array.from(fr, v => Math.max(0, v || 0) / total);
+  const b = Math.max(0, bare) / total, o = Math.max(0, off) / total;
+  let kind: CoverKind = 'species', i = -1, share = -1;
+  species.forEach((v, k) => { if (v > share) { share = v; i = k; } });
+  if (b > share) { kind = 'bare'; i = -1; share = b; }
+  if (o > share) { kind = 'off'; i = -1; share = o; }
+  return { species, bare: b, off: o, dominant: { kind, i, share } };
+};
+
 const fmt = (n: number) => n.toLocaleString('en-US');
 const fmtM = (m: number) => (m < 0.995 ? `${Math.round(m * 100)} cm` : `${m.toFixed(2)} m`);
 
-export { lerpHex, hexRgb, mix3, mixN, distinctColors, fmt, fmtM };
+export { lerpHex, hexRgb, mix3, mixN, distinctColors, categoricalColors, coverShares, fmt, fmtM };
+export type { CoverKind };

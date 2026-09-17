@@ -96,10 +96,10 @@ function TruthOverlay({ extent, epsg, layout, layoutSig, origin, colors, clipPol
       inv.forward([ox + u * cos - v * sin, oy + u * sin + v * cos]) as [number, number];
 
     const features: any[] = [];
-    const pushRect = (u0: number, u1: number, v0: number, v1: number, cult: number) => {
+    const pushRect = (u0: number, u1: number, v0: number, v1: number, cult: number, clip = true) => {
       const rect: Poly = [toLngLat(u0, v0), toLngLat(u1, v0), toLngLat(u1, v1), toLngLat(u0, v1)];
       let ring: Poly;
-      if (clipPoly && clipPoly.length >= 3) {
+      if (clip && clipPoly && clipPoly.length >= 3) {
         const c = clipPolygon(clipPoly, rect); // keep only the part inside the traced field
         if (c.length < 3) return;
         ring = [...c, c[0]];
@@ -108,14 +108,37 @@ function TruthOverlay({ extent, epsg, layout, layoutSig, origin, colors, clipPol
       }
       features.push({ type: 'Feature', properties: { cult }, geometry: { type: 'Polygon', coordinates: [ring] } });
     };
-    if (layout.pattern === 'block' && layout.block) {
+    if (layout.pattern === 'imported') {
+      // The file's own plots, in the grid's metres, brought back to the map. The
+      // footprint first, as bare ground, then each plot in its variety's colour.
+      // Nothing is clipped: like a block trial, these plots are real objects.
+      // Holes and multipart plots come out right because Leaflet fills even-odd.
+      const plan = layout.imported;
+      const ring = (pts: [number, number][]) => {
+        const r = pts.map(([E, N]) => inv.forward([E, N]) as [number, number]);
+        const a = r[0], z = r[r.length - 1];
+        if (r.length && (a[0] !== z[0] || a[1] !== z[1])) r.push(a);
+        return r;
+      };
+      if (plan) {
+        if (plan.footprint.length >= 3)
+          features.push({ type: 'Feature', properties: { cult: BARE.id }, geometry: { type: 'Polygon', coordinates: [ring(plan.footprint)] } });
+        for (const plot of plan.plots)
+          features.push({ type: 'Feature', properties: { cult: plot.species }, geometry: { type: 'Polygon', coordinates: plot.rings.map(ring) } });
+      }
+    } else if (layout.pattern === 'block' && layout.block) {
       const p = layout.block;
       // Bare backdrop over the TRIAL FOOTPRINT only, never the whole extent.
       // Ground outside a finite trial is not an alley: it is land the design
       // never touched, which is the whole distinction OFF_TRIAL exists to make,
       // and painting it bare-soil brown would claim otherwise on the map.
-      pushRect(p.u0, p.u0 + p.totalU, p.v0, p.v0 + p.totalV, BARE.id);
-      for (const r of blockPlots(p)) pushRect(r.u0, r.u1, r.v0, r.v1, r.species);
+      //
+      // NEVER clipped to the drawn area. A periodic pattern is infinite, so it
+      // has to be cut to the field; a trial is a finite object with a real size,
+      // and trimming it at the field edge drew plots that were smaller than the
+      // design says, hiding the fact that the trial does not fit.
+      pushRect(p.u0, p.u0 + p.totalU, p.v0, p.v0 + p.totalV, BARE.id, false);
+      for (const r of blockPlots(p)) pushRect(r.u0, r.u1, r.v0, r.v1, r.species, false);
     } else {
       // Each crop strip occupies width W of every period P; the S-wide alleys are
       // painted bare-soil brown (a full bare backdrop, with the crop strips on top).

@@ -77,5 +77,31 @@ const clipPolygon = (subject: Poly, win: Poly): Poly => {
   return out;
 };
 
-export { pointInPoly, polyBbox, cellCenter, polyAreaHa, clipPolygon };
+/**
+ * A test for "does this pixel belong to the field": true when the pixel's
+ * square and the field ring share some AREA, in the same planar metres (UTM).
+ *
+ * The rule used to be "the pixel's CENTRE is in the field". A field tilted to
+ * the pixel rows, an imported trial above all, then had corners that no kept
+ * pixel covered: holes in the parcels, on the map, in the export, in the PCA.
+ * Every pixel that sees any of the field now belongs to it; the ones mostly
+ * outside are still left out of purity and the PCA by the off-trial share.
+ * A square that only touches the ring along an edge or at a corner does not
+ * count (its shared area is zero). The ring's box is computed once.
+ */
+const fieldOverlapTest = (ring: Poly) => {
+  let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
+  for (const [x, y] of ring) { w = Math.min(w, x); e = Math.max(e, x); s = Math.min(s, y); n = Math.max(n, y); }
+  return (e0: number, n0: number, size: number): boolean => {
+    const e1 = e0 + size, n1 = n0 + size;
+    if (e1 <= w || e0 >= e || n1 <= s || n0 >= n || ring.length < 3) return false;
+    const part = clipPolygon(ring, [[e0, n0], [e1, n0], [e1, n1], [e0, n1]]);
+    if (part.length < 3) return false;
+    let a = 0;
+    for (let i = 0, j = part.length - 1; i < part.length; j = i++) a += part[j][0] * part[i][1] - part[i][0] * part[j][1];
+    return Math.abs(a) / 2 > 1e-9 * size * size;
+  };
+};
+
+export { pointInPoly, polyBbox, cellCenter, polyAreaHa, clipPolygon, fieldOverlapTest };
 export type { Poly };

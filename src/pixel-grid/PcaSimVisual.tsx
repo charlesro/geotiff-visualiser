@@ -1,58 +1,40 @@
-import { memo, useEffect, useMemo, useRef, useState, useTransition } from 'react';
+import { memo, useEffect, useMemo, useState, useTransition } from 'react';
 import {
-  ScatterChart, Scatter, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer, Symbols,
+  XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer,
   BarChart, Bar, LineChart, Line,
 } from 'recharts';
-import {
-  BARE, makeTruth, makeBetaSchedule, parsOf, TMAX,
-  type FieldParams, type FieldSim,
-} from './simulate';
-import { embed, DR_METHODS, type DrMethod } from '../lib/projections';
+import { PcaScatterCanvas, SymbolIcon } from './PcaScatterCanvas';
+import { BARE, OFF_TRIAL, type FieldParams, type FieldSim } from './simulate';
+import { coverShares, fmt } from './util';
+import { DR_METHODS, type DrMethod } from '../lib/projections';
 import { oneOf, usePersistentState } from './persist';
+import { SYMS, axisSigns, fitCover, pointStyle, type ColorBy, type ShapeBy } from './pca-field';
 
 /**
  * PCA of the grid cells, with the full scatter toolset: pick the DR method, the
  * axes, the colour/shape encodings, see the variance and loadings, and flag the
- * not-pure (mixed) pixels. Each cell's NDVI season is a sample (pure = one crop,
- * mixed = the area-weighted sum + Beta-schedule noise).
+ * not-pure (mixed) pixels. What each pixel's season is, how it is embedded,
+ * which way the axes face and how a pixel is coloured all come from pca-field,
+ * shared with the resolution ladder so the two can never disagree.
  */
 
-const NT = 24;
-const EPS = 1e-3;
-const SYM_A = 'triangle';
-const SYM_B = 'square';
+/** Most species keys listed under the scatter before the rest are summarised. */
+const LEGEND_MAX = 12;
+
 const AXIS_ABBR: Partial<Record<DrMethod, string>> = { pca: 'PC', whitened: 'PC', ica: 'IC', mnf: 'MNF', random: 'RP', kpca: 'KPC', isomap: 'Iso', diffusion: 'DC', tsne: 'tSNE' };
-
-type ColorBy = 'mixing' | 'species' | 'purity';
-type ShapeBy = 'species' | 'purity' | 'none';
-
-const hexRgb = (h: string): [number, number, number] => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16)) as [number, number, number];
-const mixHex = (a: string, b: string, t: number) => {
-  const [ar, ag, ab] = hexRgb(a), [br, bg, bb] = hexRgb(b);
-  const f = Math.max(0, Math.min(1, t));
-  return `rgb(${Math.round(br + (ar - br) * f)},${Math.round(bg + (ag - bg) * f)},${Math.round(bb + (ab - bb) * f)})`;
-};
-const pureCurve = (f: FieldParams): number[] => {
-  const full = makeTruth(f.truth, TMAX, parsOf(f));
-  return Array.from({ length: NT }, (_, i) => full[Math.round((i * (TMAX - 1)) / (NT - 1))]);
-};
-const rngFor = (seed: number) => {
-  let s = (seed % 2147483647 + 2147483647) % 2147483647 || 1;
-  return () => (s = (s * 48271) % 2147483647) / 2147483647;
-};
-const gauss = (rnd: () => number) => {
-  let u = 0, v = 0;
-  while (u === 0) u = rnd();
-  while (v === 0) v = rnd();
-  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
-};
 
 const selectClass = 'rounded-md border border-white/10 bg-neutral-900 px-2 py-1 text-xs text-neutral-200 focus:border-sky-500 focus:outline-none';
 
-const PURE_T = 80; // % of one crop for the pure/mixed colour & shape encodings
-
-function PcaSimVisual({ sim, cropA, cropB, magnitude, onSelect, busy }: {
-  sim: FieldSim; cropA: FieldParams; cropB: FieldParams; magnitude: number;
+function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, onSelect, busy, colorBy, setColorBy, shapeBy, setShapeBy }: {
+  sim: FieldSim;
+  /** % of a pixel one cover must make up to count as pure (step 3's slider), for the purity tab's caption. */
+  threshold: number;
+  /** Colour and shape encodings, owned by the step so the resolution ladder uses the same ones. */
+  colorBy: ColorBy; setColorBy: (c: ColorBy) => void;
+  shapeBy: ShapeBy; setShapeBy: (s: ShapeBy) => void;
+  /** Every species in the design, already padded and recoloured for drawing. */
+  species: FieldParams[]; colors: string[]; names: string[];
+  magnitude: number;
   /** Report the pixel indices selected in the scatter (click / lasso) → map highlight. */
   onSelect?: (indices: number[]) => void;
   /** True while the parent is recomputing the simulation → show a spinner. */
@@ -60,7 +42,7 @@ function PcaSimVisual({ sim, cropA, cropB, magnitude, onSelect, busy }: {
 }) {
   // The chart's own view settings survive a refresh too; selection and lasso are
   // momentary and deliberately do not.
-  const [tab, setTab] = usePersistentState<'scatter' | 'variance' | 'loadings'>('pcaTab', 'scatter', oneOf('scatter', 'variance', 'loadings'));
+  const [tab, setTab] = usePersistentState<'scatter' | 'variance' | 'loadings' | 'purity'>('pcaTab', 'scatter', oneOf('scatter', 'variance', 'loadings', 'purity'));
   // Validated against the real list: an unknown method would make embed() throw.
   const [method, setMethodState] = usePersistentState<DrMethod>('pcaMethod', 'pca', v => DR_METHODS.some(m => m.id === v));
   const [pending, startTransition] = useTransition();
@@ -68,46 +50,26 @@ function PcaSimVisual({ sim, cropA, cropB, magnitude, onSelect, busy }: {
   // transition so the spinner shows and the old chart stays until it's ready.
   const setMethod = (m: DrMethod) => startTransition(() => setMethodState(m));
   const working = !!busy || pending;
-  const isAxis = (v: unknown) => Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 2; // 3 components are computed
+  // Up to 8 components now (a trial of S species has S-1 mixing directions);
+  // cx/cy still clamp to what this fit actually produced.
+  const isAxis = (v: unknown) => Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 7;
   const [pcX, setPcX] = usePersistentState('pcaX', 0, isAxis);
   const [pcY, setPcY] = usePersistentState('pcaY', 1, isAxis);
-  const [colorBy, setColorBy] = usePersistentState<ColorBy>('pcaColorBy', 'mixing', oneOf('mixing', 'species', 'purity'));
-  const [shapeBy, setShapeBy] = usePersistentState<ShapeBy>('pcaShapeBy', 'species', oneOf('species', 'purity', 'none'));
   // Pixel selection (→ highlighted on the map). Click one, or lasso many.
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [lassoOn, setLassoOn] = useState(false);
-  const [lassoPath, setLassoPath] = useState<{ x: number; y: number }[]>([]);
-  const lassoRef = useRef<{ drawing: boolean; path: { x: number; y: number }[]; svg: SVGSVGElement | null }>({ drawing: false, path: [], svg: null });
-  const posRef = useRef<Record<number, { x: number; y: number }>>({}); // point k → screen px (from the Dot renderer)
   const pick = (ids: number[]) => { setSelected(new Set(ids)); onSelect?.(ids); };
   // Clear the selection whenever the underlying data changes.
   useEffect(() => { setSelected(new Set()); onSelect?.([]); }, [sim]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const sig = (c: FieldParams) => `${c.truth}_${c.L1}_${c.k1}_${c.x01}_${c.k2}_${c.x02}_${c.tc}_${c.color}`;
+  const speciesSig = species.map(c => `${c.truth}_${c.L1}_${c.k1}_${c.x01}_${c.k2}_${c.x02}_${c.tc}_${c.color}`).join('|');
 
-  // Build the cell signals + embed once per (data, method) — axis/encoding
-  // changes are cheap and never re-embed (matters for the slow nonlinear ones).
-  const fit = useMemo(() => {
-    const A = pureCurve(cropA), B = pureCurve(cropB);
-    const varSched = makeBetaSchedule(NT, 2, 2, Math.max(0, magnitude));
-    const pAs: number[] = [];
-    const rows = Array.from(sim.proportionA, (pA, k) => {
-      pAs.push(pA);
-      const pBare = sim.proportionBare ? sim.proportionBare[k] : 0;
-      const pB = Math.max(0, 1 - pA - pBare);
-      const rnd = rngFor(k * 2654435761 + 12345);
-      const z = gauss(rnd); // ONE normal per pixel → correlated season (repo `simulate`)
-      return A.map((a, t) => {
-        const m = pA * a + pB * B[t] + pBare * BARE.ndvi;
-        const sd = Math.sqrt(Math.min(Math.max(0, varSched[t]), m * (1 - m))); // clamp to m(1−m)
-        return Math.min(1 - EPS, Math.max(EPS, m + sd * z));
-      });
-    });
-    const components = Math.min(3, NT);
-    const { scores, index, explained, loadings } = embed(method, { fit: rows, proj: rows, components });
-    const pts = scores.map((s, j) => ({ s, pA: pAs[index[j]], k: index[j] })); // k = pixel index
-    return { pts, explained, loadings };
-  }, [sim, sig(cropA), sig(cropB), magnitude, method]);
+  /**
+   * Seasons + embedding, once per (data, method). Axis and encoding changes are
+   * cheap and never re-embed. Cached inside fitCover per simulation, so the
+   * ladder's thumbnail at this resolution reads back this very object.
+   */
+  const fit = useMemo(() => fitCover(sim, species, magnitude, method), [sim, speciesSig, magnitude, method]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const nComp = fit.explained.length;
   const abbr = AXIS_ABBR[method] ?? 'C';
@@ -116,69 +78,18 @@ function PcaSimVisual({ sim, cropA, cropB, magnitude, onSelect, busy }: {
   const cx = Math.min(pcX, nComp - 1), cy = Math.min(pcY, nComp - 1);
 
   const hasSel = selected.size > 0;
-  const points = useMemo(() => fit.pts.map(p => {
-    const pure = Math.max(p.pA, 1 - p.pA) >= PURE_T / 100;
-    const color =
-      colorBy === 'mixing' ? mixHex(cropA.color, cropB.color, p.pA)
-      : colorBy === 'species' ? (p.pA >= 0.5 ? cropA.color : cropB.color)
-      : pure ? '#22c55e' : '#ef4444';
-    const sym = (shapeBy === 'species' ? (p.pA >= 0.5 ? SYM_A : SYM_B)
-      : shapeBy === 'purity' ? (pure ? 'circle' : 'cross')
-      : 'circle') as any;
-    return { x: p.s[cx] ?? 0, y: p.s[cy] ?? 0, pA: p.pA, color, sym, k: p.k, sel: selected.has(p.k) };
-  }), [fit, cx, cy, colorBy, shapeBy, cropA.color, cropB.color, selected]);
-
-  const Dot = (p: any) => {
-    const { cx: x, cy: y, payload } = p;
-    if (typeof x !== 'number') return <g />;
-    posRef.current[payload.k] = { x, y }; // remember screen position for the lasso
-    const dim = hasSel && !payload.sel;
-    return (
-      <g>
-        {payload.sel && <circle cx={x} cy={y} r={7} fill="none" stroke="#fde047" strokeWidth={2} />}
-        <Symbols cx={x} cy={y} type={payload.sym} size={34} fill={payload.color} fillOpacity={dim ? 0.2 : 0.85} stroke={payload.sel ? '#fde047' : '#0b0e11'} strokeWidth={payload.sel ? 1 : 0.5} />
-      </g>
-    );
-  };
-
-  // ----- lasso select ---------------------------------------------------------
-  const svgPt = (e: React.PointerEvent): { x: number; y: number } => {
-    const r = lassoRef.current.svg!.getBoundingClientRect();
-    return { x: e.clientX - r.left, y: e.clientY - r.top }; // same px frame as the Dot cx/cy
-  };
-  const pointInPath = (pt: { x: number; y: number }, poly: { x: number; y: number }[]) => {
-    let inside = false;
-    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-      const a = poly[i], b = poly[j];
-      if ((a.y > pt.y) !== (b.y > pt.y) && pt.x < ((b.x - a.x) * (pt.y - a.y)) / (b.y - a.y || 1e-9) + a.x) inside = !inside;
-    }
-    return inside;
-  };
-  const lassoDown = (e: React.PointerEvent) => {
-    if (!lassoOn) return;
-    e.preventDefault();
-    lassoRef.current.svg?.setPointerCapture(e.pointerId);
-    lassoRef.current.drawing = true;
-    const start = [svgPt(e)];
-    lassoRef.current.path = start; setLassoPath(start);
-  };
-  const lassoMove = (e: React.PointerEvent) => {
-    if (!lassoRef.current.drawing) return;
-    const q = svgPt(e), prev = lassoRef.current.path;
-    if (prev.length && Math.hypot(prev[prev.length - 1].x - q.x, prev[prev.length - 1].y - q.y) < 2) return;
-    const next = [...prev, q];
-    lassoRef.current.path = next; setLassoPath(next);
-  };
-  const lassoUp = () => {
-    if (!lassoRef.current.drawing) return;
-    lassoRef.current.drawing = false;
-    const path = lassoRef.current.path;
-    if (path.length >= 3) {
-      const ids = points.filter(p => { const pos = posRef.current[p.k]; return pos && pointInPath(pos, path); }).map(p => p.k);
-      pick(ids);
-    }
-    lassoRef.current.path = []; setLassoPath([]);
-  };
+  const points = useMemo(() => {
+    // The shared orientation rule, so this chart and its thumbnail face the same way.
+    const [sx, sy] = axisSigns(fit, cx, cy, species);
+    return fit.pts.map(p => {
+      const st = pointStyle(p, colorBy, shapeBy, colors);
+      return { x: sx * (p.s[cx] ?? 0), y: sy * (p.s[cy] ?? 0), fr: p.fr, bare: p.bare, off: p.off, kind: st.kind, color: st.color, sym: st.sym, k: p.k, rim: st.rim };
+    });
+    // NOT keyed on the selection: selecting a point only redraws the canvas, it
+    // never rebuilds these 20,000-odd encodings.
+  }, [fit, cx, cy, colorBy, shapeBy, colors.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
+  const anyBare = points.some(p => p.kind === 'bare');
+  const anyOff = points.some(p => p.kind === 'off');
 
   const varData = fit.explained.map((v, i) => ({ pc: ax(i), explained: +v.toFixed(1) }));
   const loadData = fit.loadings.length
@@ -190,6 +101,35 @@ function PcaSimVisual({ sim, cropA, cropB, magnitude, onSelect, busy }: {
     : [];
   const loadColors = ['#38bdf8', '#f59e0b', '#a78bfa'];
 
+  /**
+   * Pure pixels per species, exactly as the engine counted them for the purity
+   * percentages everywhere else: over the field's trial pixels, at the purity
+   * threshold. Bare soil and mixed pixels complete the count, so the rows add up
+   * to every trial pixel.
+   */
+  const purity = useMemo(() => {
+    const rows = names.map((name, i) => ({ name, color: colors[i], count: sim.pureBySpecies[i] ?? 0 }));
+    const pureCrop = rows.reduce((a, r) => a + r.count, 0);
+    const mixed = Math.max(0, sim.total - pureCrop - sim.pureBare);
+    const most = Math.max(1, ...rows.map(r => r.count), sim.pureBare, mixed);
+    return { rows, pureCrop, pureBare: sim.pureBare, mixed, total: sim.total, most };
+  }, [sim, names.join('|'), colors.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
+  const pctOf = (n: number) => (purity.total ? `${((100 * n) / purity.total).toFixed(0)}%` : '');
+  const purityRow = (key: string, label: string, color: string, count: number, muted = false) => (
+    <div key={key} className="grid grid-cols-[minmax(0,8rem)_1fr_4.5rem] items-center gap-2 text-[11px]">
+      <span className={`flex min-w-0 items-center gap-1.5 ${muted ? 'text-neutral-500' : 'text-neutral-300'}`}>
+        <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: color }} />
+        <span className="truncate" title={label}>{label}</span>
+      </span>
+      <span className="h-2.5 overflow-hidden rounded-sm bg-white/[0.05]">
+        <span className="block h-full rounded-sm" style={{ width: `${(100 * count) / purity.most}%`, background: color, opacity: muted ? 0.55 : 0.9 }} />
+      </span>
+      <span className="text-right font-mono tabular-nums text-neutral-300">
+        {fmt(count)} <span className="text-neutral-500">{pctOf(count)}</span>
+      </span>
+    </div>
+  );
+
   return (
     // Fragment (not a wrapper div) so the sticky chart's containing block is the
     // whole step — it stays pinned while the parameters below it scroll.
@@ -198,7 +138,7 @@ function PcaSimVisual({ sim, cropA, cropB, magnitude, onSelect, busy }: {
           field / plant parameters that scroll underneath it. */}
       <div className="sticky top-0 z-20 -mx-4 space-y-2 bg-[#11151a] px-4 pb-2 pt-1 shadow-[0_10px_12px_-8px_rgba(0,0,0,0.8)]">
         <div className="flex items-center gap-1 border-b border-white/10 text-xs">
-          {(['scatter', 'variance', 'loadings'] as const).map(t => (
+          {(['scatter', 'variance', 'loadings', 'purity'] as const).map(t => (
             <button key={t} onClick={() => setTab(t)}
               className={`px-2.5 py-1 capitalize ${tab === t ? 'border-b-2 border-sky-500 text-sky-300' : 'text-neutral-500 hover:text-neutral-300'}`}>{t}</button>
           ))}
@@ -220,43 +160,75 @@ function PcaSimVisual({ sim, cropA, cropB, magnitude, onSelect, busy }: {
           <>
             <div className="relative overflow-hidden rounded-xl ring-1 ring-inset ring-white/[0.06]"
                  style={{ background: 'radial-gradient(125% 90% at 50% -10%, #161d26 0%, #0c1014 60%)' }}>
-              <div style={{ height: 280, opacity: working ? 0.45 : 1, transition: 'opacity 0.15s' }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <ScatterChart margin={{ top: 10, right: 12, bottom: 24, left: 0 }}>
-                    <CartesianGrid stroke="#ffffff0a" strokeDasharray="3 6" />
-                    <XAxis type="number" dataKey="x" tick={{ fill: '#64748b', fontSize: 10 }} tickFormatter={(v: number) => v.toFixed(2)}
-                      tickLine={false} axisLine={{ stroke: '#ffffff14' }} label={{ value: axLabel(cx), position: 'insideBottom', offset: -8, fill: '#94a3b8', fontSize: 11 }} />
-                    <YAxis type="number" dataKey="y" width={42} tick={{ fill: '#64748b', fontSize: 10 }} tickFormatter={(v: number) => v.toFixed(2)}
-                      tickLine={false} axisLine={{ stroke: '#ffffff14' }} label={{ value: axLabel(cy), angle: -90, position: 'insideLeft', fill: '#94a3b8', fontSize: 11 }} />
-                    {!lassoOn && <Tooltip cursor={{ strokeDasharray: '3 3', stroke: '#475569' }}
-                      content={({ payload }: any) => {
-                        const p = payload?.[0]?.payload; if (!p) return null;
-                        return <div className="rounded-md border border-white/10 bg-[#11151a] px-2 py-1 text-[11px] text-slate-300">
-                          {(p.pA * 100).toFixed(0)}% {cropA.name} · {((1 - p.pA) * 100).toFixed(0)}% {cropB.name}</div>;
-                      }} />}
-                    <Scatter data={points} shape={Dot} isAnimationActive={false} onClick={(d: any) => pick([d.k])} />
-                  </ScatterChart>
-                </ResponsiveContainer>
+              {/* Say why the chart is empty. An unexplained blank panel reads as
+                  a broken app; the real answer is that a finite trial can cover
+                  only a handful of pixels in a large drawn area, and ground
+                  outside it is not a sample of the experiment. */}
+              {fit.tooFew > 0 && (
+                <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-1 px-8 text-center text-[11px] leading-snug text-neutral-400">
+                  <span className="text-neutral-300">
+                    Only {fit.tooFew} pixel{fit.tooFew === 1 ? '' : 's'} sample{fit.tooFew === 1 ? 's' : ''} the trial here.
+                  </span>
+                  <span>Too few to embed. Ground outside the trial is not counted as data. Pick a finer sensor, or draw the area closer around the trial.</span>
+                </div>
+              )}
+              <div style={{ opacity: working ? 0.45 : 1, transition: 'opacity 0.15s' }}>
+                <PcaScatterCanvas points={points} selected={selected} height={280}
+                  xLabel={axLabel(cx)} yLabel={axLabel(cy)} lassoOn={lassoOn} onPick={pick}
+                  renderTooltip={p => {
+                    const c = coverShares(p.fr, p.bare, p.off);
+                    const parts = [
+                      ...c.species.map((v, i) => ({ v, n: names[i] ?? `species ${i + 1}` })),
+                      { v: c.bare, n: 'bare soil' },
+                      { v: c.off, n: 'outside the trial' },
+                    ]
+                      .filter(e => e.v >= 0.005)
+                      .sort((a, b) => b.v - a.v)
+                      .slice(0, 4);
+                    return parts.map((e, i) => <span key={i}>{i ? ' · ' : ''}{(e.v * 100).toFixed(0)}% {e.n}</span>);
+                  }} />
               </div>
-              {/* Lasso overlay — captures pointer events only when armed. */}
-              <svg ref={el => { lassoRef.current.svg = el; }} className="absolute inset-0 h-full w-full"
-                style={{ pointerEvents: lassoOn ? 'auto' : 'none', cursor: lassoOn ? 'crosshair' : 'default', touchAction: 'none' }}
-                onPointerDown={lassoDown} onPointerMove={lassoMove} onPointerUp={lassoUp} onPointerCancel={lassoUp}>
-                {lassoPath.length > 1 && (
-                  <polygon points={lassoPath.map(p => `${p.x},${p.y}`).join(' ')} fill="#38bdf822" stroke="#38bdf8" strokeWidth={1.5} strokeDasharray="4 3" />
-                )}
-              </svg>
             </div>
 
-            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[10px] text-neutral-400">
-              <span className="flex items-center gap-2">
-                <svg width="9" height="9" viewBox="0 0 10 10"><polygon points="5,1 9,9 1,9" fill="#94a3b8" /></svg>{cropA.name}
-                <svg width="9" height="9" viewBox="0 0 10 10"><rect x="1" y="1" width="8" height="8" fill="#94a3b8" /></svg>{cropB.name}
-              </span>
-              {colorBy === 'mixing' && (
-                <span className="flex items-center gap-1">
-                  {cropB.name}<span className="h-2 w-12 rounded-sm" style={{ background: `linear-gradient(to right, ${cropB.color}, ${cropA.color})` }} />{cropA.name}
+            {/* One entry per species. The old key was a fixed triangle and
+                square over two names, and a two-stop gradient: with four
+                species it described a mixture that does not exist. */}
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-neutral-400">
+              {/* With shapes on, each key shows that species' SHAPE too: in the
+                  pure/mixed colour mode the dots are green and red, and the shape
+                  is the only thing left saying which species a dot is. */}
+              {/* An imported trial can carry dozens of varieties. The key lists a
+                  dozen and counts the rest; the Purity tab lists them all. */}
+              {names.slice(0, names.length > LEGEND_MAX ? LEGEND_MAX - 1 : LEGEND_MAX).map((n, i) => (
+                <span key={i} className="flex items-center gap-1">
+                  {shapeBy === 'species'
+                    ? <SymbolIcon type={SYMS[i % SYMS.length]} color={colorBy === 'species' ? colors[i] : '#94a3b8'} />
+                    : <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: colors[i] }} />}
+                  {n}
                 </span>
+              ))}
+              {/* Keyed in EVERY colour mode: the mixing blend now carries bare
+                  soil and off-trial ground too, so brown and grey dots appear
+                  there as well. One swatch per kind actually on the chart. */}
+              {names.length > LEGEND_MAX && (
+                <button type="button" onClick={() => setTab('purity')} className="text-neutral-500 underline-offset-2 hover:text-neutral-300 hover:underline">
+                  + {names.length - (LEGEND_MAX - 1)} more
+                </button>
+              )}
+              {anyBare && (
+                <span className="flex items-center gap-1">
+                  <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: BARE.color }} />
+                  mostly bare soil
+                </span>
+              )}
+              {anyOff && (
+                <span className="flex items-center gap-1">
+                  <span className="inline-block h-2.5 w-2.5 rounded-sm border border-slate-400" style={{ background: OFF_TRIAL.color }} />
+                  mostly outside the trial
+                </span>
+              )}
+              {names.length > SYMS.length && shapeBy === 'species' && (
+                <span className="text-neutral-500">shapes repeat past {SYMS.length} species; colour is the key</span>
               )}
             </div>
           </>
@@ -298,6 +270,30 @@ function PcaSimVisual({ sim, cropA, cropB, magnitude, onSelect, busy }: {
               </>
             ) : (
               <p className="text-[11px] text-neutral-500">Loadings aren’t defined for {DR_METHODS.find(m => m.id === method)?.label}.</p>
+            )}
+          </div>
+        )}
+
+        {tab === 'purity' && (
+          <div className="rounded-md border border-white/10 bg-black/30 p-2" style={{ opacity: working ? 0.45 : 1, transition: 'opacity 0.15s' }}>
+            {purity.total ? (
+              <>
+                {/* Scrolls past about a dozen rows, so an imported trial with dozens
+                    of varieties does not push the chart off its pinned place. */}
+                <div className="max-h-64 space-y-1.5 overflow-y-auto pr-1">
+                  {purity.rows.map((r, i) => purityRow(`s${i}`, r.name, r.color, r.count))}
+                </div>
+                <div className="mt-2 space-y-1.5 border-t border-white/10 pt-2">
+                  {purityRow('bare', 'pure bare soil', BARE.color, purity.pureBare, true)}
+                  {purityRow('mixed', 'mixed', '#64748b', purity.mixed, true)}
+                </div>
+                <p className="mt-2 text-[11px] text-neutral-500">
+                  <span className="text-neutral-300">{fmt(purity.pureCrop)}</span> of {fmt(purity.total)} trial pixels are one pure species ({pctOf(purity.pureCrop)}).
+                  Pure: at least {threshold}% one cover.
+                </p>
+              </>
+            ) : (
+              <p className="text-[11px] text-neutral-500">No pixel samples the trial at this size.</p>
             )}
           </div>
         )}
@@ -346,5 +342,5 @@ function PcaSimVisual({ sim, cropA, cropB, magnitude, onSelect, busy }: {
 // Memoised: it only needs to redraw when its own data changes. A parameter change
 // re-renders the whole page, and redrawing ~700 interactive dots each time cost
 // hundreds of milliseconds. Its props are kept stable upstream (pcaView,
-// cropAd/cropBd, the setSelectedPixels setter).
+// speciesD / colors / names, the setSelectedPixels setter).
 export default memo(PcaSimVisual);

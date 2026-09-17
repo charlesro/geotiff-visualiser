@@ -36,10 +36,14 @@ const BUILD = path.join(ROOT, 'node_modules/.pixel-grid-regress');
 
 // Expose the internals under test without double-exporting what is already public.
 const reveal = (t, decl) => (t.includes('export ' + decl) ? t : t.replace(decl, 'export ' + decl));
-const REVEAL = { 'src/pixel-grid/simulate.ts': ['const strideFor =', 'function patternCultureUV('] };
+const REVEAL = {
+  'src/pixel-grid/simulate.ts': ['const strideFor =', 'function patternCultureUV(', 'function buildCropMap(',
+                                'function importedPixelCovers(', 'function aggregateImported('],
+  'src/pixel-grid/imported-plan.ts': ['function narrowestFeature(', 'function foldRing('],
+};
 
 fs.rmSync(BUILD, { recursive: true, force: true });
-for (const rel of ['src/lib/geo.ts', 'src/pixel-grid/s2-grid.ts', 'src/pixel-grid/simulate.ts', 'src/pixel-grid/shapefile.ts', 'src/pixel-grid/util.ts']) {
+for (const rel of ['src/lib/geo.ts', 'src/lib/projections.ts', 'src/pixel-grid/s2-grid.ts', 'src/pixel-grid/geometry.ts', 'src/pixel-grid/simulate.ts', 'src/pixel-grid/shapefile.ts', 'src/pixel-grid/util.ts', 'src/pixel-grid/pca-field.ts', 'src/pixel-grid/ladder.ts', 'src/pixel-grid/design-import.ts', 'src/pixel-grid/imported-plan.ts']) {
   let ts = fs.readFileSync(path.join(ROOT, rel), 'utf8');
   for (const decl of REVEAL[rel] ?? []) ts = reveal(ts, decl);
   // esbuild only strips types; relative specifiers still need an extension to
@@ -58,11 +62,18 @@ const {
 const {
   makeTruth, makeBetaSchedule, cultureForCell, aggregate, simulate,
   simulateField, simulatePatch, bestPhaseOffset, cultureAt, utmEnvelope,
-  resolutionSweep, truthAt, strideFor, patternCultureUV, coverStats,
+  resolutionSweep, truthAt, strideFor, patternCultureUV, coverStats, buildCropMap, speciesChannel, importedCoverAt,
   buildBlockPlan, blockPermutation, blockCoverUV, blockPlots, minFeatureM, layoutKey, blockPlacement,
+  importedPixelCovers, aggregateImported,
   TMAX, DEFAULT_PARS, BARE, OFF_TRIAL, MIXED, MAX_COVER, MAX_PLOTS, PATTERNS, CROP_COLORS, cropById, parsOf,
 } = await import(path.join(BUILD, 'src/pixel-grid/simulate.mjs'));
-const { mix3, mixN, distinctColors } = await import(path.join(BUILD, 'src/pixel-grid/util.mjs'));
+const { mix3, mixN, distinctColors, coverShares } = await import(path.join(BUILD, 'src/pixel-grid/util.mjs'));
+const { embed } = await import(path.join(BUILD, 'src/lib/projections.mjs'));
+const { fitCover, axisSigns, pointStyle, samplePts, linearPca, pixelId, MIN_PTS } = await import(path.join(BUILD, 'src/pixel-grid/pca-field.mjs'));
+const { trialExtent, importedTrialExtent } = await import(path.join(BUILD, 'src/pixel-grid/ladder.mjs'));
+const { resolveImportedPlan, varietyKeyOf, convexHull, hullWidth, narrowestFeature, foldRing } = await import(path.join(BUILD, 'src/pixel-grid/imported-plan.mjs'));
+const { varietiesOf: readerVarietiesOf } = await import(path.join(BUILD, 'src/pixel-grid/design-import.mjs'));
+const { pointInPoly } = await import(path.join(BUILD, 'src/pixel-grid/geometry.mjs'));
 const { gridToShapefileZip } = await import(path.join(BUILD, 'src/pixel-grid/shapefile.mjs'));
 
 /**
@@ -354,7 +365,7 @@ console.log('\nG. the planting pattern');
   ok('a spacing inserts a bare-soil alley between strips',
     [5, 25, 35, 65].map(u => cultureAt(1000 + u, 2000, gap, 1000, 2000)).join(',') === `0,${BARE.id},1,0`);
   ok('bare soil sits above the species id space, distinct from both crops',
-    BARE.id === 254 && BARE.ndvi === 0.13);
+    BARE.id === 254 && BARE.ndvi === 0);
   ok('the three sentinels are distinct and all above MAX_COVER',
     new Set([BARE.id, OFF_TRIAL.id, MIXED]).size === 3 &&
     [BARE.id, OFF_TRIAL.id, MIXED].every(v => v > MAX_COVER) && MAX_COVER === 252,
@@ -367,8 +378,8 @@ console.log('\nG. the planting pattern');
       }
       return true;
     })());
-  ok('and PATTERNS still holds exactly the five legacy designs plus the block design',
-    PATTERNS.map(p => p.id).join(',') === [...LEGACY_PATTERNS, 'block'].join(','),
+  ok('and PATTERNS still holds exactly the five legacy designs, the block design and the imported trial',
+    PATTERNS.map(p => p.id).join(',') === [...LEGACY_PATTERNS, 'block', 'imported'].join(','),
     PATTERNS.map(p => p.id).join(','));
   ok('with spacing 0 the alley never appears',
     (() => { for (let u = -200; u < 200; u += 0.5) if (patternCultureUV(u, 0, col) === BARE.id) return false; return true; })());
@@ -735,6 +746,1379 @@ console.log('\nH5. a block trial is anchored in the frame the engine samples');
   ok('snapping moves the trial by less than one pixel, so it stays centred',
     Math.abs(plan.u0 + plan.totalU / 2 - place.centerU) <= res &&
     Math.abs(plan.v0 + plan.totalV / 2 - place.centerV) <= res);
+}
+
+console.log('\nH6. purity is counted across ALL species, not the first two');
+{
+  // Nothing in this suite exercised a block trial's PER-SPECIES purity, which is
+  // exactly how pureA/pureB could describe 2 plots out of 16 while every check
+  // stayed green. simulateField and simulatePatch now pass the plot-to-species
+  // table that aggregate and coverStats always accepted.
+  const design = { nSpecies: 4, nBlocks: 4, plotLength: 8, plotWidth: 2, plotAlley: 0.5, blockAlley: 1.5, blocksPerRow: 1, seed: 1 };
+  const res = 0.5;
+  const origin = aoiUtmOrigin(AOI, 32631);
+  const minE = Math.floor(origin[0] / res) * res, minN = Math.floor(origin[1] / res) * res;
+  const place = blockPlacement([minE, minN, minE + 260, minN + 245], origin, 0, res, true);
+  const plan = buildBlockPlan(design, place);
+  const layout = { pattern: 'block', width: 2, spacing: 0, rotationDeg: 0, block: plan };
+  const patch = simulatePatch(origin[0] + plan.u0 - 5, origin[1] + plan.v0 - 5, 60, res,
+    origin[0], origin[1], layout, { sigmaX: 0, sigmaY: 0, mixThreshold: 1.0 });
+
+  ok('the patch carries the species count of the design it simulated',
+    patch.nSpecies === 4, `${patch.nSpecies}`);
+  ok('the per-species composition channel is populated, one row per pixel',
+    patch.proportionBySpecies !== null &&
+    patch.proportionBySpecies.length === patch.nx * patch.ny * 4,
+    `${patch.proportionBySpecies ? patch.proportionBySpecies.length : 'null'}`);
+
+  const st = coverStats({ mixed: patch.mixed, coverSpecies: plan.plotSpecies, nSpecies: 4 });
+  ok('every one of the four species has pure pixels of its own',
+    st.pureBySpecies.length === 4 && Array.from(st.pureBySpecies).every(v => v > 0),
+    Array.from(st.pureBySpecies).join(', '));
+  ok('the per-species counts account for every pure pixel, none lost',
+    Array.from(st.pureBySpecies).reduce((a, b) => a + b, 0) === st.pureCrop,
+    `${Array.from(st.pureBySpecies).reduce((a, b) => a + b, 0)} vs ${st.pureCrop}`);
+
+  // The defect this section exists for, stated as a measurement.
+  let twoIdOnly = 0;
+  for (let k = 0; k < patch.mixed.length; k++) if (patch.mixed[k] === 0 || patch.mixed[k] === 1) twoIdOnly++;
+  ok('reading only cover ids 0 and 1 undercounts a 16-plot trial badly',
+    twoIdOnly < st.pureCrop / 4,
+    `${twoIdOnly} of ${st.pureCrop} pure pixels, ${(100 * twoIdOnly / st.pureCrop).toFixed(0)}%`);
+
+  // A balanced RCBD gives every species the same area, so the sensor should see
+  // about the same amount of each. This is what feeds the season curve.
+  const mean = Array.from(patch.meanBySpecies);
+  ok('the mean composition is balanced across species, as a complete block is',
+    mean.length === 4 && mean.every(v => v > 0) &&
+    Math.max(...mean) - Math.min(...mean) < 0.25 * Math.max(...mean),
+    mean.map(v => v.toFixed(3)).join(', '));
+  ok('species fractions never exceed the whole pixel',
+    mean.reduce((a, b) => a + b, 0) <= 1 + 1e-6,
+    mean.reduce((a, b) => a + b, 0).toFixed(3));
+
+  // Identity for the five periodic layouts: they carry no block plan, so the
+  // channel is the two-species one and every legacy answer is untouched.
+  const rows = simulatePatch(origin[0], origin[1], 40, 1, origin[0], origin[1],
+    { pattern: 'row', width: 3, spacing: 0, rotationDeg: 0 }, { sigmaX: 0, sigmaY: 0, mixThreshold: 1.0 });
+  ok('a periodic layout still reports exactly two species',
+    rows.nSpecies === 2 && rows.meanBySpecies.length === 2, `${rows.nSpecies}`);
+}
+
+console.log('\nH7. no cell is painted black: the blend is told about off-trial ground');
+{
+  // The map overlay colours a cell by handing its composition to mixN. A cell
+  // OUTSIDE a finite trial has an all-zero species vector, so mixN skips every
+  // fraction, ends with zero weight and divides by `w || 1`: solid black, over
+  // most of the field. Nothing in this suite touches simStyle, so the colour
+  // rule is pinned here against the sentinels it must respect.
+  const design = { nSpecies: 4, nBlocks: 4, plotLength: 8, plotWidth: 2, plotAlley: 0.5, blockAlley: 1.5, blocksPerRow: 1, seed: 1 };
+  const res = 2;
+  const origin = aoiUtmOrigin(AOI, 32631);
+  const minE = Math.floor(origin[0] / res) * res, minN = Math.floor(origin[1] / res) * res;
+  const place = blockPlacement([minE, minN, minE + 260, minN + 245], origin, 0, res, true);
+  const plan = buildBlockPlan(design, place);
+  const layout = { pattern: 'block', width: 2, spacing: 0, rotationDeg: 0, block: plan };
+  const patch = simulatePatch(origin[0] + plan.u0 - 24, origin[1] + plan.v0 - 24, 90, res,
+    origin[0], origin[1], layout, { sigmaX: 0.6, sigmaY: 0.55, mixThreshold: 1.0 });
+  const COLORS = CROP_COLORS.slice(0, 4);
+
+  ok('a pixel entirely outside the trial blends to off-trial grey, not black',
+    mixN([0, 0, 0, 0], COLORS, 0, 1) === OFF_TRIAL.color,
+    `${mixN([0, 0, 0, 0], COLORS, 0, 1)} vs ${OFF_TRIAL.color}`);
+  ok('and without the off-trial weight that same pixel is solid black',
+    mixN([0, 0, 0, 0], COLORS, 0, 0) === '#000000');
+
+  // Every cell of a real trial, coloured with the SAME weights the map passes:
+  // the continuous off-trial fraction, not a 0/1 stand-in for it. A partly
+  // off-trial cell with faint species fractions is exactly the case a coarse
+  // proxy would wave through.
+  ok('the patch reports a per-pixel off-trial fraction for the blend to weight',
+    patch.proportionOffTrial !== null && patch.proportionOffTrial.length === patch.nx * patch.ny,
+    `${patch.proportionOffTrial ? patch.proportionOffTrial.length : 'null'}`);
+  const n = patch.nSpecies, sp = patch.proportionBySpecies;
+  let black = 0, cells = 0, partial = 0;
+  for (let k = 0; k < patch.mixed.length; k++) {
+    const fr = Array.from(sp.subarray(k * n, k * n + n));
+    const off = patch.proportionOffTrial ? patch.proportionOffTrial[k] : 0;
+    if (off > 0.01 && off < 0.99) partial++;
+    cells++;
+    if (mixN(fr, COLORS, patch.proportionBare[k], off) === '#000000') black++;
+  }
+  ok('no cell in a whole simulated patch comes back black',
+    black === 0, `${black} black of ${cells}`);
+  ok('the patch really does contain off-trial ground, so the check has teeth',
+    Array.from(patch.mixed).some(m => m === OFF_TRIAL.id),
+    `${Array.from(patch.mixed).filter(m => m === OFF_TRIAL.id).length} off-trial cells`);
+}
+
+console.log('\nH8. the PCA embedding can see more than two species');
+{
+  // The DR embedding had NO test coverage anywhere in this repo, which is how a
+  // two-species reconstruction survived unnoticed inside both PCA visuals. What
+  // matters is not the picture but the arithmetic: a mixture of N distinct
+  // species spans N-1 directions, while a mixture of two spans exactly one, no
+  // matter how many species the design actually contains.
+  const NPT = 24;
+  const curveOf = (f) => {
+    const full = makeTruth(f.truth, TMAX, parsOf(f));
+    return Array.from({ length: NPT }, (_, i) => full[Math.round((i * (TMAX - 1)) / (NPT - 1))]);
+  };
+  const species = ['maize', 'wheat', 'soy', 'beet'].map(id => cropById(id));
+  const curves = species.map(curveOf);
+  const rows = [], fracs = [];
+  const push = (fr) => {
+    fracs.push(fr);
+    rows.push(Array.from({ length: NPT }, (_, t) => fr.reduce((m, f, i) => m + f * curves[i][t], 0)));
+  };
+  for (let i = 0; i < 4; i++) { const fr = [0, 0, 0, 0]; fr[i] = 1; for (let r = 0; r < 6; r++) push(fr.slice()); }
+  for (let i = 0; i < 4; i++) for (let j = i + 1; j < 4; j++) {
+    const fr = [0, 0, 0, 0]; fr[i] = 0.5; fr[j] = 0.5; for (let r = 0; r < 3; r++) push(fr.slice());
+  }
+
+  const res = embed('pca', { fit: rows, proj: rows, components: 4 });
+  ok('the embedding returns one score row per pixel and the components asked for',
+    res.scores.length === rows.length && res.explained.length === 4,
+    `${res.scores.length} rows, ${res.explained.length} components`);
+  ok('a four-species mixture carries real variance on a THIRD axis',
+    res.explained[2] > 1, `PC3 ${res.explained[2].toFixed(1)}%`);
+
+  // The reconstruction both visuals used to build: one scalar, everything else
+  // declared to be a second crop. It is rank one by construction.
+  const rows2 = fracs.map(fr => {
+    const pA = fr[0], pB = 1 - pA;
+    return Array.from({ length: NPT }, (_, t) => pA * curves[0][t] + pB * curves[1][t]);
+  });
+  const res2 = embed('pca', { fit: rows2, proj: rows2, components: 4 });
+  ok('the two-curve reconstruction it replaced has essentially none, whatever the design',
+    res2.explained[2] < 0.5, `PC3 ${res2.explained[2].toFixed(3)}%`);
+  ok('so the old path could not have shown a third species even in principle',
+    res.explained[2] > res2.explained[2] * 10 + 1,
+    `${res.explained[2].toFixed(1)}% vs ${res2.explained[2].toFixed(3)}%`);
+}
+
+console.log('\nH9. a pixel is described by its WHOLE footprint, bare soil included');
+{
+  // The PCA tooltip, species colouring and purity test divided each species by
+  // the CROP cover alone. A pixel lying in an alley holds two slivers of blur
+  // spill from the plots either side, so dividing them by each other called a
+  // mostly bare pixel "50% maize, 50% grass". Pinned on a REAL alley pixel.
+  const design = { nSpecies: 4, nBlocks: 2, plotLength: 8, plotWidth: 2, plotAlley: 1.5, blockAlley: 1.5, blocksPerRow: 1, seed: 1 };
+  const res = 0.5;
+  const origin = aoiUtmOrigin(AOI, 32631);
+  const minE = Math.floor(origin[0] / res) * res, minN = Math.floor(origin[1] / res) * res;
+  const plan = buildBlockPlan(design, blockPlacement([minE, minN, minE + 120, minN + 120], origin, 0, res, true));
+  const layout = { pattern: 'block', width: 2, spacing: 0, rotationDeg: 0, block: plan };
+  const patch = simulatePatch(origin[0] + plan.u0 - 2, origin[1] + plan.v0 - 2, 44, res,
+    origin[0], origin[1], layout, { sigmaX: 0.6, sigmaY: 0.6, mixThreshold: 1.0 });
+  const n = patch.nSpecies, sp = patch.proportionBySpecies, off = patch.proportionOffTrial;
+  const at = k => Array.from(sp.subarray(k * n, k * n + n));
+  let alley = -1, interior = -1;
+  for (let k = 0; k < patch.mixed.length; k++) {
+    const fr = at(k), crop = fr.reduce((a, b) => a + b, 0), bare = patch.proportionBare[k];
+    if (alley < 0 && bare > 0.8 && crop > 1e-3 && (off ? off[k] : 0) < 0.05) alley = k;
+    if (interior < 0 && Math.max(...fr) > 0.99) interior = k;
+  }
+  ok('the simulated trial has an alley pixel carrying some blur spill', alley >= 0);
+  const fr = at(alley), bare = patch.proportionBare[alley], o = off ? off[alley] : 0;
+  const c = coverShares(fr, bare, o);
+  ok('that alley pixel is dominated by bare soil, not by a crop',
+    c.dominant.kind === 'bare', `${c.dominant.kind} ${(100 * c.dominant.share).toFixed(0)}%`);
+  ok('its crops are slivers of the pixel, not an even split',
+    Math.max(...c.species) < 0.2, c.species.map(v => (100 * v).toFixed(1) + '%').join(' '));
+  const cropOnly = fr.map(v => v / fr.reduce((a, b) => a + b, 0));
+  ok('dividing by the crop cover alone is what made it look like a crop mix',
+    Math.max(...cropOnly) >= 0.4, cropOnly.map(v => (100 * v).toFixed(0) + '%').filter(s => s !== '0%').join(' / '));
+  ok('shares of the whole footprint sum to one',
+    Math.abs(c.species.reduce((a, b) => a + b, 0) + c.bare + c.off - 1) < 1e-9);
+  ok('a pixel inside a plot is dominated by that plot\'s own species',
+    interior >= 0 && coverShares(at(interior), patch.proportionBare[interior], off ? off[interior] : 0).dominant.kind === 'species');
+  ok('an empty footprint names no crop at all',
+    coverShares([0, 0, 0], 0, 0).dominant.kind === 'off');
+  ok('ground outside the trial is named as such, not as a crop',
+    coverShares([0.02, 0], 0.03, 0.95).dominant.kind === 'off');
+}
+
+console.log('\nH10. the big PCA and its ladder thumbnails are one computation');
+{
+  // The thumbnail at the current resolution used to sample a central window with
+  // its own noise, signs and colours, so it could not look like the chart above
+  // it. Both now go through pca-field; these pin the properties that make the
+  // thumbnail the big chart in miniature.
+  const design = { nSpecies: 4, nBlocks: 4, plotLength: 8, plotWidth: 2, plotAlley: 0.5, blockAlley: 1.5, blocksPerRow: 1, seed: 1 };
+  const res = 0.5;
+  const origin = aoiUtmOrigin(AOI, 32631);
+  const minE = Math.floor(origin[0] / res) * res, minN = Math.floor(origin[1] / res) * res;
+  const plan = buildBlockPlan(design, blockPlacement([minE, minN, minE + 120, minN + 120], origin, 0, res, true));
+  const layout = { pattern: 'block', width: 2, spacing: 0, rotationDeg: 0, block: plan };
+  const src = simulatePatch(origin[0] + plan.u0 - 3, origin[1] + plan.v0 - 3, 44, res,
+    origin[0], origin[1], layout, { sigmaX: 0.6, sigmaY: 0.6, mixThreshold: 0.95 });
+  const species = ['maize', 'wheat', 'soy', 'grass'].map(id => cropById(id));
+
+  const big = fitCover(src, species, 0.04, 'pca');
+  ok('asking again with the same data returns the very same fit object',
+    fitCover(src, species, 0.04, 'pca') === big);
+  ok('a capped fit is a different computation, not a cache hit',
+    fitCover(src, species, 0.04, 'pca', { fitCap: 500 }) !== big);
+
+  const offAll = src.proportionOffTrial;
+  const trial = Array.from(src.proportionA, (_, k) => k).filter(k => (offAll ? offAll[k] : 0) <= 0.5).length;
+  ok('every trial pixel becomes a point, and ground mostly outside the trial does not',
+    big.pts.length === trial && big.tooFew === 0, `${big.pts.length} points, ${trial} trial pixels`);
+
+  // Capped fits for the other resolutions: the axes they find must be the same axes.
+  const cap = fitCover(src, species, 0.04, 'pca', { fitCap: 500 });
+  const corr = (a, b) => { const n = a.length; const ma = a.reduce((x, y) => x + y, 0) / n, mb = b.reduce((x, y) => x + y, 0) / n;
+    let sab = 0, saa = 0, sbb = 0; for (let i = 0; i < n; i++) { sab += (a[i] - ma) * (b[i] - mb); saa += (a[i] - ma) ** 2; sbb += (b[i] - mb) ** 2; }
+    return sab / Math.sqrt(saa * sbb); };
+  const r1 = corr(big.pts.map(p => p.s[0]), cap.pts.map(p => p.s[0]));
+  const r2 = corr(big.pts.map(p => p.s[1]), cap.pts.map(p => p.s[1]));
+  ok('a fit on a subset finds the same first two axes as the full fit',
+    Math.abs(r1) > 0.99 && Math.abs(r2) > 0.99, `|r| PC1 ${Math.abs(r1).toFixed(4)}, PC2 ${Math.abs(r2).toFixed(4)}`);
+
+  // One orientation rule for every view: a mirrored fit (scores AND loadings
+  // negated, which is all a PCA's sign ambiguity is) comes back facing the same way.
+  const [sx, sy] = axisSigns(big, 0, 1, species);
+  const mirrored = { ...big, pts: big.pts.map(p => ({ ...p, s: p.s.map((v, i) => (i < 2 ? -v : v)) })),
+    loadings: big.loadings.map((l, i) => (i < 2 ? l.map(v => -v) : l)) };
+  const [mx, my] = axisSigns(mirrored, 0, 1, species);
+  ok('a mirrored fit gets the opposite signs, so both views end up facing the same way',
+    mx === -sx && my === -sy && big.pts.every((p, i) => sx * p.s[0] === mx * mirrored.pts[i].s[0]));
+  const noLoadings = { ...big, loadings: [] };
+  const [nx1, ny1] = axisSigns(noLoadings, 0, 1, species);
+  const [nx2, ny2] = axisSigns({ ...mirrored, loadings: [] }, 0, 1, species);
+  ok('a method without loadings is oriented from the pixels instead, by the same promise',
+    nx2 === -nx1 && ny2 === -ny1);
+
+  const alley = big.pts.find(p => p.bare > 0.9);
+  ok('an alley pixel is drawn in bare-soil colour in species mode, in both views',
+    !!alley && pointStyle(alley, 'species', 'none', CROP_COLORS).color === BARE.color);
+
+  // The ladder's thumbnails embed a hashed sample, not every pixel.
+  const sampled = fitCover(src, species, 0.04, 'pca', { sample: 300 });
+  const fullKs = new Set(big.pts.map(p => p.k));
+  ok('a sampled thumbnail keeps about the requested number of trial pixels, all real ones',
+    sampled.pts.length > 200 && sampled.pts.length < 400 && sampled.pts.every(p => fullKs.has(p.k)),
+    `${sampled.pts.length} of ${big.pts.length}`);
+  ok('drawing a subsample of the big fit keeps the same pixels on every call',
+    samplePts(big.pts, 300).map(p => p.k).join() === samplePts(big.pts, 300).map(p => p.k).join() &&
+    samplePts(big.pts, 300).length < big.pts.length);
+
+  const tiny = { ...src, proportionA: src.proportionA.slice(0, MIN_PTS - 1), proportionBare: src.proportionBare.slice(0, MIN_PTS - 1),
+    proportionBySpecies: src.proportionBySpecies.slice(0, (MIN_PTS - 1) * src.nSpecies), proportionOffTrial: null };
+  const small = fitCover(tiny, species, 0.04, 'pca');
+  ok('too few trial pixels is reported, not embedded into a meaningless chart',
+    small.pts.length === 0 && small.tooFew === MIN_PTS - 1, `${small.tooFew}`);
+
+  // The big chart's PCA is solved from the covariance, not by ml-pca's SVD of
+  // the whole matrix (that SVD was most of a resolution change at 0.5 m). It
+  // must be the SAME PCA: same variance per axis, same scores up to sign.
+  const NTP = 24;
+  const curvesP = species.map(f => { const full = makeTruth(f.truth, TMAX, parsOf(f)); return Array.from({ length: NTP }, (_, i) => full[Math.round((i * (TMAX - 1)) / (NTP - 1))]); });
+  let seed = 11; const rnd = () => (seed = (seed * 48271) % 2147483647) / 2147483647;
+  const nP = 3000, rowsP = [];
+  for (let j = 0; j < nP; j++) {
+    const w = species.map(() => rnd() ** 3), tot = w.reduce((a, b) => a + b, 0) + rnd() * 0.3;
+    rowsP.push(Array.from({ length: NTP }, (_, t) => w.reduce((m, wi, i) => m + (wi / tot) * curvesP[i][t], 0) + (rnd() - 0.5) * 0.02));
+  }
+  const flat = Float64Array.from(rowsP.flat());
+  for (const step of [1, 7]) {
+    const mine = linearPca(flat, nP, NTP, step, 4);
+    const ref = embed('pca', { fit: step > 1 ? rowsP.filter((_, i) => i % step === 0) : rowsP, proj: rowsP, components: 4 });
+    const dExp = Math.max(...mine.explained.map((v, i) => Math.abs(v - ref.explained[i])));
+    const rs = [0, 1, 2].map(c => Math.abs(corr(mine.scores.map(s => s[c]), ref.scores.map(s => s[c]))));
+    const dScale = Math.max(...[0, 1, 2].map(c => Math.abs(Math.hypot(...mine.scores.map(s => s[c])) - Math.hypot(...ref.scores.map(s => s[c]))) / Math.hypot(...ref.scores.map(s => s[c]))));
+    ok(`the covariance PCA is ml-pca's PCA${step > 1 ? ', fitted on a subset' : ''}: same variance per axis, same scores up to sign`,
+      dExp < 1e-6 && rs.every(r => r > 0.999999) && dScale < 1e-6,
+      `max explained diff ${dExp.toExponential(1)}, |r| ${rs.map(r => r.toFixed(7)).join(' ')}, scale diff ${dScale.toExponential(1)}`);
+  }
+}
+
+console.log('\nH11. a ladder rung is independent of the displayed size, and costs only the trial');
+{
+  // Every thumbnail click used to rebuild the whole ladder: each rung borrowed
+  // the map's block plan, snapped to the DISPLAYED pixel size, and simulated the
+  // whole field. A rung now resolves its own plan at its own size and simulates
+  // only the trial's footprint. These pin that the result is unchanged.
+  const epsg = 32631;
+  const species = ['maize', 'wheat', 'soy', 'grass'].map(id => cropById(id));
+  const cases = [
+    { aoi: [4.7000, 50.6000, 4.70347, 50.60220], sensor: { sigmaX: 0.6, sigmaY: 0.6, mixThreshold: 0.95 },
+      design: { nSpecies: 4, nBlocks: 4, plotLength: 8, plotWidth: 2, plotAlley: 0.5, blockAlley: 1.5, blocksPerRow: 1, seed: 1 } },
+    { aoi: [4.7000, 50.6000, 4.70347, 50.60220], sensor: { sigmaX: 1.2, sigmaY: 0.4, mixThreshold: 0.8, offX: 0.7, offY: -0.3 },
+      design: { nSpecies: 3, nBlocks: 6, plotLength: 6, plotWidth: 3, plotAlley: 1, blockAlley: 2, blocksPerRow: 2, seed: 3 } },
+    { aoi: [4.7000, 50.6000, 4.7021, 50.6010], sensor: { sigmaX: 0.55, sigmaY: 0.55, mixThreshold: 0.95 },
+      design: { nSpecies: 4, nBlocks: 4, plotLength: 30, plotWidth: 8, plotAlley: 1.5, blockAlley: 1.5, blocksPerRow: 2, seed: 8 } },
+  ];
+  const rungOf = (c, r, footprint) => {
+    const [minE, minN, maxE, maxN] = utmEnvelope(c.aoi, epsg);
+    const base = aoiUtmOrigin(c.aoi, epsg);
+    const whole = [Math.floor(minE / r) * r, Math.floor(minN / r) * r, Math.ceil(maxE / r) * r, Math.ceil(maxN / r) * r];
+    const plan = buildBlockPlan(c.design, blockPlacement(whole, base, 0, r, true));
+    const layout = { pattern: 'block', width: 2, spacing: 0, rotationDeg: 0, block: plan };
+    const [e0, n0, e1, n1] = footprint ? trialExtent(plan, base, 0, r, c.sensor, whole) : whole;
+    const all = simulateField({ res: r, utmBounds: [e0, n0, e1, n1] }, base, layout, c.sensor);
+    const nx = Math.round((e1 - e0) / r);
+    const pixelIds = Float64Array.from(all.mixed, (_, k) => pixelId(Math.round((e0 + (k % nx) * r) / r), Math.round((n0 + Math.floor(k / nx) * r) / r)));
+    const st = coverStats({ mixed: all.mixed, coverSpecies: plan.plotSpecies, nSpecies: all.nSpecies, offTrial: all.proportionOffTrial });
+    return { src: { ...all, pixelIds }, st, plan, whole, n: all.mixed.length };
+  };
+  let identical = true, smaller = 0, idsMatch = true, plansMatch = true, detail = '';
+  for (const c of cases) for (const r of [0.5, 1, 3, 10]) {
+    const W = rungOf(c, r, false), T = rungOf(c, r, true);
+    const fW = fitCover(W.src, species, 0.04, 'pca'), fT = fitCover(T.src, species, 0.04, 'pca');
+    const same = fW.pts.length === fT.pts.length && W.st.purePct === T.st.purePct && W.st.total === T.st.total &&
+      fW.pts.every((p, i) => fT.pts[i].id === p.id && p.s.every((v, j) => v === fT.pts[i].s[j]));
+    if (!same && identical) detail = `differs at ${r} m`;
+    identical = identical && same;
+    if (T.n < W.n) smaller++;
+    // The big chart's grid at this size names its pixels the way the rung does,
+    // and resolves the same trial, so picking the rung shows what it drew.
+    const g = buildS2Grid(c.aoi, { res: r, zone: 31, south: false, maxCells: 1e7 });
+    idsMatch = idsMatch && g.grid.cells.length === W.n && g.grid.cells.every((cell, k) => pixelId(cell.col, cell.row) === W.src.pixelIds[k]);
+    const page = buildBlockPlan(c.design, blockPlacement(g.utmBounds, aoiUtmOrigin(c.aoi, epsg), 0, r, true));
+    plansMatch = plansMatch && page.u0 === W.plan.u0 && page.v0 === W.plan.v0;
+  }
+  ok('a rung simulated over the trial footprint equals the whole-field rung, bitwise, points and purity', identical, detail);
+  ok('and it simulates fewer pixels on fields larger than their trial', smaller >= 6, `${smaller} of 12 rungs smaller`);
+  ok('a rung names its pixels exactly as the big chart\'s grid does, so noise and sampling agree', idsMatch);
+  ok('a rung resolves the same trial the page resolves when that size is picked', plansMatch);
+
+  // The thumbnail and the big chart at that size are ONE fit: same rows in the
+  // same order, so the same scores and the same signs. Pinned on a design whose
+  // second axis separates two crops (grass twice), where signs taken from a
+  // 500-pixel fit used to disagree with the full fit.
+  const dup = ['maize', 'wheat', 'soy', 'grass', 'grass'].map(id => cropById(id));
+  const userLike = { aoi: [4.746909141540528, 50.53835595467376, 4.74836826324463, 50.53896282711907], sensor: { sigmaX: 0.55, sigmaY: 0.55, mixThreshold: 0.95 },
+    design: { nSpecies: 5, nBlocks: 5, plotLength: 15, plotWidth: 15, plotAlley: 1.5, blockAlley: 1.5, blocksPerRow: 1, seed: 8 } };
+  let oneFit = true, sameFace = true, detail2 = '';
+  for (const r of [1, 2, 3]) {
+    const rung = rungOf(userLike, r, true);
+    const g = buildS2Grid(userLike.aoi, { res: r, zone: 31, south: false, maxCells: 1e7 }).grid;
+    const whole = [g.utmBounds[0], g.utmBounds[1], g.utmBounds[2], g.utmBounds[3]];
+    const plan = buildBlockPlan(userLike.design, blockPlacement(whole, aoiUtmOrigin(userLike.aoi, epsg), 0, r, true));
+    const chartSim = simulateField(g, aoiUtmOrigin(userLike.aoi, epsg), { pattern: 'block', width: 2, spacing: 0, rotationDeg: 0, block: plan }, userLike.sensor);
+    const chart = fitCover({ ...chartSim, pixelIds: Float64Array.from(g.cells, c => pixelId(c.col, c.row)) }, dup, 0.04, 'pca');
+    const thumb = fitCover(rung.src, dup, 0.04, 'pca');
+    const same = chart.pts.length === thumb.pts.length && chart.pts.every((p, i) => thumb.pts[i].id === p.id && p.s.every((v, j) => v === thumb.pts[i].s[j]));
+    if (!same && oneFit) detail2 = `scores differ at ${r} m`;
+    oneFit = oneFit && same;
+    const a1 = axisSigns(chart, 0, 1, dup), a2 = axisSigns(thumb, 0, 1, dup);
+    sameFace = sameFace && a1[0] === a2[0] && a1[1] === a2[1];
+  }
+  ok('a thumbnail is the big chart\'s own fit at that size: identical scores, pixel for pixel', oneFit, detail2);
+  ok('and it faces the same way, so picking it changes nothing', sameFace);
+}
+
+console.log('\nH12. an imported trial');
+{
+  // A design uploaded as a file: real plot polygons, each variety its own
+  // species, several plots of one variety its repetitions. Every fixture here is
+  // SYNTHETIC. The trials are shaped like a real one (contiguous plots rotated
+  // off grid north, more plots than varieties, closed shapefile rings) and carry
+  // none of anyone's data.
+  const epsg = 32631;
+  const toUtm = proj4('EPSG:4326', '+proj=utm +zone=31 +datum=WGS84 +units=m +no_defs');
+  let seed = 20260917;
+  const rnd = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296;
+  const [E0, N0] = toUtm.forward([1.495, 43.532]);
+
+  /** Plots given as rings in metres become a design in WGS84, as a reader hands it over. */
+  const designOf = (plots, keys, varietyColumn = 'Variety') => ({
+    fileName: 'synthetic.zip', columns: ['Name', 'Variety'], varietyColumn, nameColumn: 'Name', warnings: [],
+    plots: plots.map((rings, i) => ({
+      rings: rings.map(ring => ring.map(([x, y]) => toUtm.inverse([x, y]))),
+      props: { Name: `SYN_${String(i + 1).padStart(3, '0')}`, Variety: keys[i] },
+    })),
+  });
+  /** The varieties as the reader lists them: first appearance order, with their repetitions. */
+  const varietiesOf = (design) => {
+    const count = new Map();
+    design.plots.forEach((_, i) => { const k = varietyKeyOf(design, i); count.set(k, (count.get(k) ?? 0) + 1); });
+    return [...count].map(([key, plots]) => ({ key, label: key, plots, crop: 'wheat' }));
+  };
+  const resolve = (plots, keys) => { const d = designOf(plots, keys); return resolveImportedPlan(d, varietiesOf(d), epsg); };
+  const rect = (cx, cy, w, h, deg) => {
+    const t = (deg * Math.PI) / 180, c = Math.cos(t), s = Math.sin(t);
+    return [[-w / 2, -h / 2], [w / 2, -h / 2], [w / 2, h / 2], [-w / 2, h / 2]].map(([u, v]) => [cx + u * c - v * s, cy + u * s + v * c]);
+  };
+  /**
+   * A trial laid out like the kind of file this feature is for: nx x ny
+   * contiguous w x h plots rotated `deg` off grid north, `nVar` varieties, the
+   * plots beyond them repeating earlier varieties (never next to each other).
+   */
+  const gridTrial = ({ nx = 10, ny = 5, w = 15.0, h = 14.6, alley = 0, deg = 11, nVar = 40 } = {}) => {
+    const t = (deg * Math.PI) / 180, c = Math.cos(t), s = Math.sin(t);
+    const at = (u, v) => [E0 + u * c - v * s, N0 + u * s + v * c];
+    const plots = [], keys = [];
+    for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+      const u0 = i * (w + alley), v0 = j * (h + alley), k = plots.length;
+      plots.push([[at(u0, v0), at(u0 + w, v0), at(u0 + w, v0 + h), at(u0, v0 + h), at(u0, v0)]]);
+      keys.push(`http://example.org/wheat/SYN${String(k < nVar ? k : ((k - nVar) * 7) % nVar).padStart(2, '0')}/`);
+    }
+    return { plots, keys };
+  };
+  /** Independent of the rasteriser: pointInPoly on one centre, later plots winning. */
+  const expectedCover = (plan, E, N) => {
+    let id = pointInPoly(E, N, plan.footprint) ? BARE.id : OFF_TRIAL.id;
+    plan.plots.forEach((p, i) => {
+      let inside = false;
+      for (const ring of p.rings) if (pointInPoly(E, N, ring)) inside = !inside;
+      if (inside) id = plan.plotIds ? i : p.species;
+    });
+    return id;
+  };
+  const layoutOf = (plan) => ({ pattern: 'imported', width: 2, spacing: 0, rotationDeg: 0, imported: plan });
+
+  // ---- the cover map is pointInPoly, cell centre by cell centre ------------
+  {
+    const shapes = [], keys = [];
+    for (let i = 0; i < 30; i++) {
+      const cx = E0 + rnd() * 80, cy = N0 + rnd() * 60, deg = rnd() * 180;
+      switch (i % 6) {
+        case 0: shapes.push([rect(cx, cy, 2 + rnd() * 12, 1 + rnd() * 8, deg)]); break;
+        case 1: {   // a concave star
+          const n = 5 + Math.floor(rnd() * 8);
+          shapes.push([Array.from({ length: 2 * n }, (_, k) => {
+            const a = (k * Math.PI) / n + rnd() * 0.2, r = (k % 2 ? 1.5 : 5) * (0.6 + rnd() * 0.8);
+            return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+          })]);
+          break;
+        }
+        case 2: shapes.push([rect(cx, cy, 12, 9, deg), rect(cx + 1, cy - 0.5, 4, 3, deg + 20)]); break;        // a hole
+        case 3: shapes.push([rect(cx, cy, 4, 3, deg), rect(cx + 7, cy + 2, 3, 5, deg + 45)]); break;           // two parts
+        case 4: shapes.push([rect(cx, cy, 6, 4, deg), rect(cx + 2, cy + 1, 6, 4, deg + 10)]); break;           // overlapping parts
+        default: shapes.push([[[cx - 4, cy - 3], [cx + 4, cy + 3], [cx + 4, cy - 3], [cx - 4, cy + 3]]]);      // a bow tie
+      }
+      keys.push(`V${i % 7}`);
+    }
+    const plan = resolve(shapes, keys);
+    let cells = 0, wrong = 0, viaCultureAt = 0, overlaps = 0;
+    for (const [fineRes, minE, minN] of [[0.25, E0 - 10.3, N0 - 7.7], [10 / 24, E0 - 12.1, N0 - 9.05]]) {
+      const rows = Math.ceil(80 / fineRes), cols = Math.ceil(100 / fineRes);
+      const map = buildCropMap(minE, minN, rows, cols, fineRes, 0, 0, layoutOf(plan));
+      for (let r = 0; r < rows; r++) {
+        const N = minN + (r + 0.5) * fineRes;
+        for (let c = 0; c < cols; c++) {
+          const E = minE + (c + 0.5) * fineRes;
+          const want = expectedCover(plan, E, N), got = map[r * cols + c];
+          cells++;
+          if (got !== want) wrong++;
+          if (cultureAt(E, N, layoutOf(plan), 0, 0) !== got) viaCultureAt++;
+          if (got < plan.plots.length) {
+            let hits = 0;
+            for (const p of plan.plots) { let inside = false; for (const ring of p.rings) if (pointInPoly(E, N, ring)) inside = !inside; if (inside) hits++; }
+            if (hits > 1) overlaps++;
+          }
+        }
+      }
+    }
+    ok('every fine cell of rotated, concave, holed, multipart and overlapping plots is exactly pointInPoly at its centre',
+      wrong === 0, `${wrong} of ${cells} cells differ`);
+    ok('cultureAt answers the same cover as the map on every one of those centres', viaCultureAt === 0, `${viaCultureAt} differ`);
+    ok('where plots overlap the later plot wins, and the fixture really has overlaps', overlaps > 100, `${overlaps} overlapped cells`);
+
+    // Centres lying exactly ON an edge: the one case a "sample the centre"
+    // raster is usually excused from. This one computes pointInPoly's own
+    // crossings, so it agrees there too.
+    const fineRes = 0.125, minE = E0 + 0.37, minN = N0 - 0.19, rows = 160, cols = 200;
+    const cx = c => minE + (c + 0.5) * fineRes, cy = r => minN + (r + 0.5) * fineRes;
+    const onLattice = [
+      { rings: [[[cx(10), cy(10)], [cx(60), cy(10)], [cx(60), cy(50)], [cx(10), cy(50)]]], species: 0 },
+      { rings: [[[cx(60), cy(20)], [cx(110), cy(20)], [cx(110), cy(70)]]], species: 1 },
+      { rings: [[[cx(120), cy(5)], [cx(190), cy(5)], [cx(190), cy(150)], [cx(120), cy(150)]], [[cx(140), cy(40)], [cx(170), cy(40)], [cx(170), cy(100)], [cx(140), cy(100)]]], species: 0 },
+    ];
+    const all = onLattice.flatMap(p => p.rings.flat());
+    const hand = { epsg, plots: onLattice, coverSpecies: Uint8Array.from([0, 1, 0]), plotIds: true, nSpecies: 2, footprint: convexHull(all),
+      bbox: [Math.min(...all.map(p => p[0])), Math.min(...all.map(p => p[1])), Math.max(...all.map(p => p[0])), Math.max(...all.map(p => p[1]))],
+      minFeature: 1, sig: 'hand' };
+    const map = buildCropMap(minE, minN, rows, cols, fineRes, 0, 0, layoutOf(hand));
+    let edgeWrong = 0, onEdge = 0;
+    const xsEdge = new Set(all.map(p => p[0])), ysEdge = new Set(all.map(p => p[1]));
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+      if (xsEdge.has(cx(c)) || ysEdge.has(cy(r))) onEdge++;
+      if (map[r * cols + c] !== expectedCover(hand, cx(c), cy(r))) edgeWrong++;
+    }
+    ok('and it agrees on centres lying exactly on plot edges and vertices too', edgeWrong === 0 && onEdge > 1000,
+      `${edgeWrong} differ, ${onEdge} centres on an edge line`);
+  }
+
+  // ---- bare alley inside the footprint, off-trial outside it ----------------
+  const alleyTrial = gridTrial({ nx: 3, ny: 2, w: 8, h: 6, alley: 0.5, deg: 11, nVar: 6 });
+  const alleyPlan = resolve(alleyTrial.plots, alleyTrial.keys);
+  {
+    const t = (11 * Math.PI) / 180, c = Math.cos(t), s = Math.sin(t);
+    const at = (u, v) => [E0 + u * c - v * s, N0 + u * s + v * c];
+    const L = layoutOf(alleyPlan);
+    ok('the middle of an alley between two plots is bare soil', cultureAt(...at(8.25, 3), L, 0, 0) === BARE.id);
+    ok('the middle of a plot is that plot', cultureAt(...at(4, 3), L, 0, 0) === 0 && cultureAt(...at(12.5, 9.5), L, 0, 0) === 4);
+    ok('ground beyond the trial\'s footprint is off-trial, not alley',
+      cultureAt(...at(-3, 3), L, 0, 0) === OFF_TRIAL.id && cultureAt(...at(12, 20), L, 0, 0) === OFF_TRIAL.id);
+    ok('an imported trial ignores rotation, strip width and the pattern origin',
+      [[4, 3], [8.25, 3], [-3, 3]].every(([u, v]) => cultureAt(...at(u, v), { ...L, rotationDeg: 37, width: 9, spacing: 3 }, 123, 456) === cultureAt(...at(u, v), L, 0, 0)));
+    const fineRes = 0.125, [bx0, by0, bx1, by1] = alleyPlan.bbox;
+    const minE = bx0 - 5, minN = by0 - 5, rows = Math.ceil((by1 - by0 + 10) / fineRes), cols = Math.ceil((bx1 - bx0 + 10) / fineRes);
+    const map = buildCropMap(minE, minN, rows, cols, fineRes, 0, 0, L);
+    const n = { bare: 0, off: 0, plot: 0, bareOutside: 0 };
+    for (let r = 0; r < rows; r++) for (let q = 0; q < cols; q++) {
+      const id = map[r * cols + q];
+      if (id === BARE.id) { n.bare++; if (!pointInPoly(minE + (q + 0.5) * fineRes, minN + (r + 0.5) * fineRes, alleyPlan.footprint)) n.bareOutside++; }
+      else if (id === OFF_TRIAL.id) n.off++;
+      else n.plot++;
+    }
+    // Two 0.5 m alleys across 8 x 6 m plots: about (2 * 12.5 + 16.5) * 0.5 m2 of alley.
+    const bareM2 = n.bare * fineRes * fineRes;
+    ok('the alleys are bare, about as much as the design leaves, and all of it inside the footprint',
+      Math.abs(bareM2 - (2 * 12.5 + 25) * 0.5) < 2 && n.bareOutside === 0 && n.off > 0,
+      `${bareM2.toFixed(2)} m2 bare, ${n.bareOutside} outside`);
+    const contiguous = gridTrial({ nx: 4, ny: 3, w: 15, h: 14.6, deg: 11, nVar: 12 });
+    const cPlan = resolve(contiguous.plots, contiguous.keys);
+    const cMap = buildCropMap(cPlan.bbox[0] - 2, cPlan.bbox[1] - 2, 520, 520, fineRes, 0, 0, layoutOf(cPlan));
+    ok('a trial of contiguous plots has no bare ground inside it at all', !cMap.includes(BARE.id));
+  }
+
+  // ---- the resolver: species, cover ids, minFeature, signature --------------
+  const trial50 = gridTrial();
+  const trialDesign = designOf(trial50.plots, trial50.keys);
+  const trialVarieties = varietiesOf(trialDesign);
+  const plan = resolveImportedPlan(trialDesign, trialVarieties, epsg);
+  {
+    ok('a plot\'s species is the index of its variety, and repetitions share it',
+      plan.nSpecies === 40 && trialVarieties.filter(v => v.plots === 2).length === 10 &&
+      plan.plots.every((p, i) => trialVarieties[p.species].key === trial50.keys[i]) &&
+      plan.plots[40].species === plan.plots[0].species && plan.plots[41].species === plan.plots[7].species);
+    ok('up to 253 plots the cover ids are plot ids, folded to species by coverSpecies',
+      plan.plotIds && plan.coverSpecies.length === 50 && plan.plots.every((p, i) => plan.coverSpecies[i] === p.species));
+    // A convex hull holds every vertex it is built from; the one of a rectangular
+    // block of plots is that rectangle, 150 x 73 m.
+    const hullArea = plan.footprint.reduce((a, [x, y], i) => { const [x2, y2] = plan.footprint[(i + 1) % plan.footprint.length]; return a + (x * y2 - x2 * y) / 2; }, 0);
+    const holds = plan.plots.every(p => p.rings.every(ring => ring.every(([x, y]) => plan.footprint.every(([ax, ay], i) => {
+      const [bx, by] = plan.footprint[(i + 1) % plan.footprint.length];
+      return (bx - ax) * (y - ay) - (by - ay) * (x - ax) >= -1e-6;
+    }))));
+    const all = plan.plots.flatMap(p => p.rings.flat());
+    ok('the footprint is the convex hull of every plot and its bbox the trial\'s',
+      holds && Math.abs(hullArea - 150 * 73) < 1e-3 &&
+      plan.bbox.join() === [Math.min(...all.map(q => q[0])), Math.min(...all.map(q => q[1])), Math.max(...all.map(q => q[0])), Math.max(...all.map(q => q[1]))].join() &&
+      Math.abs((plan.bbox[2] - plan.bbox[0]) - (150 * Math.cos(11 * Math.PI / 180) + 73 * Math.sin(11 * Math.PI / 180))) < 1e-3,
+      `hull ${hullArea.toFixed(3)} m2, bbox ${(plan.bbox[2] - plan.bbox[0]).toFixed(2)} x ${(plan.bbox[3] - plan.bbox[1]).toFixed(2)} m`);
+    ok('the narrowest feature of contiguous plots is the plot width', Math.abs(plan.minFeature - 14.6) < 1e-6, `${plan.minFeature}`);
+    ok('with 0.5 m alleys between plots it is the alley', Math.abs(alleyPlan.minFeature - 0.5) < 1e-6, `${alleyPlan.minFeature}`);
+    ok('minFeatureM hands the engine that measurement',
+      minFeatureM(layoutOf(plan)) === plan.minFeature && minFeatureM(layoutOf(alleyPlan)) === alleyPlan.minFeature);
+    // Rows of 6 m plots overlapping by 2 cm: the corners of one row sit 2 cm
+    // inside the next. What is left visible of a plot, 5.98 m, is a real feature;
+    // those 2 cm are not, and taking them for a gap would pin the stride at its cap.
+    const overlapping = gridTrial({ nx: 3, ny: 2, w: 8, h: 6, alley: -0.02, deg: 11, nVar: 6 });
+    const overlapFeature = resolve(overlapping.plots, overlapping.keys).minFeature;
+    ok('a 2 cm overlap between hand-drawn plots is not a gap the grid must resolve',
+      Math.abs(overlapFeature - 5.98) < 1e-6, `${overlapFeature}`);
+    const ell = [[[E0, N0], [E0 + 20, N0], [E0 + 20, N0 + 3], [E0 + 3, N0 + 3], [E0 + 3, N0 + 20], [E0, N0 + 20]]];
+    // A 20 m L with 3 m arms. Its hull is narrowest across the diagonal cut,
+    // 23 / sqrt 2 = 16.3 m, which is what this measured before: the grid then
+    // sampled 3 m arms as if they were 16 m wide.
+    ok('a concave plot is measured by its narrowest arm, not by its hull',
+      Math.abs(resolve([ell], ['L']).minFeature - 3) < 1e-6, `${resolve([ell], ['L']).minFeature.toFixed(3)} m`);
+    ok('rotating calipers find the brute-force minimum width of random hulls',
+      (() => {
+        for (let t = 0; t < 400; t++) {
+          const h = convexHull(Array.from({ length: 3 + Math.floor(rnd() * 30) }, () => [rnd() * 60, rnd() * 25]));
+          if (h.length < 3) continue;
+          let brute = Infinity;
+          for (let i = 0; i < h.length; i++) {
+            const a = h[i], b = h[(i + 1) % h.length], ex = b[0] - a[0], ey = b[1] - a[1], len = Math.hypot(ex, ey);
+            brute = Math.min(brute, Math.max(...h.map(p => Math.abs(ex * (p[1] - a[1]) - ey * (p[0] - a[0])) / len)));
+          }
+          if (Math.abs(brute - hullWidth(h)) > 1e-9) return false;
+        }
+        return true;
+      })());
+
+    const key = layoutKey(layoutOf(plan));
+    const again = layoutKey(layoutOf(resolveImportedPlan(designOf(trial50.plots, trial50.keys), trialVarieties, epsg)));
+    const moved = trial50.plots.map((rings, i) => (i === 17 ? [rings[0].map(([x, y], k) => (k === 2 ? [x + 0.004, y] : [x, y]))] : rings));
+    // Plots 40 and 41 repeat varieties first seen earlier, so swapping them moves
+    // species indices; renaming a variety moves no index at all.
+    const swapped = trial50.keys.slice(); [swapped[40], swapped[41]] = [swapped[41], swapped[40]];
+    const renamed = trial50.keys.map(k => (k === trial50.keys[5] ? k + 'bis' : k));
+    const keys = [key, layoutKey(layoutOf(resolve(moved, trial50.keys))), layoutKey(layoutOf(resolve(trial50.plots, swapped))),
+      layoutKey(layoutOf(resolve(trial50.plots, renamed))), layoutKey(layoutOf(resolve(trial50.plots.slice(0, 49), trial50.keys.slice(0, 49)))),
+      layoutKey(layoutOf(resolveImportedPlan(trialDesign, trialVarieties, 32630)))];
+    ok('layoutKey is stable for the same file and moves when geometry or the assignment moves',
+      key === again && new Set(keys).size === keys.length, keys.map(k => k.slice(-8)).join(' '));
+    // The cover map reads coordinates exactly, so the key must too: a signature
+    // rounded to the millimetre kept serving a map this 0.3 mm move changes.
+    const edgeAt = (x) => [[[x, N0 + 0.5], [E0 + 10.3, N0 + 0.5], [E0 + 10.3, N0 + 10.5], [x, N0 + 10.5]]];
+    const nearA = resolve([edgeAt(E0 + 0.2001)], ['A']), nearB = resolve([edgeAt(E0 + 0.2004)], ['A']);
+    const fineA = buildCropMap(E0 + 0.2, N0 + 1, 4, 8, 0.0001, 0, 0, layoutOf(nearA)), fineB = buildCropMap(E0 + 0.2, N0 + 1, 4, 8, 0.0001, 0, 0, layoutOf(nearB));
+    ok('a sub-millimetre move of a plot edge moves the key, as it moves the cover map',
+      layoutKey(layoutOf(nearA)) !== layoutKey(layoutOf(nearB)) && fineA.some((v, k) => v !== fineB[k]));
+    ok('and it ignores the sliders an imported trial does not read',
+      layoutKey({ ...layoutOf(plan), rotationDeg: 30, width: 7, spacing: 2 }) === key);
+    ok('a plan left on a strip layout is ignored by every reader of the cover map',
+      speciesChannel({ ...layoutOf(plan), pattern: 'row' }).nSpecies === 2 && minFeatureM({ ...layoutOf(plan), pattern: 'row' }) === 2 &&
+      !layoutKey({ ...layoutOf(plan), pattern: 'row' }).includes(plan.sig));
+
+    // Through the READER's own variety list, whatever it spells the keys: the
+    // two once spelled them differently ("plot N" and "#N"), and every plot of
+    // a design without a variety column was then unlisted.
+    const perPlot = designOf(trial50.plots.slice(0, 6), trial50.keys.slice(0, 6), '');
+    const perPlotVarieties = readerVarietiesOf(perPlot);
+    const perPlotPlan = resolveImportedPlan(perPlot, perPlotVarieties, epsg);
+    ok('with no variety column every plot is its own variety, keyed as the reader keys it',
+      perPlotVarieties.length === 6 && new Set(perPlotVarieties.map(v => v.key)).size === 6 &&
+      perPlotVarieties.every((v, i) => v.key === varietyKeyOf(perPlot, i)) &&
+      perPlotPlan.nSpecies === 6 && perPlotPlan.plots.every((p, i) => p.species === i),
+      perPlotVarieties.map(v => v.key).join());
+    const readerPlan = resolveImportedPlan(trialDesign, readerVarietiesOf(trialDesign), epsg);
+    ok('and the reader\'s variety list resolves a design with a variety column the same way',
+      readerPlan.nSpecies === 40 && readerPlan.plots.every((p, i) => p.species === plan.plots[i].species));
+    const throws = (f) => { try { f(); return false; } catch { return true; } };
+    ok('the resolver refuses a plot whose variety is not listed, and more varieties than it can number',
+      throws(() => resolveImportedPlan(trialDesign, trialVarieties.slice(1), epsg)) &&
+      throws(() => resolveImportedPlan(trialDesign, [...trialVarieties, ...Array.from({ length: 214 }, (_, i) => ({ key: `x${i}`, label: '', plots: 0, crop: 'wheat' }))], epsg)) &&
+      !throws(() => resolveImportedPlan(trialDesign, [...trialVarieties, ...Array.from({ length: 213 }, (_, i) => ({ key: `x${i}`, label: '', plots: 0, crop: 'wheat' }))], epsg)));
+  }
+
+  // ---- what the fine grid must resolve: seams, wedges, and ground inside a plot --
+  {
+    const strideAt = (p, gsd) => strideFor(gsd, minFeatureM(layoutOf(p)));
+    // Two contiguous 10 x 10 m plots covering exactly the same ground, their
+    // straight edges cut into more pieces. Measuring from each vertex to the
+    // neighbour's nearest corner read 5 m, then 0.1 m, and pinned the stride.
+    const square = (u0, cuts) => [[[u0, 0], ...cuts.map(f => [u0 + 10 * f, 0]), [u0 + 10, 0], [u0 + 10, 10],
+      ...cuts.map(f => [u0 + 10 * (1 - f), 10]), [u0, 10], [u0, 0]].map(([u, v]) => [E0 + u, N0 + v])];
+    const cutPairs = [[], [0.5], [0.99], [0.25, 0.5, 0.75]].map(cuts => resolve([square(0, cuts), square(10, cuts)], ['A', 'B']).minFeature);
+    ok('extra vertices along a straight edge are not gaps: contiguous 10 m plots measure 10 m however their edges are cut',
+      cutPairs.every(m => Math.abs(m - 10) < 1e-6), cutPairs.map(m => m.toFixed(3)).join(' '));
+
+    // The same trial with every vertex nudged, as a survey or a hand digitises it.
+    const jittered = (t, amount) => t.plots.map(rings => {
+      const ring = rings[0].slice(0, -1).map(([x, y]) => [x + (rnd() * 2 - 1) * amount, y + (rnd() * 2 - 1) * amount]);
+      return [[...ring, ring[0]]];
+    });
+    const noisy = [0.01, 0.03].map(j => resolve(jittered(trial50, j), trial50.keys));
+    ok('centimetre seams between plots meant to touch are not alleys: the stride stays the plot width\'s',
+      noisy.every(p => p.minFeature > 14.4 && p.minFeature <= 14.6 + 1e-9 && strideAt(p, 10) === strideAt(plan, 10) && strideAt(p, 3) === strideAt(plan, 3)),
+      noisy.map(p => p.minFeature.toFixed(3)).join(' '));
+    const noisyAlley = resolve(jittered(alleyTrial, 0.01), alleyTrial.keys);
+    ok('while a real 0.5 m alley between jittered plots is still the alley', Math.abs(noisyAlley.minFeature - 0.5) < 0.03, noisyAlley.minFeature.toFixed(3));
+
+    // Ground a plot leaves bare INSIDE itself: its width used to be its hull's.
+    const box = (u0, v0, w, h) => [[E0 + u0, N0 + v0], [E0 + u0 + w, N0 + v0], [E0 + u0 + w, N0 + v0 + h], [E0 + u0, N0 + v0 + h], [E0 + u0, N0 + v0]];
+    const multi = [], split = [], kM = [], kS = [];
+    for (let i = 0; i < 8; i++) {
+      multi.push([box(6.5 * i, 0, 3, 20), box(6.5 * i + 3.5, 0, 3, 20)]); kM.push(`SYN_${i % 3}`);
+      split.push([box(6.5 * i, 0, 3, 20)], [box(6.5 * i + 3.5, 0, 3, 20)]); kS.push(`SYN_${i % 3}`, `SYN_${i % 3}`);
+    }
+    const multiPlan = resolve(multi, kM), splitPlan = resolve(split, kS);
+    const inside = {
+      'two parts 0.5 m apart': multiPlan.minFeature,
+      'a 0.3 m hole': resolve([[box(0, 0, 12, 12), box(3, 5.85, 6, 0.3)]], ['A']).minFeature,
+      'a 0.5 m rim': resolve([[box(0, 0, 12, 12), box(0.5, 0.5, 11, 11)]], ['A']).minFeature,
+      'a 0.4 m slit': resolve([[[[0, 0], [12, 0], [12, 12], [6.2, 12], [6.2, 2], [5.8, 2], [5.8, 12], [0, 12]].map(([u, v]) => [E0 + u, N0 + v])]], ['A']).minFeature,
+      'an L with 1 m arms': resolve([[[[0, 0], [20, 0], [20, 1], [1, 1], [1, 20], [0, 20]].map(([u, v]) => [E0 + u, N0 + v])]], ['A']).minFeature,
+    };
+    const wantInside = [0.5, 0.3, 0.5, 0.4, 1];
+    ok('a gap between the parts of a plot, a hole, a rim, a notch and an arm are each measured',
+      Object.values(inside).every((m, i) => Math.abs(m - wantInside[i]) < 1e-6), Object.entries(inside).map(([k, m]) => `${k}: ${m.toFixed(3)}`).join(', '));
+    const bareOf = (p) => simulateField(boxAt5(p), [0, 0], layoutOf(p), { sigmaX: 0, sigmaY: 0, mixThreshold: 0.8 }).proportionBare;
+    const boxAt5 = (p) => ({ res: 5, utmBounds: [Math.floor((p.bbox[0] - 10) / 5) * 5, Math.floor((p.bbox[1] - 10) / 5) * 5, Math.ceil((p.bbox[2] + 10) / 5) * 5, Math.ceil((p.bbox[3] + 10) / 5) * 5] });
+    const bM = bareOf(multiPlan), bS = bareOf(splitPlan);
+    ok('so the same ground as one multipart plot or as two plots is sampled alike: same stride, same bare share per pixel',
+      strideAt(multiPlan, 5) === strideAt(splitPlan, 5) && bM.every((v, k) => Math.abs(v - bS[k]) < 1e-6),
+      `stride ${strideAt(multiPlan, 5)} vs ${strideAt(splitPlan, 5)}`);
+
+    // Slivers that are not strips: every width down to 0 occurs in them, over hardly any ground.
+    const circle = (cx, cy, r, n) => [Array.from({ length: n }, (_, k) => [cx + r * Math.cos((2 * Math.PI * k) / n), cy + r * Math.sin((2 * Math.PI * k) / n)])];
+    const apart = resolve([circle(E0, N0, 5, 64), circle(E0 + 11, N0, 5, 64)], ['A', 'B']).minFeature;
+    const tangent = resolve([circle(E0, N0, 5, 1000), circle(E0 + 10, N0, 5, 1000)], ['A', 'B']).minFeature;
+    // A plot's corner on its neighbour's side, turned 10 degrees away from it:
+    // the bare wedge between them is 0.7 m wide half way up, and 0 at the corner.
+    const turned = (() => {
+      const t = (-10 * Math.PI) / 180, c = Math.cos(t), s = Math.sin(t);
+      return [[[0, 0], [10, 0], [10, 10], [0, 10]].map(([u, v]) => [E0 + 10 + u * c - v * s, N0 + 2 + u * s + v * c])];
+    })();
+    const corner = resolve([[box(0, 0, 10, 10)], turned], ['A', 'B']).minFeature;
+    ok('round plots 1 m apart measure the 1 m between them, and cusps and wedges are not features',
+      apart > 1 && apart < 1.05 && tangent > 9 && Math.abs(corner - 10) < 1e-6,
+      `apart ${apart.toFixed(3)}, tangent ${tangent.toFixed(2)}, corner on a side ${corner.toFixed(3)}`);
+
+    // Folding: what the strip search sees of a ring. Kept vertices are the
+    // ring's own, in order; everything dropped stays within sqrt 2 times the
+    // fold of the chord that replaced it; clean corners survive.
+    const FOLD = 0.025;
+    const foldHolds = (ring) => {
+      const f = foldRing(ring, FOLD), open = ring.slice(0, ring[0][0] === ring.at(-1)[0] && ring[0][1] === ring.at(-1)[1] ? -1 : undefined);
+      let at = 0, worst = 0;
+      for (let k = 0; k < f.length; k++) {
+        const a = f[k], b = f[(k + 1) % f.length], from = open.indexOf(a, at);
+        if (from < 0) return Infinity;
+        const to = k + 1 < f.length ? open.indexOf(b, from + 1) : open.length;
+        for (let i = from + 1; i < to; i++) worst = Math.max(worst, pointSegDist(open[i][0], open[i][1], a[0], a[1], b[0], b[1]));
+        at = from + 1;
+      }
+      return worst;
+    };
+    const pointSegDist = (px, py, ax, ay, bx, by) => {
+      const dx = bx - ax, dy = by - ay, l = dx * dx + dy * dy;
+      const t = Math.max(0, Math.min(1, l > 0 ? ((px - ax) * dx + (py - ay) * dy) / l : 0));
+      return Math.hypot(px - ax - t * dx, py - ay - t * dy);
+    };
+    const saw = (cx, cy, n, depth) => [Array.from({ length: n }, (_, k) => {
+      const a = (2 * Math.PI * k) / n, r = k % 2 ? 5 - depth : 5;
+      return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+    })];
+    let foldWorst = 0, foldKept = true;
+    for (let it = 0; it < 300; it++) {
+      const n = 3 + Math.floor(rnd() * 400), ring = [];
+      let x = E0, y = N0, heading = rnd() * 6.3;
+      for (let k = 0; k < n; k++) { ring.push([x, y]); heading += (rnd() - 0.5) * (rnd() < 0.2 ? 3 : 0.2); const step = rnd() < 0.5 ? rnd() * 0.05 : rnd() * 3; x += step * Math.cos(heading); y += step * Math.sin(heading); }
+      const w = foldHolds(rnd() < 0.5 ? ring : [...ring, ring[0]]);
+      if (!Number.isFinite(w)) foldKept = false; else foldWorst = Math.max(foldWorst, w);
+    }
+    const denseEdge = square(0, Array.from({ length: 99 }, (_, k) => (k + 1) / 100))[0];
+    ok('folding keeps a ring\'s own vertices in order, and everything it drops within sqrt 2 folds of its chord',
+      foldKept && foldWorst <= Math.SQRT2 * FOLD + 1e-9 && foldRing(denseEdge, FOLD).length === 4 && foldRing(box(0, 0, 0.3, 0.2), FOLD).length === 4 &&
+      foldHolds(saw(E0, N0, 2000, 0.02)[0]) <= Math.SQRT2 * FOLD + 1e-9, `worst ${foldWorst.toFixed(4)} m over 300 random walks`);
+
+    // A ring whose edge is 20,000 teeth 2 cm deep: each tooth faces the others
+    // across every width, and their pieces were compared with each other one by
+    // one (six minutes for one design, and a 17 cm "strip" found by chance).
+    let tMark = performance.now();
+    const jagged = resolve([saw(E0, N0, 20000, 0.02)], ['A']).minFeature;
+    const tJagged = performance.now() - tMark;
+    ok('a jagged edge is not a comb of strips, and resolves at once',
+      Math.abs(jagged - 10) < 0.05 && tJagged < 1000, `${jagged.toFixed(3)} m in ${tJagged.toFixed(0)} ms`);
+
+    // A plot narrower than the fold is still the narrowest thing in the design.
+    const sliver = resolve([[box(0, 0, 10, 10)], [box(10, 0, 0.02, 10)], [box(10.02, 0, 10, 10)]], ['A', 'B', 'C']).minFeature;
+    ok('a 2 cm plot among 10 m plots is measured by its own width, floored', sliver === 0.05, `${sliver}`);
+
+    // The bucketed search against every pair of folded boundaries, on random designs.
+    const SEAM = 0.1, SIN15 = Math.sin(Math.PI / 12), COS15 = Math.cos(Math.PI / 12);
+    const segGap = (a, b) => {
+      const o = (p, q, r) => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+      const A = [a[0], a[1]], B = [a[2], a[3]], Cq = [b[0], b[1]], D = [b[2], b[3]];
+      if (o(A, B, Cq) * o(A, B, D) < 0 && o(Cq, D, A) * o(Cq, D, B) < 0) return 0;
+      return Math.min(pointSegDist(...A, ...b), pointSegDist(...B, ...b), pointSegDist(...Cq, ...a), pointSegDist(...D, ...a));
+    };
+    const allPairs = (p) => {
+      let best = Infinity;
+      for (const q of p.plots) for (const ring of q.rings) { const w = hullWidth(convexHull(ring)); if (w > 0) best = Math.min(best, w); }
+      const segs = [];
+      [...p.plots.flatMap(q => q.rings), p.footprint].map(ring => foldRing(ring, FOLD)).forEach((ring, ri) => {
+        if (ring.length < 2) return;
+        ring.forEach((a, k) => {
+          const b = ring[(k + 1) % ring.length];
+          segs.push({ s: [a[0], a[1], b[0], b[1]], ri, k, n: ring.length, len: Math.hypot(b[0] - a[0], b[1] - a[1]) });
+        });
+      });
+      const stretch = (g) => {
+        const u = [(g.s[2] - g.s[0]) / g.len, (g.s[3] - g.s[1]) / g.len], mine = segs.filter(h => h.ri === g.ri), out = [g];
+        const along = h => h.len > 0 && (h.s[2] - h.s[0]) * u[0] + (h.s[3] - h.s[1]) * u[1] >= COS15 * h.len;
+        let f = 1;
+        for (; f < g.n && along(mine[(g.k + f) % g.n]); f++) out.push(mine[(g.k + f) % g.n]);
+        for (let b = 1; b < g.n - f + 1 && along(mine[(g.k - b + g.n) % g.n]); b++) out.push(mine[(g.k - b + g.n) % g.n]);
+        return out;
+      };
+      const found = [];
+      for (let i = 0; i < segs.length; i++) for (let j = i + 1; j < segs.length; j++) {
+        const S = segs[i], T = segs[j];
+        if (!S.len || !T.len) continue;
+        const [ax, ay, bx, by] = S.s, [px, py, qx, qy] = T.s, ux = (bx - ax) / S.len, uy = (by - ay) / S.len;
+        if (Math.abs(ux * (qy - py) - uy * (qx - px)) > SIN15 * T.len) continue;
+        const tp = (px - ax) * ux + (py - ay) * uy, tq = (qx - ax) * ux + (qy - ay) * uy;
+        const lo = Math.max(0, Math.min(tp, tq)), hi = Math.min(S.len, Math.max(tp, tq));
+        if (!(hi > lo)) continue;
+        const np = (px - ax) * -uy + (py - ay) * ux, nq = (qx - ax) * -uy + (qy - ay) * ux;
+        const across = m => np + ((m - tp) / (tq - tp)) * (nq - np);
+        if ((across(lo) > 0) !== (across(hi) > 0)) continue;
+        const w = Math.min(Math.abs(across(lo)), Math.abs(across(hi)));
+        if (w >= SEAM) found.push({ w, S, T, ax, ay, ux, uy, tm: (lo + hi) / 2, across: across((lo + hi) / 2) });
+      }
+      found.sort((a, b) => a.w - b.w);
+      for (const { w, S, T, ax, ay, ux, uy, tm, across } of found) {
+        if (w >= best) break;
+        const tS = stretch(S), tT = stretch(T);
+        const span = (tr) => { const ps = tr.flatMap(g => [(g.s[0] - ax) * ux + (g.s[1] - ay) * uy, (g.s[2] - ax) * ux + (g.s[3] - ay) * uy]); return [Math.min(...ps), Math.max(...ps)]; };
+        const [s0, s1] = span(tS), [t0s, t1s] = span(tT);
+        if (!(Math.min(s1, t1s) - Math.max(s0, t0s) >= w / 2)) continue;
+        if (tS.some(a => tT.some(b => segGap(a.s, b.s) < SEAM))) continue;
+        const ox = ax + tm * ux, oy = ay + tm * uy, sg = Math.sign(across), d = Math.min(0.05, w / 4);
+        const at = k => importedCoverAt(ox - k * uy, oy + k * ux, p);
+        const mid = at(across / 2);
+        if (mid !== at(sg * d) || mid !== at(across - sg * d) || mid === at(-sg * d) || mid === at(across + sg * d)) continue;
+        return w;
+      }
+      return best;
+    };
+    const handPlan = (plots) => {
+      const all = plots.flatMap(q => q.rings.flat());
+      return { epsg, plots, plotIds: plots.length <= MAX_PLOTS, nSpecies: 4,
+        coverSpecies: plots.length <= MAX_PLOTS ? Uint8Array.from(plots, q => q.species) : Uint8Array.from([0, 1, 2, 3]), footprint: convexHull(all),
+        bbox: all.reduce((b, q) => [Math.min(b[0], q[0]), Math.min(b[1], q[1]), Math.max(b[2], q[0]), Math.max(b[3], q[1])], [Infinity, Infinity, -Infinity, -Infinity]),
+        minFeature: 1, sig: 'hand' };
+    };
+    const turn = (cx, cy, deg) => { const t = (deg * Math.PI) / 180, c = Math.cos(t), s = Math.sin(t); return ([u, v]) => [cx + u * c - v * s, cy + u * s + v * c]; };
+    let designs = 0, differ = 0, detail = '';
+    for (let it = 0; it < 150; it++) {
+      const plots = [], base = rnd() * 90, aligned = rnd() < 0.5;
+      for (let k = 2 + Math.floor(rnd() * 10); k > 0; k--) {
+        const cx = E0 + rnd() * 40, cy = N0 + rnd() * 30, deg = aligned ? base + (rnd() * 6 - 3) : rnd() * 180, at = turn(cx, cy, deg), sp = Math.floor(rnd() * 4);
+        const rectAt = (u0, v0, w, h) => [[u0, v0], [u0 + w, v0], [u0 + w, v0 + h], [u0, v0 + h]].map(at);
+        switch (Math.floor(rnd() * 6)) {
+          case 0: plots.push({ rings: [rectAt(0, 0, 0.3 + rnd() * 9, 0.3 + rnd() * 9)], species: sp }); break;
+          case 1: plots.push({ rings: [rectAt(0, 0, 4 + rnd() * 8, 4 + rnd() * 8), rectAt(1 + rnd(), 1 + rnd(), 0.2 + rnd() * 2, 0.2 + rnd() * 2)], species: sp }); break;
+          case 2: plots.push({ rings: [circle(cx, cy, 1 + rnd() * 5, 12 + Math.floor(rnd() * 60))[0]], species: sp }); break;
+          case 3: { const a = 0.3 + rnd() * 2.7, L = 5 + rnd() * 10; plots.push({ rings: [[[0, 0], [L, 0], [L, a], [a, a], [a, L], [0, L]].map(at)], species: sp }); break; }
+          case 4: {   // a jittered, densified plot: pieces that fold, and some that do not
+            const w = 2 + rnd() * 8, h = 2 + rnd() * 8, jit = rnd() * 0.06, ring = [];
+            for (let q = 0; q < 4; q++) for (let m = 0; m < 12; m++) {
+              const [u0, v0] = [[0, 0], [w, 0], [w, h], [0, h]][q], [u1, v1] = [[w, 0], [w, h], [0, h], [0, 0]][q];
+              ring.push(at([u0 + ((u1 - u0) * m) / 12 + (rnd() * 2 - 1) * jit, v0 + ((v1 - v0) * m) / 12 + (rnd() * 2 - 1) * jit]));
+            }
+            plots.push({ rings: [ring], species: sp });
+            break;
+          }
+          default: {   // a row of three, with an alley or a seam between them
+            const w = 1 + rnd() * 5, h = 3 + rnd() * 9, gap = rnd() < 0.5 ? rnd() * 0.4 : rnd() * 0.1 - 0.05;
+            for (let q = 0; q < 3; q++) plots.push({ rings: [rectAt(q * (w + gap), 0, w, h)], species: sp });
+          }
+        }
+      }
+      const p = handPlan(plots);
+      designs++;
+      const got = narrowestFeature(p), want = allPairs(p);
+      if (!(got === want || Math.abs(got - want) < 1e-9)) { differ++; detail ||= `design ${it}: ${got} vs ${want}`; }
+    }
+    ok('the bucketed strip search finds exactly what comparing every pair of folded boundaries finds',
+      differ === 0 && designs === 150, detail || `${designs} random designs`);
+
+    // Buckets far smaller than the strip being looked for: 300 round plots (20
+    // unfoldable sides each) below two long strips 1 m apart. The band read
+    // beside a segment must still reach across the whole alley. The outer
+    // plots touch the footprint's sides, so no sliver of bare ground runs
+    // between a plot and a hull edge passing just beside it.
+    const dots = [];
+    for (let j = 0; j < 12; j++) for (let i = 0; i < 25; i++) dots.push({ rings: circle(E0 + 0.6 + 2.4 * i, N0 - 2 - 2.4 * j, 0.6, 20), species: 2 });
+    const reachPlan = handPlan([{ rings: [box(0, 0, 58.8, 2).slice(0, -1)], species: 0 }, { rings: [box(0, 3, 58.8, 2).slice(0, -1)], species: 1 }, ...dots]);
+    const reach = narrowestFeature(reachPlan);
+    ok('however small the buckets, the search reaches across the alley it is looking for', Math.abs(reach - 1) < 1e-9, `${reach}`);
+
+    // Built to defeat the search: 1200 square frames 1 m wide, nested, so a
+    // probe near the middle tests every frame around it. Finished, the search
+    // answers 1 m; it gives up instead and samples as finely as a seam, never
+    // coarser, where piles like it once froze the page for minutes.
+    const nested = [];
+    for (let i = 0; i < 1200; i++) nested.push({ rings: [box(-7 - i, -7 - i, 14 + 2 * i, 14 + 2 * i).slice(0, -1), box(-6 - i, -6 - i, 12 + 2 * i, 12 + 2 * i).slice(0, -1)], species: i % 4 });
+    tMark = performance.now();
+    const piled = narrowestFeature(handPlan(nested));
+    const tPiled = performance.now() - tMark;
+    ok('a design built to exhaust the strip search stops within its budget and answers a seam, never coarser',
+      piled === 0.1 && tPiled < 3000, `${piled} in ${tPiled.toFixed(0)} ms`);
+
+    // The budget charges a probe for the plots it really tests. The same 80
+    // plots hidden under one drawn over them, and 80 frames around it, in two
+    // file orders: with the frames drawn last every probe tests them all before
+    // reaching the plot on top (about 9.7 million units), drawn before it the
+    // plot on top answers at once (about 4.5 million). A budget between the two
+    // must stop the first and not the second.
+    const pileOf = (framesLast) => {
+      const hidden = [], frames = [];
+      for (let i = 0; i < 80; i++) { const w = 5 + rnd(); hidden.push({ rings: [box(rnd() * 30, rnd() * 30, w, w).slice(0, -1)], species: 1 }); }
+      const cover = { rings: [box(-5, -5, 50, 50).slice(0, -1)], species: 0 };
+      for (let i = 0; i < 80; i++) {
+        const h = 28 + 6 * i;
+        frames.push({ rings: [box(17 - h, 17 - h, 2 * h + 6, 2 * h + 6).slice(0, -1), box(20 - h, 20 - h, 2 * h, 2 * h).slice(0, -1)], species: 2 + (i % 2) });
+      }
+      return handPlan(framesLast ? [...hidden, cover, ...frames] : [...hidden, ...frames, cover]);
+    };
+    const seedBefore = seed;
+    const probedLast = narrowestFeature(pileOf(true), 7e6);
+    seed = seedBefore;
+    const probedFirst = narrowestFeature(pileOf(false), 7e6);
+    ok('and it charges each probe for every plot the probe tests, so piling plots over a probe exhausts it',
+      probedLast === 0.1 && probedFirst === 3, `frames drawn last ${probedLast}, drawn before the plot on top ${probedFirst}`);
+
+    // Densified plots: 200 contiguous squares of 1000 vertices each took 4.7 s
+    // to resolve, on the page's main thread, whenever a variety was reassigned.
+    const dense = [], denseKeys = [];
+    for (let j = 0; j < 10; j++) for (let i = 0; i < 20; i++) {
+      const ring = [];
+      for (let side = 0; side < 4; side++) for (let k = 0; k < 250; k++) {
+        const [x0, y0] = [[0, 0], [10, 0], [10, 10], [0, 10]][side], [x1, y1] = [[10, 0], [10, 10], [0, 10], [0, 0]][side];
+        ring.push([E0 + 10 * i + x0 + ((x1 - x0) * k) / 250, N0 + 10 * j + y0 + ((y1 - y0) * k) / 250]);
+      }
+      dense.push([ring]); denseKeys.push(`SYN_${(i + j) % 50}`);
+    }
+    const denseDesign = designOf(dense, denseKeys);
+    const denseVarieties = varietiesOf(denseDesign);
+    const t0 = performance.now();
+    const densePlan = resolveImportedPlan(denseDesign, denseVarieties, epsg);
+    const tDense = performance.now() - t0;
+    ok('a design of densified plots resolves in well under two seconds, and measures its plots',
+      tDense < 2000 && Math.abs(densePlan.minFeature - 10) < 0.01, `${tDense.toFixed(0)} ms for 200 plots x 1000 vertices, ${densePlan.minFeature.toFixed(3)} m`);
+  }
+
+  // ---- a PSF with no weight anywhere on the grid ------------------------------
+  {
+    // Narrow and pushed off centre (sigma 0.05 px, 2 px north, both typeable):
+    // every kernel weight an edge pixel reaches underflows to 0, and aggregate
+    // left such a pixel as a pure pixel of cover 0.
+    const sq = (e0, n0, w, h) => [[e0, n0], [e0 + w, n0], [e0 + w, n0 + h], [e0, n0 + h], [e0, n0]];
+    const one = { epsg, plots: [{ rings: [sq(640040, 5605040, 10, 10)], species: 1 }], plotIds: true, nSpecies: 2, coverSpecies: Uint8Array.from([1]),
+      footprint: convexHull(sq(640040, 5605040, 10, 10)), bbox: [640040, 5605040, 640050, 5605050], minFeature: 10, sig: 'one' };
+    const whole = [640000, 5605000, 640100, 5605100];
+    const blind = { sigmaX: 0.05, sigmaY: 0.05, offX: 0, offY: 2, mixThreshold: 0.8 };
+    const W = simulateField({ res: 10, utmBounds: whole }, [0, 0], layoutOf(one), blind);
+    const part = importedTrialExtent(one, 10, blind, whole);
+    const T = simulateField({ res: 10, utmBounds: part }, [0, 0], layoutOf(one), blind);
+    ok('a pixel whose PSF weighs nothing on the grid is off-trial, not a pure pixel of cover 0',
+      W.total === 1 && Array.from(W.pureBySpecies).join() === '0,1' &&
+      Array.from(W.mixed.slice(90)).every(id => id === OFF_TRIAL.id) && Array.from(W.proportionOffTrial.slice(90)).every(v => v === 1),
+      `total ${W.total}, pure ${Array.from(W.pureBySpecies)}`);
+    ok('so the ladder rung over the trial\'s extent counts what the whole field counts',
+      T.total === W.total && T.purePct === W.purePct && Array.from(T.pureBySpecies).join() === Array.from(W.pureBySpecies).join(),
+      `${T.total} vs ${W.total}`);
+    const design = { nSpecies: 2, nBlocks: 1, plotLength: 10, plotWidth: 10, plotAlley: 0, blockAlley: 0, blocksPerRow: 1, seed: 1 };
+    const bp = buildBlockPlan(design, blockPlacement(whole, [640040, 5605040], 0, 10, true));
+    const blockL = { pattern: 'block', width: 1, spacing: 0, rotationDeg: 0, block: bp };
+    const Bb = simulateField({ res: 10, utmBounds: whole }, [640040, 5605040], blockL, blind);
+    const Bs = simulateField({ res: 10, utmBounds: whole }, [640040, 5605040], blockL, { ...blind, sigmaX: 0.1, sigmaY: 0.1 });
+    ok('a block trial counts the same pixels with that kernel as with one just wide enough not to underflow',
+      Bb.total === Bs.total && Array.from(Bb.pureBySpecies).join() === Array.from(Bs.pureBySpecies).join(), `${Bb.total} vs ${Bs.total}`);
+    const bnd = [4.7, 50.6, 4.702, 50.6015], strips = { pattern: 'col', width: 20, spacing: 0, rotationDeg: 0 };
+    const sweepOf = (sensorS) => resolutionSweep(bnd, 32631, strips, [10, 5], sensorS).map(q => q.purePct).join();
+    ok('the purity sweep of a periodic layout skips such pixels too, and counts none pure when none can see',
+      sweepOf(blind) === sweepOf({ ...blind, sigmaX: 0.1, sigmaY: 0.1 }) &&
+      sweepOf({ sigmaX: 0.01, sigmaY: 0.01, offX: 0.5, offY: 0, mixThreshold: 0.8 }) === '0,0');
+    // Exactly those pixels: the ones aggregate gave no weight at all, which are
+    // the ones with no species, no bare and no off-trial share.
+    let pixels = 0, zero = 0, wrong = 0;
+    // Fixed kernels first: one seen only by its own row's neighbours at the
+    // grid's northern edge, one blind everywhere, one blind only along an edge.
+    const fixedZ = [{ sigmaX: 0.02, sigmaY: 0.02, offX: 1, offY: 0.3 }, { sigmaX: 0.02, sigmaY: 0.02, offX: -1, offY: -0.3 },
+      { sigmaX: 0.01, sigmaY: 0.5, offX: 0.5, offY: 0 }, { sigmaX: 0.05, sigmaY: 0.05, offX: 0, offY: 2 }];
+    for (let it = 0; it < 40; it++) {
+      const sensorZ = it < fixedZ.length ? { ...fixedZ[it], mixThreshold: 0.8 }
+        : { sigmaX: rnd() * 0.08, sigmaY: rnd() < 0.3 ? 1.5 * rnd() : rnd() * 0.08, offX: rnd() * 4 - 2, offY: rnd() * 4 - 2, mixThreshold: 0.8 };
+      // The grid's northern edge cuts through the trial, so its top row holds
+      // plots rather than off-trial margin (which reads the same either way).
+      const r = 1, [b0, b1, b2, b3] = alleyPlan.bbox;
+      const grid = { res: r, utmBounds: [Math.floor(b0) - 2, Math.floor(b1) - 2, Math.ceil(b2) + 2, Math.round((b1 + b3) / 2)] };
+      const L = layoutOf(alleyPlan);
+      const nxZ = Math.round((grid.utmBounds[2] - grid.utmBounds[0]) / r), nyZ = Math.round((grid.utmBounds[3] - grid.utmBounds[1]) / r);
+      const { coverSpecies, nSpecies } = speciesChannel(L);
+      // The engine's own aggregation of this trial, before the blind pixels are
+      // marked: an imported trial is measured by exact areas, not sampled.
+      const agg = aggregateImported(alleyPlan, grid.utmBounds[0], grid.utmBounds[1], nxZ, nyZ, r,
+        { ...sensorZ, mixThreshold: 0.8 }, coverSpecies, nSpecies);
+      const sim = simulateField(grid, [0, 0], L, sensorZ);
+      for (let k = 0; k < sim.mixed.length; k++) {
+        pixels++;
+        const none = agg.cropMapDominantFrac[k] === 0 && agg.cropMapProportionBare[k] === 0 && agg.cropMapProportionOffTrial[k] === 0;
+        if (none) zero++;
+        if (none ? !(sim.mixed[k] === OFF_TRIAL.id && sim.proportionOffTrial[k] === 1)
+                 : !(sim.mixed[k] === agg.cropMapMixed[k] && Object.is(sim.proportionOffTrial[k], agg.cropMapProportionOffTrial[k]))) wrong++;
+      }
+    }
+    ok('and exactly those: every pixel aggregate gave no weight, and no other', wrong === 0 && zero > 0, `${zero} of ${pixels} weightless, ${wrong} wrong`);
+  }
+
+  // ---- more plots than the cover map can number ------------------------------
+  {
+    // A 17 x 15 grid of 2 m plots, all one variety but the last plot. With plot
+    // ids a pixel straddling two plots of that variety is mixed; with species
+    // ids it is pure. That difference is the whole point of plot ids.
+    const t = gridTrial({ nx: 17, ny: 15, w: 2, h: 2, deg: 0, nVar: 1 });
+    const keysOf = n => Array.from({ length: n }, (_, i) => (i === n - 1 ? 'B' : 'A'));
+    const byPlot = resolve(t.plots.slice(0, 253), keysOf(253));
+    const bySpecies = resolve(t.plots.slice(0, 254), keysOf(254));
+    ok('253 plots keep plot ids; the 254th falls back to species ids with an identity table',
+      byPlot.plotIds && byPlot.coverSpecies.length === 253 &&
+      !bySpecies.plotIds && Array.from(bySpecies.coverSpecies).join() === '0,1' && bySpecies.nSpecies === 2);
+    const sensor = { sigmaX: 0, sigmaY: 0, mixThreshold: 0.95 };
+    // One-metre pixels centred on the plot edges: every other pixel in each axis
+    // straddles one, so about three pixels in four touch two plots.
+    const box = (p) => ({ res: 1, utmBounds: [p.bbox[0] - 0.5, p.bbox[1] - 0.5, p.bbox[0] + 34.5, p.bbox[1] + 30.5] });
+    const simP = simulateField(box(byPlot), [0, 0], layoutOf(byPlot), sensor);
+    const simS = simulateField(box(bySpecies), [0, 0], layoutOf(bySpecies), sensor);
+    const fb = coverStats({ mixed: simS.mixed, coverSpecies: bySpecies.coverSpecies, nSpecies: 2, offTrial: simS.proportionOffTrial });
+    ok('with species ids the cover map holds species, and the tallies still add up',
+      Array.from(simS.mixed).every(id => id <= 1 || id >= OFF_TRIAL.id) && fb.pureBySpecies[0] + fb.pureBySpecies[1] === fb.pureCrop && fb.pureBySpecies[1] > 0,
+      `${fb.pureBySpecies[0]} + ${fb.pureBySpecies[1]} of ${fb.total}`);
+    ok('a pixel straddling two plots of one variety is mixed with plot ids and pure with species ids',
+      // Species ids lose only the pixels half off the trial's edge; plot ids keep about one pixel in four.
+      simS.purePct > 80 && simP.purePct < 30, `${simP.purePct.toFixed(1)}% vs ${simS.purePct.toFixed(1)}%`);
+  }
+
+  // ---- a synthetic trial shaped like a real one, end to end ------------------
+  const layout = layoutOf(plan);
+  const sensor = { sigmaX: 0.55, sigmaY: 0.55, mixThreshold: 0.95 };
+  const boxAt = (r, margin) => ({ res: r, utmBounds: [Math.floor((plan.bbox[0] - margin) / r) * r, Math.floor((plan.bbox[1] - margin) / r) * r,
+    Math.ceil((plan.bbox[2] + margin) / r) * r, Math.ceil((plan.bbox[3] + margin) / r) * r] });
+  {
+    let t0 = performance.now();
+    const fine = simulateField(boxAt(0.5, 10), [0, 0], layout, sensor);
+    const tFine = performance.now() - t0;
+    const coarse = simulateField(boxAt(10, 10), [0, 0], layout, sensor);
+    const g = strideFor(0.5, minFeatureM(layout));
+    const e0 = Math.floor(plan.bbox[0]), n0 = Math.floor(plan.bbox[1]);
+    const times = [];
+    for (let i = 0; i < 9; i++) { t0 = performance.now(); buildCropMap(e0, n0, 105 * 2 * g, 160 * 2 * g, 0.5 / g, 0, 0, layout); times.push(performance.now() - t0); }
+    times.sort((a, b) => a - b);
+    console.log(`        (a ${160 * 2 * g} x ${105 * 2 * g} fine cover map at stride ${g} takes ${times[4].toFixed(2)} ms; simulateField, ` +
+      `which measures the plots rather than sampling them, takes ${tFine.toFixed(0)} ms over the whole ${fine.mixed.length}-pixel box)`);
+    ok('the trial runs end to end with one species per variety',
+      fine.nSpecies === 40 && fine.pureBySpecies.length === 40 && fine.proportionBySpecies.length === fine.mixed.length * 40);
+    ok('at 0.5 m most trial pixels are pure, every variety has pure pixels and there is no alley',
+      fine.purePct > 75 && Array.from(fine.pureBySpecies).every(v => v > 0) && fine.pureBare === 0,
+      `${fine.purePct.toFixed(1)}% of ${fine.total}, fewest ${Math.min(...fine.pureBySpecies)} for one variety`);
+    ok('at 10 m, pixels as wide as two thirds of a rotated plot, almost nothing is pure',
+      coarse.purePct < 10 && coarse.total > 50, `${coarse.purePct.toFixed(1)}% of ${coarse.total}`);
+    const trialM2 = 50 * 15 * 14.6, meanSum = Array.from(fine.meanBySpecies).reduce((a, b) => a + b, 0);
+    ok('the trial pixels cover the trial\'s area, and the species share them out',
+      Math.abs(fine.total * 0.25 - trialM2) < 0.05 * trialM2 && meanSum > 0.97 && meanSum <= 1 + 1e-6,
+      `${(fine.total * 0.25).toFixed(0)} vs ${trialM2} m2, species sum ${meanSum.toFixed(3)}`);
+
+    // Repetitions: pure pixels of a variety are the pure pixels of all its plots.
+    const perPlot = new Uint32Array(50);
+    for (const id of fine.mixed) if (id < 50) perPlot[id]++;
+    ok('a variety\'s pure pixels are exactly the pure pixels of its plots, summed',
+      Array.from(fine.pureBySpecies).every((n, s) => n === plan.plots.reduce((a, p, i) => a + (p.species === s ? perPlot[i] : 0), 0)));
+    const reps = trialVarieties.map((v, s) => ({ plots: v.plots, pure: fine.pureBySpecies[s] }));
+    ok('so a variety grown on two plots reads about twice the pure ground of one grown on one',
+      Math.min(...reps.filter(r => r.plots === 2).map(r => r.pure)) > 1.6 * Math.max(...reps.filter(r => r.plots === 1).map(r => r.pure)),
+      `${Math.min(...reps.filter(r => r.plots === 2).map(r => r.pure))} vs ${Math.max(...reps.filter(r => r.plots === 1).map(r => r.pure))}`);
+    const { res, utmBounds } = boxAt(0.5, 10), nx = Math.round((utmBounds[2] - utmBounds[0]) / res);
+    ok('a pixel well inside a plot is pure for that plot, whose species is its variety',
+      plan.plots.every((p, i) => {
+        const [cx, cy] = p.rings[0].slice(0, 4).reduce((a, q) => [a[0] + q[0] / 4, a[1] + q[1] / 4], [0, 0]);
+        const k = Math.floor((cy - utmBounds[1]) / res) * nx + Math.floor((cx - utmBounds[0]) / res);
+        return fine.mixed[k] === i && plan.coverSpecies[fine.mixed[k]] === trialVarieties.findIndex(v => v.key === trial50.keys[i]);
+      }));
+
+    const patchBox = boxAt(1, 5), side = Math.max(patchBox.utmBounds[2] - patchBox.utmBounds[0], patchBox.utmBounds[3] - patchBox.utmBounds[1]);
+    const patch = simulatePatch(patchBox.utmBounds[0], patchBox.utmBounds[1], side, 1, 999, -999, layout, sensor);
+    const field = simulateField({ res: 1, utmBounds: [patchBox.utmBounds[0], patchBox.utmBounds[1], patchBox.utmBounds[0] + side, patchBox.utmBounds[1] + side] }, [0, 0], layout, sensor);
+    ok('simulatePatch over the same square is simulateField, whatever origin it is handed',
+      patch.purePct === field.purePct && patch.mixed.every((v, k) => v === field.mixed[k]) &&
+      patch.proportionBySpecies.every((v, k) => Object.is(v, field.proportionBySpecies[k])));
+    ok('phase optimisation leaves an imported trial where the file put it',
+      bestPhaseOffset('imported', 10, 2, 0, 0.8, E0, N0).join() === '0,0');
+    const lng = trialDesign.plots.flatMap(p => p.rings[0]).map(q => q[0]), lat = trialDesign.plots.flatMap(p => p.rings[0]).map(q => q[1]);
+    const sweep = resolutionSweep([Math.min(...lng) - 0.001, Math.min(...lat) - 0.001, Math.max(...lng) + 0.001, Math.max(...lat) + 0.001], epsg, layout, [20, 10, 1], sensor);
+    ok('the purity sweep measures the trial itself: finer pixels resolve more of it',
+      sweep.every(s => s.purePct >= 0 && s.purePct <= 100) && sweep[2].purePct > 70 && sweep[2].purePct > sweep[0].purePct,
+      sweep.map(s => `${s.gsd}:${s.purePct.toFixed(1)}`).join(' '));
+  }
+
+  // ---- a ladder rung over the trial's extent is the whole-field rung --------
+  {
+    const sensors = [
+      { sigmaX: 0.55, sigmaY: 0.55, mixThreshold: 0.95 },
+      { sigmaX: 1.2, sigmaY: 0.4, mixThreshold: 0.8, offX: 0.7, offY: -0.3 },
+    ];
+    const small = gridTrial({ nx: 4, ny: 3, w: 8, h: 6, alley: 0.5, deg: 23, nVar: 5 });
+    const trials = [[plan, 'trial-like'], [resolve(small.plots, small.keys), 'alleys']];
+    let identical = true, smaller = 0, larger = 0, runs = 0, detail = '';
+    for (const [p, name] of trials) for (const sensorL of sensors) for (const r of name === 'alleys' ? [0.5, 1, 3, 10] : [1, 3, 10]) {
+      const L = layoutOf(p);
+      const whole = [Math.floor((p.bbox[0] - 45) / r) * r, Math.floor((p.bbox[1] - 30) / r) * r, Math.ceil((p.bbox[2] + 25) / r) * r, Math.ceil((p.bbox[3] + 40) / r) * r];
+      const part = importedTrialExtent(p, r, sensorL, whole);
+      const W = simulateField({ res: r, utmBounds: whole }, [0, 0], L, sensorL);
+      const T = simulateField({ res: r, utmBounds: part }, [0, 0], L, sensorL);
+      const nW = Math.round((whole[2] - whole[0]) / r), nT = Math.round((part[2] - part[0]) / r);
+      const dc = Math.round((part[0] - whole[0]) / r), dr = Math.round((part[1] - whole[1]) / r);
+      const nSp = W.nSpecies;
+      let same = W.purePct === T.purePct && W.total === T.total && Array.from(W.pureBySpecies).join() === Array.from(T.pureBySpecies).join();
+      let trialInT = 0;
+      for (let k = 0; k < T.mixed.length && same; k++) {
+        if (T.proportionOffTrial[k] > 0.5) continue;
+        trialInT++;
+        const kw = (Math.floor(k / nT) + dr) * nW + (k % nT) + dc;
+        same = T.mixed[k] === W.mixed[kw] && Object.is(T.proportionA[k], W.proportionA[kw]) && Object.is(T.proportionBare[k], W.proportionBare[kw]) &&
+          Object.is(T.proportionOffTrial[k], W.proportionOffTrial[kw]);
+        for (let s = 0; s < nSp && same; s++) same = Object.is(T.proportionBySpecies[k * nSp + s], W.proportionBySpecies[kw * nSp + s]);
+      }
+      same = same && trialInT === W.total;
+      if (!same && identical) detail = `${name} differs at ${r} m`;
+      identical = identical && same;
+      runs++;
+      if (T.mixed.length < W.mixed.length) smaller++;
+      if (T.mixed.length > W.mixed.length) larger++;
+    }
+    ok('a rung simulated over the imported trial\'s extent equals the whole-field rung, bitwise, pixel for pixel', identical, detail || `${runs} rungs`);
+    ok('and it never simulates more pixels than the field, and fewer on most rungs',
+      larger === 0 && smaller >= runs / 2, `${smaller} of ${runs} smaller`);
+    const extent = [0, 0, 100, 100];
+    const farAway = { ...plan, bbox: [5000, 5000, 5100, 5100] };
+    ok('importedTrialExtent never reaches outside the field, even for a trial that is not on it',
+      importedTrialExtent(farAway, 1, sensors[0], extent).join() === '0,0,1,1');
+  }
+}
+
+console.log('\nH13. an imported trial is measured, not sampled');
+{
+  // The engine sampled a pixel by classifying g x g fine cells by their centres,
+  // and g is 4 wherever plots are wider than the pixel: a pixel's share of a
+  // plot came in quarters. Along a tilted edge those roundings cancel out;
+  // along an edge PARALLEL to the pixel rows every pixel rounds the same way,
+  // so a trial staked along the grid lost pure pixels it really had and the page
+  // told the agronomist that lining a trial up with the satellite does not pay.
+  // Shares are polygon areas now. This section pins them against arithmetic
+  // anyone can redo by hand, against sampling fine enough to be trusted, and
+  // against that conclusion.
+  const epsg = 32631;
+  // Whole metres, where a coordinate and an offset of a few metres are both
+  // exact: an area computed here is the analytic one to the last bit, not to
+  // the 1e-9 m a six-figure easting would round every vertex to.
+  const E0 = 500000, N0 = 4000000;
+  let seed13 = 424242;
+  const rnd13 = () => (seed13 = (Math.imul(seed13, 1664525) + 1013904223) >>> 0) / 4294967296;
+  const boxRing = (x, y, w, h) => [[x, y], [x + w, y], [x + w, y + h], [x, y + h], [x, y]];
+  const turnRing = (cx, cy, w, h, deg) => {
+    const t = (deg * Math.PI) / 180, c = Math.cos(t), s = Math.sin(t);
+    return [[-w / 2, -h / 2], [w / 2, -h / 2], [w / 2, h / 2], [-w / 2, h / 2]].map(([u, v]) => [cx + u * c - v * s, cy + u * s + v * c]);
+  };
+  const circleRing = (cx, cy, r, n) => Array.from({ length: n }, (_, k) => [cx + r * Math.cos((2 * Math.PI * k) / n), cy + r * Math.sin((2 * Math.PI * k) / n)]);
+  /** A plan built by hand, so a fixture is its geometry and nothing else. */
+  const planOf = (plots, nSpecies, tag) => {
+    const all = plots.flatMap(p => p.rings.flat());
+    return {
+      epsg, plots, coverSpecies: Uint8Array.from(plots, p => p.species), plotIds: true, nSpecies,
+      footprint: convexHull(all),
+      bbox: [Math.min(...all.map(q => q[0])), Math.min(...all.map(q => q[1])), Math.max(...all.map(q => q[0])), Math.max(...all.map(q => q[1]))],
+      minFeature: 1, sig: `h13-${tag}`,
+    };
+  };
+  const importedLayout = (plan) => ({ pattern: 'imported', width: 2, spacing: 0, rotationDeg: 0, imported: plan });
+  /** What each cover holds of each pixel, in square metres: the engine's phase 1 itself. */
+  const sharesOf = (plan, minE, minN, nx, ny, res) => {
+    const { pc } = importedPixelCovers(plan, minE, minN, nx, ny, res);
+    return Array.from({ length: nx * ny }, (_, k) => {
+      const m = new Map();
+      for (let q = pc.pairStart[k]; q < pc.pairStart[k + 1]; q++) m.set(pc.pairSlot[q], (m.get(pc.pairSlot[q]) ?? 0) + pc.pairW[q]);
+      return m;
+    });
+  };
+  const orderOf = (plan, minE, minN, nx, ny, res) => {
+    const { pc } = importedPixelCovers(plan, minE, minN, nx, ny, res);
+    return Array.from({ length: nx * ny }, (_, k) => Array.from(pc.pairSlot.slice(pc.pairStart[k], pc.pairStart[k + 1])));
+  };
+  /** Independent of the engine: the cover of a point, straight from pointInPoly, later plots winning. */
+  const coverAtPoint = (plan, E, N) => {
+    let id = pointInPoly(E, N, plan.footprint) ? BARE.id : OFF_TRIAL.id;
+    plan.plots.forEach((p, i) => {
+      let inside = false;
+      for (const ring of p.rings) if (pointInPoly(E, N, ring)) inside = !inside;
+      if (inside) id = plan.plotIds ? i : p.species;
+    });
+    return id;
+  };
+
+  // ---- areas anyone can check by hand ---------------------------------------
+  {
+    const rect = planOf([{ rings: [boxRing(E0 + 2.25, N0 + 1.25, 3.5, 2.5)], species: 0 }], 2, 'rect');
+    const sh = sharesOf(rect, E0, N0, 8, 8, 1);
+    const at = (i, j, cover) => sh[j * 8 + i].get(cover) ?? 0;
+    ok('the pixel holding a rectangle\'s corner gets exactly the corner\'s area',
+      at(2, 1, 0) === 0.75 * 0.75, `${at(2, 1, 0)} vs ${0.75 * 0.75}`);
+    ok('a pixel inside the plot is the whole pixel, one outside it none of it',
+      at(3, 2, 0) === 1 && at(6, 6, 0) === 0 && at(6, 6, OFF_TRIAL.id) === 1);
+    ok('and the plot\'s shares add up to its area',
+      Math.abs(sh.reduce((a, m) => a + (m.get(0) ?? 0), 0) - 3.5 * 2.5) < 1e-12);
+
+    // A 4 x 4 square turned 45 degrees: every pixel it meets is cut by a slope,
+    // the very case a centre-sampled quarter cannot express.
+    const diamond = planOf([{ rings: [turnRing(E0 + 4, N0 + 4, 4, 4, 45)], species: 0 }], 2, 'diamond');
+    const dsh = sharesOf(diamond, E0, N0, 8, 8, 1);
+    // Its corners are irrational, so they land on the 1e-10 m lattice a
+    // six-figure easting has: that rounding, not the clipping, is what these
+    // two are allowed to differ by.
+    const leg = 4 + 2 * Math.SQRT2 - 6;   // how far its east corner reaches past x = 6
+    ok('a rotated square keeps its area, and the pixel past its corner holds the triangle it cuts',
+      Math.abs(dsh.reduce((a, m) => a + (m.get(0) ?? 0), 0) - 16) < 1e-9 &&
+      Math.abs((dsh[4 * 8 + 6].get(0) ?? 0) - (leg * leg) / 2) < 1e-9,
+      `${dsh.reduce((a, m) => a + (m.get(0) ?? 0), 0)} m2, corner pixel ${(dsh[4 * 8 + 6].get(0) ?? 0).toFixed(9)}`);
+
+    // A hole, by the even-odd rule the rasteriser uses: the ring inside the ring
+    // is not covered, whichever way either of them is wound.
+    const holed = planOf([{ rings: [boxRing(E0 + 1, N0 + 1, 6, 6), boxRing(E0 + 2.5, N0 + 2.5, 3, 3).slice().reverse()], species: 0 }], 2, 'hole');
+    const hsh = sharesOf(holed, E0, N0, 8, 8, 1);
+    ok('a plot with a hole covers its area less the hole\'s, and the hole is bare ground',
+      Math.abs(hsh.reduce((a, m) => a + (m.get(0) ?? 0), 0) - (36 - 9)) < 1e-9 &&
+      (hsh[3 * 8 + 3].get(BARE.id) ?? 0) === 1 && (hsh[3 * 8 + 3].get(0) ?? 0) === 0 &&
+      Math.abs((hsh[2 * 8 + 2].get(0) ?? 0) - 0.75) < 1e-12 && Math.abs((hsh[2 * 8 + 2].get(BARE.id) ?? 0) - 0.25) < 1e-12,
+      `${hsh.reduce((a, m) => a + (m.get(0) ?? 0), 0)} m2`);
+
+    const multi = planOf([{ rings: [boxRing(E0 + 1, N0 + 1, 2.5, 2), boxRing(E0 + 5, N0 + 4.5, 2, 2.5)], species: 0 }], 2, 'multi');
+    const msh = sharesOf(multi, E0, N0, 8, 8, 1);
+    ok('a plot in two parts covers both of them and nothing between',
+      Math.abs(msh.reduce((a, m) => a + (m.get(0) ?? 0), 0) - (2.5 * 2 + 2 * 2.5)) < 1e-12 &&
+      (msh[3 * 8 + 3].get(0) ?? 0) === 0);
+
+    const over = planOf([{ rings: [boxRing(E0 - 2.5, N0 + 2, 5, 3)], species: 0 }], 2, 'edge');
+    const osh = sharesOf(over, E0, N0, 8, 8, 1);
+    ok('a plot running off the grid is counted only where the grid is',
+      Math.abs(osh.reduce((a, m) => a + (m.get(0) ?? 0), 0) - 2.5 * 3) < 1e-12);
+
+    // Overlapping plots: the rasteriser paints them in file order, so the later
+    // one holds the ground they share, and the earlier one keeps the rest.
+    const lap = planOf([{ rings: [boxRing(E0 + 1, N0 + 1, 4, 4)], species: 0 }, { rings: [boxRing(E0 + 3, N0 + 3, 4, 4)], species: 1 }], 2, 'lap');
+    const lsh = sharesOf(lap, E0, N0, 8, 8, 1);
+    ok('where two plots overlap the later one takes the ground they share',
+      Math.abs(lsh.reduce((a, m) => a + (m.get(1) ?? 0), 0) - 16) < 1e-9 &&
+      Math.abs(lsh.reduce((a, m) => a + (m.get(0) ?? 0), 0) - (16 - 4)) < 1e-9 &&
+      (lsh[3 * 8 + 3].get(0) ?? 0) === 0 && (lsh[3 * 8 + 3].get(1) ?? 0) === 1,
+      `${lsh.reduce((a, m) => a + (m.get(0) ?? 0), 0).toFixed(6)} m2 left of ${4 * 4} for the earlier plot`);
+
+    // The order the covers are listed in is part of the answer: phase 2 adds the
+    // weights in it and breaks a dominance tie by it.
+    const order = orderOf(lap, E0, N0, 8, 8, 1).concat(orderOf(holed, E0, N0, 8, 8, 1));
+    const ordered = order.every(ids => {
+      const plots = ids.filter(id => id <= MAX_COVER), rest = ids.filter(id => id > MAX_COVER);
+      return plots.every((id, i) => i === 0 || id > plots[i - 1]) &&
+             ids.slice(0, plots.length).join() === plots.join() &&
+             (rest.length < 2 || (rest[0] === BARE.id && rest[1] === OFF_TRIAL.id)) &&
+             new Set(ids).size === ids.length;
+    });
+    ok('a pixel lists its covers in ascending cover id, then bare alley, then off-trial ground', ordered);
+  }
+
+  // ---- against sampling fine enough to be trusted ----------------------------
+  {
+    // 64 x 64 samples per pixel, classified by the independent point test above:
+    // an edge crossing a pixel is then resolved to a 64th of it, so the exact
+    // area and the sampled one may differ by about that much and no more.
+    let worst = 0, worstWhat = '', sums = 0, neg = 0, pixels = 0, designs = 0;
+    for (let it = 0; it < 8; it++) {
+      const plots = [];
+      for (let p = 0; p < 3 + (it % 3); p++) {
+        const cx = E0 + 3 + rnd13() * 6, cy = N0 + 3 + rnd13() * 6, deg = rnd13() * 180, sp = p % 3;
+        if (it % 4 === 0) plots.push({ rings: [turnRing(cx, cy, 2 + rnd13() * 5, 2 + rnd13() * 5, deg)], species: sp });
+        else if (it % 4 === 1) plots.push({ rings: [turnRing(cx, cy, 5, 5, deg), turnRing(cx, cy, 2, 2, deg + 25)], species: sp });      // a hole
+        else if (it % 4 === 2) plots.push({ rings: [circleRing(cx, cy, 1 + rnd13() * 2, 9 + Math.floor(rnd13() * 20))], species: sp });  // round
+        else plots.push({ rings: [[[cx - 3, cy - 2], [cx + 3, cy + 2], [cx + 3, cy - 2], [cx - 3, cy + 2]]], species: sp });             // a bow tie
+      }
+      const plan = planOf(plots, 3, `sample${it}`);
+      const res = [0.5, 1, 2][it % 3];
+      const minE = Math.floor((plan.bbox[0] - res) / res) * res, minN = Math.floor((plan.bbox[1] - res) / res) * res;
+      const nx = Math.min(24, Math.ceil((plan.bbox[2] + res - minE) / res)), ny = Math.min(24, Math.ceil((plan.bbox[3] + res - minN) / res));
+      const got = sharesOf(plan, minE, minN, nx, ny, res);
+      designs++;
+      const S = 64, cell = (res * res) / (S * S);
+      for (let k = 0; k < nx * ny; k++) {
+        pixels++;
+        let sum = 0;
+        for (const v of got[k].values()) { sum += v; if (!(v > 0)) neg++; }
+        if (Math.abs(sum - res * res) > 1e-9 * res * res) sums++;
+        const want = new Map();
+        const i = k % nx, j = (k / nx) | 0;
+        for (let a = 0; a < S; a++) for (let b = 0; b < S; b++) {
+          const id = coverAtPoint(plan, minE + i * res + ((b + 0.5) * res) / S, minN + j * res + ((a + 0.5) * res) / S);
+          want.set(id, (want.get(id) ?? 0) + cell);
+        }
+        for (const id of new Set([...got[k].keys(), ...want.keys()])) {
+          const d = Math.abs((got[k].get(id) ?? 0) - (want.get(id) ?? 0)) / (res * res);
+          if (d > worst) { worst = d; worstWhat = `design ${it} at ${res} m, pixel ${k}, cover ${id}`; }
+        }
+      }
+    }
+    ok('exact shares agree with 64 x 64 sampling of rotated, holed, round and self-crossing plots',
+      worst < 0.05, `worst ${worst.toFixed(4)} of a pixel (${worstWhat}), ${designs} designs, ${pixels} pixels`);
+    ok('and every pixel\'s shares add up to its area, with nothing negative in them',
+      sums === 0 && neg === 0, `${sums} pixels off, ${neg} shares not positive`);
+  }
+
+  // ---- what the sampling cost the agronomist --------------------------------
+  {
+    // The file this feature was built for: 50 contiguous plots of about 14.6 x
+    // 15 m, ten across and five up, drawn 11.36 degrees off the pixel rows, 40
+    // varieties with ten of them grown twice.
+    const trial = (deg) => {
+      const t = (deg * Math.PI) / 180, c = Math.cos(t), s = Math.sin(t);
+      const at = (u, v) => [E0 + u * c - v * s, N0 + u * s + v * c];
+      const w = 14.63, h = 14.99, plots = [];
+      for (let j = 0; j < 5; j++) for (let i = 0; i < 10; i++) {
+        const u0 = i * w, v0 = j * h, k = plots.length;
+        plots.push({ rings: [[at(u0, v0), at(u0 + w, v0), at(u0 + w, v0 + h), at(u0, v0 + h), at(u0, v0)]], species: k < 40 ? k : ((k - 40) * 7) % 40 });
+      }
+      return planOf(plots, 40, `trial${deg}`);
+    };
+    const shift = (plan, dx, dy) => ({
+      ...plan,
+      plots: plan.plots.map(p => ({ ...p, rings: p.rings.map(r => r.map(([x, y]) => [x + dx, y + dy])) })),
+      footprint: plan.footprint.map(([x, y]) => [x + dx, y + dy]),
+      bbox: [plan.bbox[0] + dx, plan.bbox[1] + dy, plan.bbox[2] + dx, plan.bbox[3] + dy],
+      sig: `${plan.sig}|${dx},${dy}`,
+    });
+    const s2 = { sigmaX: 0.55, sigmaY: 0.55, mixThreshold: 0.9 };
+    /** Pure pixels of a trial on the pixel lattice of size r, over its own ground. */
+    const pureCount = (plan, r) => {
+      const m = 6 * r, b = plan.bbox;
+      const ext = [Math.floor((b[0] - m) / r) * r, Math.floor((b[1] - m) / r) * r, Math.ceil((b[2] + m) / r) * r, Math.ceil((b[3] + m) / r) * r];
+      const sim = simulateField({ res: r, utmBounds: ext }, [0, 0], importedLayout(plan), s2);
+      return Array.from(sim.pureBySpecies).reduce((a, c) => a + c, 0);
+    };
+    const drawn = trial(11.36), aligned = trial(0);
+    const rows = [];
+    let wins = true;
+    for (const r of [2, 4, 5]) {
+      const asDrawn = pureCount(drawn, r);
+      let best = -1;
+      for (let i = 0; i < 10; i++) for (let j = 0; j < 10; j++) best = Math.max(best, pureCount(shift(aligned, (i * r) / 10, (j * r) / 10), r));
+      rows.push(`${r} m: ${best} aligned vs ${asDrawn} as drawn`);
+      wins = wins && best >= asDrawn;
+    }
+    // Sampled in quarters, this very trial read 1660 aligned against 1679 as
+    // drawn at 2 m, and the user's own file 1650 against 1657: staking a trial
+    // along the pixel rows looked like a mistake, because every pixel beside an
+    // edge parallel to those rows had its neighbour's share rounded the same way.
+    ok('a trial staked along the pixel rows now keeps at least what the same trial drawn across them keeps',
+      wins, rows.join(', '));
+
+    // The old answer depended on the stride the fine grid would have used, which
+    // is a property of the narrowest plot, not of the ground.
+    const coarse = { ...drawn, minFeature: 40, sig: `${drawn.sig}|coarse` };
+    ok('and the measurement no longer depends on how finely the old grid would have sampled',
+      pureCount(coarse, 4) === pureCount(drawn, 4) && minFeatureM(importedLayout(coarse)) !== minFeatureM(importedLayout(drawn)));
+  }
+
+  // ---- every other layout is untouched --------------------------------------
+  {
+    // A strip or block layout still goes through the fine grid, bit for bit:
+    // only an imported trial takes the exact path.
+    const res = 2, minE = 500040, minN = 4000060, nx = 24, ny = 18;
+    const grid = { res, utmBounds: [minE, minN, minE + nx * res, minN + ny * res] };
+    const origin = [minE - 3.25, minN + 1.5];
+    const design = { nSpecies: 4, nBlocks: 3, plotLength: 12, plotWidth: 3, plotAlley: 0.5, blockAlley: 1.5, blocksPerRow: 2, seed: 5 };
+    const layouts = [
+      { pattern: 'row', width: 3, spacing: 0, rotationDeg: 0 },
+      { pattern: 'col', width: 5, spacing: 1.5, rotationDeg: 17 },
+      { pattern: 'checker', width: 4, spacing: 0, rotationDeg: 0 },
+      { pattern: 'block', width: 3, spacing: 0, rotationDeg: 0, block: buildBlockPlan(design, blockPlacement(grid.utmBounds, origin, 0, res, true)) },
+    ];
+    let same = true, detail = '';
+    for (const layout of layouts) {
+      for (const sensor of [{ sigmaX: 0, sigmaY: 0, mixThreshold: 0.8 }, { sigmaX: 0.55, sigmaY: 0.55, mixThreshold: 0.95, offX: 0.3, offY: -0.2 }]) {
+        const sim = simulateField(grid, origin, layout, sensor);
+        const g = strideFor(res, minFeatureM(layout));
+        const cropMap = buildCropMap(minE, minN, ny * g, nx * g, res / g, origin[0], origin[1], layout);
+        const { coverSpecies, nSpecies } = speciesChannel(layout);
+        const agg = aggregate(new Array(ny * g * nx * g).fill(new Float64Array(0)), ny * g, nx * g, g, sensor.sigmaX, sensor.sigmaY, true, 0, cropMap,
+          sensor.mixThreshold, sensor.offX ?? 0, sensor.offY ?? 0, coverSpecies, nSpecies);
+        const fields = sim.mixed.every((v, k) => v === agg.cropMapMixed[k]) &&
+          sim.proportionA.every((v, k) => Object.is(v, agg.cropMapProportionA[k])) &&
+          sim.proportionBare.every((v, k) => Object.is(v, agg.cropMapProportionBare[k])) &&
+          sim.proportionBySpecies.every((v, k) => Object.is(v, agg.cropMapSpecies[k]));
+        if (!fields && same) detail = `${layout.pattern} at sigma ${sensor.sigmaX}`;
+        same = same && fields;
+      }
+    }
+    ok('a strip or block layout is still the fine grid\'s own aggregation, bitwise', same, detail || '4 layouts x 2 sensors');
+  }
 }
 
 console.log('\nH4. one blend in the codebase: mix3 is the two-species spelling of mixN');
