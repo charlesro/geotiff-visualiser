@@ -1,4 +1,5 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useState } from 'react';
+import { Boundary } from './Boundary';
 import { MapContainer, TileLayer, Rectangle, Polygon, GeoJSON, Pane, ScaleControl } from 'react-leaflet';
 import L from 'leaflet';
 import { AOI_STYLE, BASEMAPS, GridLines, PolyDrawer, PsfOverlay, RectDrawer, TruthOverlay, ViewTracker, type BasemapKey } from './map-layers';
@@ -17,7 +18,7 @@ const LEGEND_MAX = 12;
  * It takes the hook objects whole rather than 30-odd scalars — the alternative
  * is a prop list nobody can read. `geoKey` is the exception and arrives as an
  * opaque string: it is assembled in the SHELL because that is the only scope
- * where all thirteen of its inputs are live, and it exists because react-leaflet
+ * where all of its inputs are live, and it exists because react-leaflet
  * will not restyle a <GeoJSON> on a prop change. Remounting on a changed key is
  * the ONLY thing that repaints the overlay, so a dropped segment shows up as a
  * stale map with no type error and no test failure.
@@ -27,7 +28,7 @@ const LEGEND_MAX = 12;
  * subscription of its own, so it only refreshes because ViewTracker re-renders
  * this whole tree.
  */
-export function FieldMap({
+function FieldMapBody({
   mapRef, initialCenter, initialZoom, onView, basemap, setBasemap, showField, setShowField, showPsf, setShowPsf,
   fieldOnly, setFieldOnly, simOn, geoKey, area, gridApi, exp, sim, pca,
 }: {
@@ -57,16 +58,15 @@ export function FieldMap({
   const onGridStep = useCallback((m: number) => setLineStepM(m), []);
   const { selectedPixels, selectionGeojson } = pca;
   /**
-   * The simulation overlay with "In field only" applied. Both simulation views
-   * used to draw simGeojson straight through, so while step 3 or 4 was open the
-   * toggle changed nothing on screen. Filtered by the same col/row key as the
-   * in-field pixel list, so the two can never disagree about which pixels count.
+   * The simulation overlay is ALWAYS the field's pixels: useSimulation builds it
+   * from the same membership rule the export and the pixel count use, so there is
+   * nothing left for "In field only" to trim here. It used to be filtered a
+   * second time against the in-field list, which could only ever remove nothing,
+   * over every cell on every update. The toggle still rules the plain grid,
+   * where out-of-field pixels really are drawn, and says so when it cannot act.
    */
-  const shownSim = useMemo(() => {
-    if (!fieldOnly || !fieldGeojson || !simGeojson) return simGeojson;
-    const keep = new Set((fieldGeojson.features as any[]).map(f => `${f.properties.col},${f.properties.row}`));
-    return { ...simGeojson, features: simGeojson.features.filter(f => keep.has(`${f.properties.col},${f.properties.row}`)) };
-  }, [fieldOnly, fieldGeojson, simGeojson]);
+  const shownSim = simGeojson;
+  const simTrimmed = simOn && !!simGeojson;
   // react-leaflet never redraws a <GeoJSON> when its data changes, so the key
   // has to move with the toggle or the filtered overlay would not appear.
   const fieldKey = fieldOnly ? '-in' : '';
@@ -128,7 +128,7 @@ export function FieldMap({
                 ? <GeoJSON key={geoKey + '-field' + fieldKey} data={d as any} style={fieldOutlineStyle} />
                 : gridLines;
             }
-            if (simOn && shownSim) return <GeoJSON key={geoKey + fieldKey} data={shownSim} style={(f: any) => simStyle(f?.properties?.f ?? 0, f?.properties?.b ?? 0, f?.properties?.mx ?? 0, f?.properties?.sp, f?.properties?.off ?? 0)} />;
+            if (simOn && shownSim) return <GeoJSON key={geoKey + fieldKey} data={shownSim} style={(f: any) => simStyle(f?.properties?.f ?? 0, f?.properties?.b ?? 0, f?.properties?.sp, f?.properties?.off ?? 0)} />;
             // "In field only": draw the kept cells as squares instead of ruling
             // lines across the whole bounding box. Same colour as the lines so it
             // reads as the same grid, just trimmed.
@@ -176,10 +176,12 @@ export function FieldMap({
         {/* Trim the grid to the traced field */}
         <button
           onClick={() => setFieldOnly(v => !v)}
-          disabled={!build || !fieldGeojson}
+          disabled={!build || !fieldGeojson || simTrimmed}
           title={!fieldGeojson
             ? (aoi ? 'Zoom in until the pixels are drawn to use this' : 'Draw a field in step 1 to use this')
-            : 'Show only the exported pixels (centred inside the field)'}
+            : simTrimmed
+              ? 'The simulation already draws only the pixels that overlap the field'
+              : 'Show only the exported pixels (the ones that overlap the field)'}
           className={`absolute right-3 top-[5.25rem] z-[1000] rounded-md border px-3 py-1.5 text-xs backdrop-blur transition-colors disabled:opacity-40 ${
             fieldOnly ? 'border-sky-400/70 bg-[#11151acc] text-sky-300' : 'border-white/10 bg-[#11151acc] text-slate-300 hover:text-slate-100'
           }`}
@@ -261,4 +263,13 @@ export function FieldMap({
         )}
       </div>
   );
+}
+
+/**
+ * The map, inside its own failure boundary. A bad ring, a Leaflet error or a
+ * projection that throws must not take the sidebar with it: the sidebar is
+ * where every control and Reset live.
+ */
+export function FieldMap(p: Parameters<typeof FieldMapBody>[0]) {
+  return <Boundary name="The map"><FieldMapBody {...p} /></Boundary>;
 }

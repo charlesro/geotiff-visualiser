@@ -82,12 +82,12 @@ function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, onSel
     // The shared orientation rule, so this chart and its thumbnail face the same way.
     const [sx, sy] = axisSigns(fit, cx, cy, species);
     return fit.pts.map(p => {
-      const st = pointStyle(p, colorBy, shapeBy, colors);
+      const st = pointStyle(p, colorBy, shapeBy, colors, threshold);
       return { x: sx * (p.s[cx] ?? 0), y: sy * (p.s[cy] ?? 0), fr: p.fr, bare: p.bare, off: p.off, kind: st.kind, color: st.color, sym: st.sym, k: p.k, rim: st.rim };
     });
     // NOT keyed on the selection: selecting a point only redraws the canvas, it
     // never rebuilds these 20,000-odd encodings.
-  }, [fit, cx, cy, colorBy, shapeBy, colors.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [fit, cx, cy, colorBy, shapeBy, colors.join(','), threshold]); // eslint-disable-line react-hooks/exhaustive-deps
   const anyBare = points.some(p => p.kind === 'bare');
   const anyOff = points.some(p => p.kind === 'off');
 
@@ -322,13 +322,13 @@ function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, onSel
               <select className={selectClass} value={colorBy} onChange={e => setColorBy(e.target.value as ColorBy)}>
                 <option value="mixing">mix fraction</option>
                 <option value="species">species</option>
-                <option value="purity">pure / mixed</option>
+                <option value="purity">pure / mixed (at {threshold}%)</option>
               </select>
             </label>
             <label className="flex items-center gap-1">Shape
               <select className={selectClass} value={shapeBy} onChange={e => setShapeBy(e.target.value as ShapeBy)}>
                 <option value="species">species</option>
-                <option value="purity">pure / mixed</option>
+                <option value="purity">pure / mixed (at {threshold}%)</option>
                 <option value="none">none</option>
               </select>
             </label>

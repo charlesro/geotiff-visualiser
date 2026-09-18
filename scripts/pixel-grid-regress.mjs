@@ -1,16 +1,16 @@
 /**
- * Regression suite for the Pixel Grid Designer's pure modules —
+ * Regression suite for the Pixel Grid Designer's pure modules:
  * run with `npm run test:pixel-grid`.
  *
  * The tool itself (src/pixel-grid/PixelGridApp.tsx) is one big component that
  * only orchestrates; everything that can be *wrong* lives in three dependency-
  * free-ish modules underneath it:
  *
- *   s2-grid.ts    the UTM lattice — if the phase slips by a metre the exported
+ *   s2-grid.ts    the UTM lattice: if the phase slips by a metre the exported
  *                 shapefile no longer matches the product's pixels,
- *   simulate.ts   the mixed-pixel engine — purity is the number the agronomist
+ *   simulate.ts   the mixed-pixel engine: purity is the number the agronomist
  *                 actually reads off the page,
- *   shapefile.ts  the byte writer — a malformed zip fails silently in QGIS.
+ *   shapefile.ts  the byte writer: a malformed zip fails silently in QGIS.
  *
  * These are CHARACTERIZATION tests: they pin what the code does today so the
  * component above can be restructured without changing any of it. Where the
@@ -19,11 +19,12 @@
  * Same mechanism as the other two suites: transpile the TypeScript with the
  * esbuild that ships inside Vite and exercise it from node. Unlike those, these
  * modules import each other and proj4, so the transpiled tree is written under
- * node_modules/ (mirroring src/) — relative specifiers keep working and node
+ * node_modules/ (mirroring src/), where relative specifiers keep working and node
  * still resolves proj4 by walking up to the project's node_modules.
  *
- * Nothing here touches the network: `fetchCoveringGrids` is out of scope, only
- * the offline maths is tested.
+ * Nothing here touches the network. The one section that exercises
+ * `fetchCoveringGrids` (E2) replaces `fetch` with a catalogue of its own, so
+ * what is tested is the deadline and the fallback, never a real API.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -43,7 +44,7 @@ const REVEAL = {
 };
 
 fs.rmSync(BUILD, { recursive: true, force: true });
-for (const rel of ['src/lib/geo.ts', 'src/lib/projections.ts', 'src/pixel-grid/s2-grid.ts', 'src/pixel-grid/geometry.ts', 'src/pixel-grid/simulate.ts', 'src/pixel-grid/shapefile.ts', 'src/pixel-grid/util.ts', 'src/pixel-grid/pca-field.ts', 'src/pixel-grid/ladder.ts', 'src/pixel-grid/design-import.ts', 'src/pixel-grid/imported-plan.ts', 'src/pixel-grid/imported-rotate.ts']) {
+for (const rel of ['src/lib/geo.ts', 'src/lib/projections.ts', 'src/pixel-grid/s2-grid.ts', 'src/pixel-grid/geometry.ts', 'src/pixel-grid/simulate.ts', 'src/pixel-grid/shapefile.ts', 'src/pixel-grid/util.ts', 'src/pixel-grid/pca-field.ts', 'src/pixel-grid/ladder.ts', 'src/pixel-grid/ladder-rung.ts', 'src/pixel-grid/sensors.ts', 'src/pixel-grid/design-import.ts', 'src/pixel-grid/imported-plan.ts', 'src/pixel-grid/imported-rotate.ts', 'src/pixel-grid/field-membership.ts']) {
   let ts = fs.readFileSync(path.join(ROOT, rel), 'utf8');
   for (const decl of REVEAL[rel] ?? []) ts = reveal(ts, decl);
   // esbuild only strips types; relative specifiers still need an extension to
@@ -57,7 +58,7 @@ for (const rel of ['src/lib/geo.ts', 'src/lib/projections.ts', 'src/pixel-grid/s
 
 const {
   utmZoneForLng, utmEpsg, centralMeridian, zoneFromEpsg, gridConvergence,
-  buildS2Grid, aoiUtmOrigin, gridToGeoJson,
+  buildS2Grid, aoiUtmOrigin, gridToGeoJson, fetchCoveringGrids, EARTH_SEARCH_URL, STAC_TIMEOUT_MS,
 } = await import(path.join(BUILD, 'src/pixel-grid/s2-grid.mjs'));
 const {
   makeTruth, makeBetaSchedule, cultureForCell, aggregate, simulate,
@@ -71,10 +72,14 @@ const { mix3, mixN, distinctColors, coverShares } = await import(path.join(BUILD
 const { embed } = await import(path.join(BUILD, 'src/lib/projections.mjs'));
 const { fitCover, axisSigns, pointStyle, samplePts, linearPca, pixelId, MIN_PTS } = await import(path.join(BUILD, 'src/pixel-grid/pca-field.mjs'));
 const { trialExtent, importedTrialExtent } = await import(path.join(BUILD, 'src/pixel-grid/ladder.mjs'));
+const { ladderKey, rungCellOrigin } = await import(path.join(BUILD, 'src/pixel-grid/ladder-rung.mjs'));
+// The real ladder, so a size added to the page is a size these checks cover.
+const { RES_LADDER } = await import(path.join(BUILD, 'src/pixel-grid/sensors.mjs'));
 const { resolveImportedPlan, varietyKeyOf, convexHull, hullWidth, narrowestFeature, foldRing } = await import(path.join(BUILD, 'src/pixel-grid/imported-plan.mjs'));
 const { purePixels, stakeOnGrid } = await import(path.join(BUILD, 'src/pixel-grid/imported-rotate.mjs'));
-const { varietiesOf: readerVarietiesOf } = await import(path.join(BUILD, 'src/pixel-grid/design-import.mjs'));
-const { pointInPoly } = await import(path.join(BUILD, 'src/pixel-grid/geometry.mjs'));
+const { varietiesOf: readerVarietiesOf, varietyKeyOf: readerVarietyKeyOf } = await import(path.join(BUILD, 'src/pixel-grid/design-import.mjs'));
+const { pointInPoly, fieldOverlapTest, viewShowsField } = await import(path.join(BUILD, 'src/pixel-grid/geometry.mjs'));
+const { cellInFieldTest } = await import(path.join(BUILD, 'src/pixel-grid/field-membership.mjs'));
 const { gridToShapefileZip } = await import(path.join(BUILD, 'src/pixel-grid/shapefile.mjs'));
 
 /**
@@ -91,7 +96,7 @@ const ok = (name, cond, extra = '') => {
   console.log(`  ${cond ? 'PASS' : 'FAIL'}  ${name}${extra ? '  ' + extra : ''}`);
 };
 
-/** A small field near Louvain-la-Neuve — UTM zone 31N, the app's home ground. */
+/** A small field near Louvain-la-Neuve, UTM zone 31N, the app's home ground. */
 const AOI = [4.7000, 50.6000, 4.7021, 50.6010];
 const SHARP = { sigmaX: 0, sigmaY: 0, mixThreshold: 0.8 };
 const phaseOf = (v, res) => ((v % res) + res) % res;
@@ -194,6 +199,72 @@ console.log('\nC. the pixel lattice');
     gj.features[0].properties.col === c0.col && gj.features[0].properties.row === c0.row);
 }
 
+console.log('\nC2. what pixel is in the field');
+{
+  // The one rule five readers share: the map overlay and its "In field only"
+  // view, the pixel count in the step-2 header, the shapefile export, the PCA's
+  // pixel selection and every ladder rung all ask cellInFieldTest, which asks
+  // geometry.ts's fieldOverlapTest. It used to be "the pixel's CENTRE is in the
+  // field", which punched holes along the edge of a field tilted to the pixel
+  // rows, so the properties below are pinned rather than left to the next edit.
+  const sq = [[1000, 2000], [1030, 2000], [1030, 2030], [1000, 2030]];
+  const t = fieldOverlapTest(sq);
+  ok('a pixel wholly inside the ring is kept', t(1000, 2000, 10) && t(1010, 2010, 10));
+  ok('a pixel sharing only part of its area is kept', t(995, 2000, 10) && t(1025, 2025, 10));
+  ok('a pixel touching only along an edge is not', !t(1030, 2000, 10) && !t(990, 2000, 10));
+  ok('a pixel touching only at a corner is not', !t(1030, 2030, 10) && !t(990, 1990, 10));
+  ok('a pixel nowhere near the ring is not', !t(5000, 5000, 10));
+  // The tolerance is 1e-9·size², an AREA: a micrometre of overlap along a 10 m
+  // pixel is 1e-5 m² and counts, a nanometre of it is 1e-8 m² and does not.
+  ok('the tolerance is on shared area, not on the overlap in metres',
+    t(1030 - 1e-6, 2000, 10) && !t(1030 - 1e-9, 2000, 10));
+  ok('a ring with fewer than three vertices keeps nothing',
+    !fieldOverlapTest([[0, 0], [1, 1]])(0, 0, 10));
+
+  // The case the centre rule got wrong, in one probe: a field tilted 45° to the
+  // pixel rows has corner pixels that share area while their centres do not.
+  const diamond = [[0, 0], [40, 40], [0, 80], [-40, 40]];
+  const td = fieldOverlapTest(diamond);
+  ok('a tilted field keeps the corner pixel whose CENTRE is outside',
+    td(30, 30, 10) && !pointInPoly(35, 35, diamond));
+
+  // cellInFieldTest is that test in the grid's own UTM metres against the exact
+  // lattice square, NOT against the cell's reprojected WGS84 corners.
+  const fieldWgs = [[4.7003, 50.6002], [4.7018, 50.6002], [4.7018, 50.6008], [4.7003, 50.6008]];
+  const keep = cellInFieldTest(fieldWgs, 32631, 10);
+  const toUtm = proj4('EPSG:4326', '+proj=utm +zone=31 +datum=WGS84 +units=m +no_defs');
+  const direct = fieldOverlapTest(fieldWgs.map(p => toUtm.forward(p)));
+  const gC2 = buildS2Grid(AOI, { res: 10 });
+  ok('cellInFieldTest is fieldOverlapTest on the projected ring, cell for cell',
+    gC2.grid.cells.every(c => keep(c) === direct(c.east, c.north, 10)));
+  ok('... and it keeps some of the grid but not all of it',
+    (() => { const n = gC2.grid.cells.filter(keep).length; return n > 0 && n < gC2.grid.cells.length; })(),
+    `${gC2.grid.cells.filter(keep).length}/${gC2.grid.cells.length}`);
+  ok('no usable field ring means no test at all, so every pixel is in',
+    cellInFieldTest(null, 32631, 10) === null && cellInFieldTest([[4.7, 50.6], [4.71, 50.6]], 32631, 10) === null);
+
+  // The map reopens where it was left, and that view is saved under its own key
+  // with nothing tying it to the field. An import moves the field to the trial,
+  // Remove moves it back, a pinned default field can be on another continent:
+  // the page then opened on bare ground with the field off screen, no grid and
+  // nothing to click. It reads as a broken tool, not as "look elsewhere".
+  const belgium = [4.6882, 50.5489, 4.6918, 50.5511];       // [w, s, e, n]
+  const midBelgium = [(50.5489 + 50.5511) / 2, (4.6882 + 4.6918) / 2];   // leaflet [lat, lng]
+  ok('the saved view is kept when it is looking at the field', viewShowsField(midBelgium, belgium));
+  ok('and when it is just off the edge, where the field is still on screen',
+    viewShowsField([50.5511 + 0.003, 4.6918 + 0.003], belgium));
+  ok('but not from 800 km away, which is the split that showed 0 px over a 10,965 m2 field',
+    viewShowsField([50.60046, 4.70027], [1.4943, 43.5320, 1.4963, 43.5329]) === false);
+  ok('nor from the next town over',
+    viewShowsField([50.5500, 4.7500], belgium) === false);
+  ok('a field-less page keeps whatever view it had', viewShowsField(midBelgium, null));
+  // A field far smaller than the floor still gets the floor, so a 20 m plot does
+  // not send the map home every time the user nudges it.
+  const tiny = [4.7000, 50.6000, 4.7002, 50.6001];
+  ok('a tiny field is given a workable margin rather than its own span',
+    viewShowsField([50.6000 + 0.008, 4.7001], tiny) && viewShowsField([50.6000 + 0.03, 4.7001], tiny) === false);
+}
+
 console.log('\nD. anchoring to a real product grid');
 {
   // Landsat-style: a 30 m lattice whose origin is ≡15 mod 30, i.e. offset half a
@@ -209,12 +280,41 @@ console.log('\nD. anchoring to a real product grid');
   ok('the anchor also chooses the CRS, overriding the zone rule',
     buildS2Grid(AOI, { res: 30, zone: 1, anchor }).epsg === 32631);
   // col/row are `round(east / res)`, so on an off-phase lattice they are the
-  // nearest index rather than an exact division — the .5 is rounded away.
+  // nearest index rather than an exact division: the .5 is rounded away.
   ok('col/row round to the nearest index on an off-phase lattice',
     r.grid.cells.every(c => c.col === Math.round(c.east / 30) && Math.abs(c.col - c.east / 30) === 0.5));
   const zeroPhase = buildS2Grid(AOI, { res: 30, anchor: { epsg: 32631, ulx: 300000, uly: 4900020 } });
   ok('a phase-0 anchor is identical to the deterministic rule',
     zeroPhase.utmBounds.join(',') === buildS2Grid(AOI, { res: 30 }).utmBounds.join(','));
+
+  // An anchor whose origin is missing comes from a catalogue item whose
+  // proj:transform is short or holds a null. It used to travel the whole way:
+  // phase() turned it into NaN, and NaN clears every guard written as a
+  // comparison (nx > maxCells and nx <= 0 are BOTH false), so the builder
+  // reached `new Array(NaN)` and threw "Invalid array length". buildS2Grid runs
+  // in useFieldGrid's own body, outside every error boundary, and both the
+  // source and the chosen grid are persisted: that unmounted the page and the
+  // reload brought it straight back.
+  // It falls back to the deterministic lattice rather than refusing a grid:
+  // for every source here that lattice IS the product's (the tile origins are
+  // multiples of the pixel size), so the user keeps an exact grid. What it must
+  // not do is keep CLAIMING the product's tile it could not read.
+  const plain = buildS2Grid(AOI, { res: 30 });
+  for (const [what, bad] of [
+    ['no origin at all', { epsg: 32631, tile: 'LC31N' }],
+    ['a null easting', { epsg: 32631, ulx: null, uly: 4900020, tile: 'LC31N' }],
+    ['a NaN northing', { epsg: 32631, ulx: 300000, uly: NaN, tile: 'LC31N' }],
+    ['an infinite easting', { epsg: 32631, ulx: Infinity, uly: 4900020, tile: 'LC31N' }],
+  ]) {
+    let threw = null, out = null;
+    try { out = buildS2Grid(AOI, { res: 30, anchor: bad }); } catch (e) { threw = e; }
+    ok(`an anchor with ${what} falls back to the exact lattice instead of taking the page down`,
+      threw === null && out.grid !== null &&
+      out.utmBounds.join(',') === plain.utmBounds.join(',') &&
+      out.grid.anchored === false && out.grid.tile === undefined,
+      threw ? `threw ${threw.constructor.name}: ${threw.message}`
+            : `anchored ${out.grid?.anchored}, tile ${out.grid?.tile}`);
+  }
 }
 
 console.log('\nE. the cell cap and the viewport clip');
@@ -227,7 +327,7 @@ console.log('\nE. the cell cap and the viewport clip');
     capped.utmBounds.join(',') === full.utmBounds.join(','));
   ok('a grid under the cap is not flagged', full.capped === false && full.grid !== null);
 
-  // The clip keeps the lattice phase — it only produces fewer cells.
+  // The clip keeps the lattice phase: it only produces fewer cells.
   const clip = [4.7008, 50.6003, 4.7014, 50.6007];
   const clipped = buildS2Grid(AOI, { res: 10, clip });
   ok('clipping produces fewer cells', clipped.cellCount < full.cellCount, `${clipped.cellCount} vs ${full.cellCount}`);
@@ -242,22 +342,28 @@ console.log('\nE. the cell cap and the viewport clip');
   ok('a clip larger than the area changes nothing',
     buildS2Grid(AOI, { res: 10, clip: [4.69, 50.59, 4.71, 50.61] }).cellCount === full.cellCount);
 
-  // characterizes current behaviour; suspected bug: a clip window that does not
-  // intersect the area (pan the map away from a capped field — PixelGridApp.tsx
-  // line 726 passes the raw viewport) inverts the extent instead of emptying it.
-  // Two negative dimensions multiply to a POSITIVE cellCount, so the area reads
-  // as "too large"; with only one axis disjoint the count stays under the cap
-  // and a grid of that many EMPTY array holes is handed to the renderer.
+  /**
+   * A clip window that misses the area: panning the map away from a capped
+   * field. Each axis is judged on its own, because two negative dimensions
+   * multiply back into an ordinary looking count. That used to read as "too
+   * large" when both axes missed, and, when only one did, as a grid of that many
+   * EMPTY array holes, handed to the renderer as cells with no ring.
+   */
   const gone = buildS2Grid(AOI, { res: 10, clip: [4.9, 50.9, 4.91, 50.91] });
-  ok('a fully disjoint clip yields an inverted extent, not an empty grid',
-    gone.utmBounds[0] > gone.utmBounds[2] && gone.utmBounds[1] > gone.utmBounds[3] && gone.cellCount > 0,
-    `count=${gone.cellCount} bounds=${gone.utmBounds.join(',')}`);
+  ok('a clip window that misses the area on both axes yields no grid',
+    gone.grid === null && gone.cellCount === 0 && !gone.capped,
+    `count=${gone.cellCount} capped=${gone.capped}`);
   const halfGone = buildS2Grid(AOI, { res: 10, clip: [4.9, 50.6, 4.91, 50.6008] });
-  // Array.from() is what materialises the holes — `every` would skip them.
-  ok('a one-axis disjoint clip builds a grid whose cells are all holes',
-    halfGone.grid !== null && halfGone.grid.cells.length > 0 && !(0 in halfGone.grid.cells) &&
-    Array.from(halfGone.grid.cells).every(c => c === undefined),
-    `${halfGone.grid?.cells.length} holes`);
+  ok('and one that misses on a single axis yields no grid either, not a bag of holes',
+    halfGone.grid === null && halfGone.cellCount === 0 && !halfGone.capped,
+    `count=${halfGone.cellCount} capped=${halfGone.capped}`);
+  const stillTooFine = buildS2Grid(AOI, { res: 0.05, maxCells: 6000 });
+  ok('while a grid that is merely too fine is still capped, with its real count',
+    stillTooFine.grid === null && stillTooFine.capped && stillTooFine.cellCount > 6000, `${stillTooFine.cellCount} cells`);
+  const overField = buildS2Grid(AOI, { res: 10, clip: [4.7010, 50.6005, 4.7020, 50.6015] });
+  ok('and a clip over the area still builds real cells',
+    !!overField.grid && Array.from(overField.grid.cells).every(c => c && c.ring.length === 5),
+    `${overField.grid?.cells.length} cells`);
 
   // A zero-area area still snaps outward to one whole pixel.
   const pt = buildS2Grid([4.7, 50.6, 4.7, 50.6], { res: 10 });
@@ -266,6 +372,92 @@ console.log('\nE. the cell cap and the viewport clip');
   const south = buildS2Grid([-58.400, -34.620, -58.396, -34.618], { res: 10 });
   ok('a southern-hemisphere area gets a 327xx CRS',
     south.epsg === 32721 && south.grid.south === true && south.grid.zone === 21, `${south.epsg}`);
+}
+
+console.log('\nE2. the catalogue lookup gives up rather than hang');
+{
+  /**
+   * Still no network: `fetch` is replaced for this section by a catalogue that
+   * accepts the request and then says nothing, which is what a hung socket does
+   * and what no error handler ever sees. Without a deadline of its own, step 2
+   * sat on "Identifying" for as long as the browser's own timeout, so the
+   * offline fallback never engaged.
+   */
+  const realFetch = globalThis.fetch;
+  const cfg = { collection: 'sentinel-2-l2a', asset: 'B02', res: 10, gridLabel: () => 'T31UFS' };
+  const ITEM = {
+    features: [{ properties: { 'proj:epsg': 32631 }, assets: { B02: { 'proj:transform': [10, 0, 499980, 0, -10, 5600040] } } }],
+  };
+  const calls = [];
+  // A socket that opens and then stops: it settles only when something aborts it.
+  const stall = (url, init) => {
+    calls.push(url);
+    return new Promise((_r, reject) => init?.signal?.addEventListener('abort', () => reject(init.signal.reason)));
+  };
+  const settle = async p => p.then(v => ({ value: v }), e => ({ name: e?.name, message: e?.message }));
+
+  globalThis.fetch = stall;
+  const t0 = performance.now();
+  const timedOut = await settle(fetchCoveringGrids(AOI, cfg, undefined, 40));
+  const tookMs = performance.now() - t0;
+  ok('a catalogue that never answers ends in a TimeoutError, not a hang',
+    timedOut.name === 'TimeoutError' && tookMs < 1000, `${timedOut.name} after ${tookMs.toFixed(0)} ms`);
+  // The cases below pass their own deadline; this is the one the page ships.
+  ok('and the shipped deadline is a real one, in seconds not minutes',
+    STAC_TIMEOUT_MS > 0 && STAC_TIMEOUT_MS <= 15000, `${STAC_TIMEOUT_MS} ms`);
+
+  // The second catalogue is asked with a deadline of its own: a shared one
+  // would already be spent by the time the first one's stall handed over.
+  calls.length = 0;
+  const withAlt = { ...cfg, alt: { ...cfg, url: EARTH_SEARCH_URL } };
+  const bothOut = await settle(fetchCoveringGrids(AOI, withAlt, undefined, 40));
+  ok('a stalled catalogue still hands over to the second one, which gets its own deadline',
+    bothOut.name === 'TimeoutError' && calls.length === 2 && calls[1] === EARTH_SEARCH_URL, `${calls.length} calls`);
+
+  // The caller's own abort (the user redraws the area) is not a timeout: it
+  // must reach fetchCoveringGrids' catch as an abort so the alt is not asked.
+  calls.length = 0;
+  const ctrl = new AbortController();
+  const aborted = settle(fetchCoveringGrids(AOI, withAlt, ctrl.signal, 5000));
+  ctrl.abort(new Error('redrawn'));
+  const abortRes = await aborted;
+  ok('the caller\'s own abort is passed straight on, and no second catalogue is asked',
+    abortRes.message === 'redrawn' && calls.length === 1, `${abortRes.message}, ${calls.length} calls`);
+
+  // A deadline that is never cleared aborts a request that was already answered:
+  // the signal handed to fetch must be dead in the water once the body is read.
+  calls.length = 0;
+  let served = null;
+  globalThis.fetch = (url, init) => { calls.push(url); served = init.signal; return Promise.resolve({ ok: true, json: async () => ITEM }); };
+  const found = await fetchCoveringGrids(AOI, cfg, undefined, 40);
+  await new Promise(r => setTimeout(r, 120));
+  ok('an answered lookup reads its grid and leaves no timer running behind it',
+    found.length === 1 && found[0].epsg === 32631 && served.aborted === false,
+    `${found.length} grid(s), signal aborted=${served.aborted}`);
+
+  // A catalogue that answers with a transform it cannot honour. These are real
+  // shapes in the wild (a cropped array, a null where a number belongs), and
+  // every one of them used to become an "anchor" whose origin was undefined or
+  // null: the first crashed the page out of a hook with no boundary above it,
+  // the second silently anchored on 0. An item that cannot say where its pixels
+  // are is not a covering grid, so it is not offered as one.
+  for (const [what, transform] of [
+    ['too short to hold an origin', [10, 0, 499980]],
+    ['a null easting', [10, 0, null, 0, -10, 5600040]],
+    ['a string northing', [10, 0, 499980, 0, -10, '5600040']],
+    ['nothing at all', null],
+  ]) {
+    globalThis.fetch = () => Promise.resolve({ ok: true, json: async () => ({
+      features: [{ properties: { 'proj:epsg': 32631 }, assets: { B02: { 'proj:transform': transform } } }],
+    }) });
+    let threw = null, grids = null;
+    try { grids = await fetchCoveringGrids(AOI, cfg, undefined, 200); } catch (e) { threw = e; }
+    ok(`a catalogue item whose transform is ${what} is skipped, not turned into an anchor`,
+      threw === null && grids.length === 0,
+      threw ? `threw ${threw.message}` : `${grids.length} grid(s): ${JSON.stringify(grids.map(g => [g.ulx, g.uly]))}`);
+  }
+
+  globalThis.fetch = realFetch;
 }
 
 console.log('\nF. the truth curves');
@@ -323,7 +515,7 @@ console.log('\nG. the planting pattern');
 
   // The map overlay indexes strips from a rotated frame whose origin sits inside
   // the field, so it asks for NEGATIVE rows. JavaScript's % keeps the dividend's
-  // sign (-1 % 2 === -1), and a -1 matches neither crop id — it used to render as
+  // sign (-1 % 2 === -1), and a -1 matches neither crop id, and it used to render as
   // bare soil, which made crop B disappear from the drawn field at large rotations.
   const rowAt = (rs) => rs.map(r => cultureForCell(r, 0, 'row')).join('');
   const stripAt = (rs) => rs.map(r => cultureForCell(r, 0, 'strip-row-2')).join('');
@@ -1035,6 +1227,63 @@ console.log('\nH10. the big PCA and its ladder thumbnails are one computation');
   }
 }
 
+console.log('\nH10b. the scatter and the purity numbers decide pure/mixed by ONE rule');
+{
+// The scatter's pure/mixed and the page's pure/mixed are ONE decision. They used
+// to be two: pointStyle read the species-FOLDED share while the engine weighs a
+// single cover id, which on a block or imported trial is one PLOT. A pixel
+// sitting in two plots of the same variety was mixed in the purity card and in
+// every ladder count, and green in the scatter, at the same time.
+{
+  // Two species, six touching blocks, and a purity threshold of 90%: the plots
+  // that meet along the block boundaries carry the same variety on both sides.
+  const design = { nSpecies: 2, nBlocks: 6, plotLength: 6, plotWidth: 6, plotAlley: 0, blockAlley: 0, blocksPerRow: 1, seed: 3 };
+  const pureT = 90;
+  const resP = 1;
+  const originP = aoiUtmOrigin(AOI, 32631);
+  const minE = Math.floor(originP[0] / resP) * resP, minN = Math.floor(originP[1] / resP) * resP;
+  const planP = buildBlockPlan(design, blockPlacement([minE, minN, minE + 120, minN + 120], originP, 0, resP, true));
+  const layoutP = { pattern: 'block', width: 6, spacing: 0, rotationDeg: 0, block: planP };
+  const srcP = simulatePatch(originP[0] + planP.u0 - 2, originP[1] + planP.v0 - 2, 60, resP,
+    originP[0], originP[1], layoutP, { sigmaX: 0.6, sigmaY: 0.6, mixThreshold: pureT / 100 });
+  const speciesP = ['maize', 'wheat'].map(id => cropById(id));
+  const fitP = fitCover(srcP, speciesP, 0.04, 'pca');
+  const greenP = p => pointStyle(p, 'purity', 'purity', CROP_COLORS, pureT).color === '#22c55e';
+  const foldedPure = p => {
+    const d = coverShares(p.fr, p.bare, p.off).dominant;
+    return d.kind === 'species' && d.share >= pureT / 100;
+  };
+
+  // Without this the checks below would pass on a fixture that never exercises
+  // the disagreement. These are exactly the pixels the old rule drew green.
+  const split = fitP.pts.filter(p => srcP.mixed[p.k] === MIXED && foldedPure(p));
+  ok('the fixture really does hold pixels the two rules used to disagree about',
+    split.length > 50, `${split.length} of ${fitP.pts.length}`);
+  ok('a pixel in two plots of one variety is drawn mixed, as the purity card counts it',
+    split.every(p => !greenP(p)));
+  ok('every point in the scatter is pure exactly when the engine says it is',
+    fitP.pts.every(p => greenP(p) === (srcP.mixed[p.k] !== MIXED)));
+
+  // The verdict survives the thinning a thumbnail applies, so a ladder rung and
+  // the big chart cannot colour one pixel two ways.
+  const thumbP = fitCover(srcP, speciesP, 0.04, 'pca', { sample: 300 });
+  ok('and in a sampled thumbnail of the same simulation',
+    thumbP.pts.every(p => greenP(p) === (srcP.mixed[p.k] !== MIXED)));
+
+  // A source with no engine verdict (a hand-built fixture, a caller that never
+  // ran the engine) still gets the share rule rather than everything called pure.
+  const fitN = fitCover({ ...srcP, mixed: null }, speciesP, 0.04, 'pca');
+  ok('with no verdict to read, the share rule against the slider still decides',
+    fitN.pts.some(foldedPure) && fitN.pts.every(p => greenP(p) === foldedPure(p)));
+
+  // A verdict array that does not describe these pixels is ignored rather than
+  // applied off by one: the shares and the verdicts are assembled separately.
+  const shortV = { ...srcP, mixed: srcP.mixed.slice(0, MIN_PTS) };
+  ok('a verdict array of the wrong length is refused rather than shifted onto the wrong pixels',
+    fitCover(shortV, speciesP, 0.04, 'pca').pts.every(p => p.mixed === undefined));
+}
+}
+
 console.log('\nH11. a ladder rung is independent of the displayed size, and costs only the trial');
 {
   // Every thumbnail click used to rebuild the whole ladder: each rung borrowed
@@ -1363,6 +1612,10 @@ console.log('\nH12. an imported trial');
     // Through the READER's own variety list, whatever it spells the keys: the
     // two once spelled them differently ("plot N" and "#N"), and every plot of
     // a design without a variety column was then unlisted.
+    // One function, not two that agree today: the resolver re-exports the
+    // reader's, so there is no second spelling left to drift.
+    ok('the resolver\'s varietyKeyOf IS the reader\'s, the same function object',
+      varietyKeyOf === readerVarietyKeyOf);
     const perPlot = designOf(trial50.plots.slice(0, 6), trial50.keys.slice(0, 6), '');
     const perPlotVarieties = readerVarietiesOf(perPlot);
     const perPlotPlan = resolveImportedPlan(perPlot, perPlotVarieties, epsg);
@@ -2159,6 +2412,11 @@ console.log('\nH13. an imported trial is measured, not sampled');
     ok('a trial too big to search is staked where it stands, without simulating it to find that out',
       staked.plan === wide && staked.shift[0] === 0 && staked.shift[1] === 0 && stakeMs < 50,
       `${stakeMs.toFixed(1)} ms, shift ${staked.shift.join(',')}`);
+    // ... and SAYS it never searched. Without this flag "aligned" is the best of
+    // a search at one pixel size and merely "turned" at another, and the page
+    // has no way to tell the reader which of the two it is looking at.
+    ok('and it reports that it was not staked, so the page can say so',
+      staked.staked === false, `staked=${staked.staked}`);
 
     // and a trial the budget does cover is still searched, and the search still
     // pays: this one keeps pure pixels at a shift it loses where it stands.
@@ -2166,10 +2424,45 @@ console.log('\nH13. an imported trial is measured, not sampled');
       ({ rings: [boxRing(E0 + (i % 4) * 15, N0 + ((i / 4) | 0) * 15, 14, 14)], species: i })), 12, 'small');
     const smallField = [small.bbox[0] - 20, small.bbox[1] - 20, small.bbox[2] + 20, small.bbox[3] + 20];
     const picked = stakeOnGrid(small, 2, s13, smallField);
+    // STRICTLY better at a NON-ZERO shift, because the search starts at (0, 0)
+    // and only replaces its best on a strict improvement: with `>=` and no test
+    // on the shift, a stakeOnGrid that had quietly stopped moving anything would
+    // pass this section unchanged.
     ok('a trial the budget covers is still staked at the best sub-pixel shift it can find',
-      purePixels(picked.plan, 2, s13, smallField) >= purePixels(small, 2, s13, smallField) &&
+      picked.staked === true &&
+      purePixels(picked.plan, 2, s13, smallField) > purePixels(small, 2, s13, smallField) &&
+      (picked.shift[0] !== 0 || picked.shift[1] !== 0) &&
       picked.shift.every(v => v >= 0 && v < 2),
       `shift ${picked.shift.join(',')}: ${purePixels(picked.plan, 2, s13, smallField)} pure vs ${purePixels(small, 2, s13, smallField)} where it stands`);
+
+    // Whether a trial is searched is decided by the PIXELS it covers, never by
+    // how many plots are drawn on them. A factor of plots/50 here once inverted
+    // the budget it was meant to enforce: the denser of two trials over ONE
+    // footprint was refused a search that the sparser one was granted and paid
+    // for. The cost really is flat in plot count (one candidate over a fixed
+    // 100 x 100 m at 0.5 m: 32 ms at 50 plots, 28 at 600), because a pixel's
+    // work is the plot boundaries crossing THAT pixel.
+    //
+    // Plots do cost something, but ADDED (about two pixels each, for the
+    // per-candidate shifting) rather than multiplied, so 200 of them cannot
+    // decide whether a 900-pixel footprint is searched at all.
+    //
+    // An explicit small `budget` puts the two trials on either side of the old
+    // factor's threshold while simulating only a few hundred pixels: with the
+    // factor the 200-plot trial gets N = 1 and the 16-plot one N = 2; with the
+    // additive term both get N = 2. A test at the default budget cannot see
+    // this, because both land on N > 1 either way.
+    const plotsOver = (n, tag) => {
+      const cols = Math.ceil(Math.sqrt(n)), w = 48 / cols;
+      return planOf(Array.from({ length: n }, (_, i) =>
+        ({ rings: [boxRing(E0 + (i % cols) * w, N0 + (((i / cols) | 0) * w), w * 0.9, w * 0.9)], species: i % 4 })), 4, tag);
+    };
+    const sameField = [E0 - 6, N0 - 6, E0 + 54, N0 + 54];
+    const fewPlots = stakeOnGrid(plotsOver(16, 'few'), 2, s13, sameField, 8000);
+    const manyPlots = stakeOnGrid(plotsOver(200, 'many'), 2, s13, sameField, 8000);
+    ok('the same footprint is searched whether 16 plots are drawn on it or 200',
+      fewPlots.staked === true && manyPlots.staked === true,
+      `16 plots staked=${fewPlots.staked}, 200 plots staked=${manyPlots.staked}`);
   }
 
   // ---- every other layout is untouched --------------------------------------
@@ -2264,7 +2557,7 @@ console.log('\nH4. one blend in the codebase: mix3 is the two-species spelling o
     CROP_COLORS.length === 8 && new Set(CROP_COLORS).size === 8);
 }
 
-console.log('\nI. field purity — the documented 50% → 100% phase case');
+console.log('\nI. field purity: the documented 50% → 100% phase case');
 {
   // 16 × 12 ten-metre pixels; 20 m column strips, i.e. two pixels per strip.
   const { grid } = buildS2Grid(AOI, { res: 10 });
@@ -2279,7 +2572,7 @@ console.log('\nI. field purity — the documented 50% → 100% phase case');
   ok('strips half a pixel off the lattice: exactly half the pixels straddle an edge',
     off.purePct === 50, `${off.purePct}%`);
   ok('aligning the phase doubles the usable pixels', on.pureA + on.pureB === 2 * (off.pureA + off.pureB));
-  ok('the mean crop-A fraction is unchanged by the phase — only its packing moves',
+  ok('the mean crop-A fraction is unchanged by the phase, only its packing moves',
     Math.abs(on.meanPropA - off.meanPropA) < 1e-6, `${on.meanPropA.toFixed(4)} vs ${off.meanPropA.toFixed(4)}`);
   ok('the per-pixel arrays are one entry per grid cell',
     [on.proportionA, on.proportionBare, on.mixed].every(a => a.length === grid.cells.length));
@@ -2289,7 +2582,7 @@ console.log('\nI. field purity — the documented 50% → 100% phase case');
   ok('the search only moves the striping axis', dv === 0 && du > 0);
   // The score is flat across every shift that keeps all 16 sub-samples of a
   // pixel inside one strip, and the search keeps the FIRST maximiser, so it
-  // stops just short of the exact 5 m — anywhere in that plateau aligns.
+  // stops just short of the exact 5 m: anywhere in that plateau aligns.
   ok('it lands within one sub-sample of the ideal 5 m shift',
     Math.abs(du - 5) < 10 / 16, `du=${du.toFixed(4)}, sub-sample=${(10 / 16).toFixed(4)} m`);
   ok('and applying it restores 100% purity',
@@ -2310,7 +2603,7 @@ console.log('\nI. field purity — the documented 50% → 100% phase case');
   ok('the bare fraction is reported per pixel and averages the alley width',
     Math.abs([...withGap.proportionBare].reduce((a, b) => a + b, 0) / withGap.total - 0.5) < 0.05);
 
-  // The PSF is set in step 2 but consumed here — a coupling a refactor must keep.
+  // The PSF is set in step 2 but consumed here, a coupling a refactor must keep.
   const blurred = simulateField(grid, [minE, minN], layout, { sigmaX: 1, sigmaY: 1, mixThreshold: 0.8 });
   ok('a blurred sensor loses the pure pixels an aligned pattern would have given',
     blurred.purePct < on.purePct, `${blurred.purePct.toFixed(1)}% vs ${on.purePct}%`);
@@ -2332,7 +2625,7 @@ console.log('\nJ. resolution');
   ok('the finest resolution is far better than the coarsest', p[6].purePct - p[0].purePct === 100);
   // characterizes current behaviour, and it is correct: purity is not monotone
   // in the GSD. A 25 m pixel on a 25 m strip is perfect, a 20 m pixel on it is
-  // not — divisibility beats fineness. The UI's sweep chart is meant to show this.
+  // not: divisibility beats fineness. The UI's sweep chart is meant to show this.
   ok('purity is NOT monotone in the GSD: divisibility wins',
     p[1].purePct === 100 && p[2].purePct < p[1].purePct, `25 m→${p[1].purePct}% 20 m→${p[2].purePct}%`);
   ok('the patch reports its own pixel dimensions and one value per pixel',
@@ -2500,7 +2793,7 @@ console.log('\nL. the exported shapefile is a real zipped shapefile');
   // characterizes current behaviour; cosmetic only: every other WKT constant is
   // a hard-coded "0.0"-style literal, but the false northing is interpolated
   // from a JS number, so it renders as "0" / "10000000" with no decimal point.
-  // ESRI/GDAL parse it fine — noted so a refactor does not "fix" it by accident.
+  // ESRI/GDAL parse it fine, noted so a refactor does not "fix" it by accident.
   ok('the false northing is written without a decimal point',
     prj.includes('PARAMETER["False_Northing",0]'), /False_Northing",[-\d.]+/.exec(prj)?.[0]);
   ok('the .cpg declares UTF-8', String.fromCharCode(...files.get('s2_pixels_10m.cpg').data) === 'UTF-8');
@@ -2512,6 +2805,48 @@ console.log('\nL. the exported shapefile is a real zipped shapefile');
   ok('a southern grid is written with the southern false northing and zone name',
     stext.includes('WGS_1984_UTM_Zone_21S') && stext.includes('PARAMETER["False_Northing",10000000]'),
     /WGS_1984_UTM_Zone_\w+/.exec(stext)?.[0] + ' ' + /False_Northing",[-\d.]+/.exec(stext)?.[0]);
+}
+
+console.log('\nH14. the two rules the resolution ladder is built on');
+{
+  // ladderKey and rungCellOrigin (ladder-rung.ts) were both inside a React hook,
+  // where nothing could reach them, and both had already been wrong once: the
+  // ladder rebuilt itself on every thumbnail click, and a second copy of the
+  // pixel-origin formula could hand a pixel's season to its neighbour.
+  const design = { nSpecies: 4, nBlocks: 4, plotLength: 8, plotWidth: 2, plotAlley: 0.5, blockAlley: 1.5, blocksPerRow: 1, seed: 1 };
+  const bounds = [600000, 5600000, 600300, 5600300], base = [600000, 5600000];
+  // Angle 0: that is when a block plan is SNAPPED to the pixel lattice, so its
+  // corner really does follow the pixel size (a turned trial is not snapped).
+  const layoutAt = (r, d = design) => ({
+    pattern: 'block', width: 3, spacing: 0, rotationDeg: 0,
+    block: buildBlockPlan(d, blockPlacement(bounds, base, 0, r, true)),
+  });
+  const keys = RES_LADDER.map(r => ladderKey(layoutAt(r)));
+  ok('one ladder key across every rung, so finished rungs survive a thumbnail click',
+    new Set(keys).size === 1, `${new Set(keys).size} distinct`);
+  const corners = new Set(RES_LADDER.map(r => `${layoutAt(r).block.u0},${layoutAt(r).block.v0}`));
+  ok('and the key is not constant by accident: each rung snaps the plan to its own lattice',
+    corners.size > 1, `${corners.size} distinct corners`);
+  let allMove = true, missed = '';
+  for (const k of Object.keys(design)) {
+    const moved = { ...design, [k]: design[k] + 1 };
+    if (ladderKey(layoutAt(2, moved)) === ladderKey(layoutAt(2))) { allMove = false; missed += ' ' + k; }
+  }
+  ok('every field of the design moves the key, so no rung is reused for a different trial', allMove, missed);
+  ok('the strip angle moves it too', ladderKey({ ...layoutAt(2), rotationDeg: 12 }) !== ladderKey(layoutAt(2)));
+  ok('a layout with no block plan keys on its own fields',
+    ladderKey({ pattern: 'row', width: 3, spacing: 0, rotationDeg: 0 }) !==
+    ladderKey({ pattern: 'row', width: 4, spacing: 0, rotationDeg: 0 }));
+
+  // Row by row from the SOUTH, west to east: the order simulateField fills.
+  ok('rung cell 0 is the south-west corner', String(rungCellOrigin(0, 10, 100, 200, 2)) === '100,200');
+  ok('rung cell 9 is the east end of the first row', String(rungCellOrigin(9, 10, 100, 200, 2)) === '118,200');
+  ok('rung cell 10 starts the row above', String(rungCellOrigin(10, 10, 100, 200, 2)) === '100,202');
+  // and it is the formula H11 already pins the simulation against
+  const r = 2, nx = 7;
+  ok('it is the formula the rest of the ladder reads pixel identities with',
+    Array.from({ length: nx * 3 }, (_, k) => String(rungCellOrigin(k, nx, 100, 200, r)))
+      .every((v, k) => v === `${100 + (k % nx) * r},${200 + Math.floor(k / nx) * r}`));
 }
 
 console.log('\n' + (bad ? `${bad} FAILURE(S)` : 'ALL PIXEL-GRID CHECKS PASSED'));

@@ -1,4 +1,5 @@
 import { Step } from '../ui';
+import { Boundary } from '../Boundary';
 import type { StepProps } from './props';
 
 /**
@@ -7,13 +8,21 @@ import type { StepProps } from './props';
  * Rendered as a child of `Step`, which unmounts collapsed children — so NOTHING
  * here may hold state. Everything it reads comes from hooks the page shell owns.
  */
-export function AreaStep(p: StepProps) {
+function AreaStepBody(p: StepProps) {
   const { activeStep, toggleStep, areaSummary } = p;
   const { aoi, drawMode, defaultSaved, startDraw, cancelDraw, clearAoi, saveDefaultField, clearDefaultField } = p.area;
   const { query, setQuery, suggestions, showSuggestions, setShowSuggestions, activeSuggestion, setActiveSuggestion, pickSuggestion, onSearch, onSearchKeyDown } = p.search;
 
   return (
         <Step n={1} title="Experiment area" summary={areaSummary} open={activeStep === 'area'} onClick={() => toggleStep('area')}>
+        {/* What this page is for. It used to be written only under the drawing
+            buttons, shown when there was no field, and a first visit always opens
+            on the demo field, so nobody arriving cold ever read it. */}
+        <p className="text-[11px] leading-relaxed text-neutral-400">
+          See where a satellite's pixels fall on your trial, and whether that sensor could tell your treatments apart.
+          Draw or upload the field, pick the sensor, lay out the experiment, and export the pixel footprints.
+        </p>
+
         {/* Search with autocomplete */}
         <form onSubmit={onSearch} className="relative flex gap-2">
           <input
@@ -107,4 +116,16 @@ export function AreaStep(p: StepProps) {
         )}
         </Step>
   );
+}
+
+/**
+ * The panel, inside its own failure boundary.
+ *
+ * The boundary has to wrap the COMPONENT, not the tree it returns: a throw in
+ * this step's own body (a memo over the geometry, a bad restored value) happens
+ * before anything it returned exists, and React then unmounts the whole page.
+ * Wrapped here, the other steps, the map and the header's Reset survive it.
+ */
+export function AreaStep(p: StepProps) {
+  return <Boundary name="Experiment area"><AreaStepBody {...p} /></Boundary>;
 }

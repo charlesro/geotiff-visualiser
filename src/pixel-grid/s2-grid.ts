@@ -5,7 +5,7 @@ import { crsToProj4Def } from '../lib/geo';
  * Sentinel-2 pixel-grid reconstruction.
  *
  * Sentinel-2 products are tiled in the MGRS grid and projected in UTM. Within a
- * given UTM zone the pixel grid is fully deterministic — no imagery needed:
+ * given UTM zone the pixel grid is fully deterministic, no imagery needed:
  *
  *   - 10 m bands (B02/B03/B04/B08)  → pixel edges on UTM multiples of 10 m
  *   - 20 m bands (B05/B06/B07/B8A/B11/B12) → multiples of 20 m
@@ -38,7 +38,7 @@ export interface S2Cell {
   /** UTM easting / northing of the cell's lower-left corner (metres). */
   east: number;
   north: number;
-  /** WGS84 ring [lng,lat], closed, lower-left origin — for Leaflet display. */
+  /** WGS84 ring [lng,lat], closed, lower-left origin, for Leaflet display. */
   ring: LngLat[];
 }
 
@@ -63,7 +63,7 @@ export interface BuildResult {
   cellCount: number;
   /** True when cellCount exceeded `maxCells` and no grid was built. */
   capped: boolean;
-  /** Snapped UTM extent [minE,minN,maxE,maxN] — set even when capped (for recipes). */
+  /** Snapped UTM extent [minE,minN,maxE,maxN], set even when capped (for recipes). */
   utmBounds: [number, number, number, number] | null;
   epsg: number;
   res: number;
@@ -87,8 +87,8 @@ export const zoneFromEpsg = (epsg: number): number => epsg - (epsg >= 32700 ? 32
 /**
  * Grid convergence at a point (degrees): the angle from true north to UTM grid
  * north. Positive = grid north is EAST of true north (pixels appear rotated
- * clockwise on a north-up map). This is exactly how much the S2 pixels — and
- * any plot aligned to them — are rotated from compass/true north.
+ * clockwise on a north-up map). This is exactly how much the S2 pixels, and
+ * any plot aligned to them, are rotated from compass/true north.
  */
 export function gridConvergence(lng: number, lat: number, epsg: number): number {
   const def = crsToProj4Def(`EPSG:${epsg}`);
@@ -107,7 +107,7 @@ export function gridConvergence(lng: number, lat: number, epsg: number): number 
 /**
  * Exact anchor taken from a real Sentinel-2 product: its CRS and the UTM
  * coordinates of a pixel corner (the product's grid origin). Snapping the area
- * onto this lattice reproduces the product's pixels to the metre — and pins the
+ * onto this lattice reproduces the product's pixels to the metre, and pins the
  * right tile/zone where two overlap at a seam.
  */
 export interface TileAnchor {
@@ -131,7 +131,7 @@ export interface BuildOptions {
   maxCells?: number;
   /**
    * Restrict the generated cells to this WGS84 window (e.g. the map viewport).
-   * The grid keeps the same origin/phase — only fewer cells are produced — so a
+   * The grid keeps the same origin/phase (only fewer cells are produced), so a
    * too-fine grid can still be drawn where you're looking.
    */
   clip?: LngLatBounds;
@@ -157,7 +157,7 @@ export function buildS2Grid(bounds: LngLatBounds, opts: BuildOptions = {}): Buil
   const toUtm = proj4('EPSG:4326', def);
   const toWgs = proj4(def, 'EPSG:4326');
 
-  // Project the four corners and take the envelope — the graticule is rotated
+  // Project the four corners and take the envelope: the graticule is rotated
   // relative to UTM, so the envelope safely covers the whole area.
   let minE = Infinity, minN = Infinity, maxE = -Infinity, maxN = -Infinity;
   for (const [lng, lat] of [[w, s], [e, s], [e, n], [w, n]] as LngLat[]) {
@@ -171,9 +171,17 @@ export function buildS2Grid(bounds: LngLatBounds, opts: BuildOptions = {}): Buil
   // Snap outward onto the pixel grid. With an anchor we step from the product's
   // own origin; without one we step from 0 (≡ the product grid, since every S2
   // tile origin in a zone is a multiple of 10/20/60 m). Phase `o` is the origin
-  // offset modulo the resolution — 0 for both paths in practice.
-  const oE = anchor ? ((anchor.ulx % res) + res) % res : 0;
-  const oN = anchor ? ((anchor.uly % res) + res) % res : 0;
+  // offset modulo the resolution, 0 for both paths in practice.
+  //
+  // The origin is checked, not trusted: it is read from a third party's JSON
+  // (projTransform), and `%` answers something for every value it is handed.
+  // `undefined` gave NaN, which clears every later guard and threw "Invalid
+  // array length" out of a hook with no boundary above it; `null` gave 0, a
+  // grid quietly built on the DEFAULT lattice while claiming to be anchored on
+  // the product's. Neither is an anchor, so neither anchors.
+  const usable = anchor && Number.isFinite(anchor.ulx) && Number.isFinite(anchor.uly);
+  const oE = usable ? ((anchor!.ulx % res) + res) % res : 0;
+  const oN = usable ? ((anchor!.uly % res) + res) % res : 0;
   let snapMinE = Math.floor((minE - oE) / res) * res + oE;
   let snapMinN = Math.floor((minN - oN) / res) * res + oN;
   let snapMaxE = Math.ceil((maxE - oE) / res) * res + oE;
@@ -197,15 +205,25 @@ export function buildS2Grid(bounds: LngLatBounds, opts: BuildOptions = {}): Buil
 
   const nx = Math.round((snapMaxE - snapMinE) / res);
   const ny = Math.round((snapMaxN - snapMinN) / res);
-  const cellCount = nx * ny;
+  // Each axis is judged on its own, never on the product. A clip window that
+  // misses the field on BOTH axes makes nx and ny negative, and two negatives
+  // multiply back into a perfectly ordinary looking count: under the cap it
+  // built that many EMPTY slots, which reached the map as cells with no ring.
+  //
+  // Stated as "not a usable count" rather than "<= 0", because NaN is the other
+  // way here. Every comparison with NaN is false, so a NaN axis satisfies no
+  // guard written as a comparison and arrived at `new Array(NaN)`. An anchor
+  // read from catalogue JSON is the way one gets in (see projTransform).
+  const empty = !(nx >= 1) || !(ny >= 1);
+  const cellCount = empty ? 0 : nx * ny;
 
   const utmBounds: [number, number, number, number] = [snapMinE, snapMinN, snapMaxE, snapMaxN];
-  if (cellCount > maxCells || cellCount <= 0) {
-    return { grid: null, cellCount: Math.max(0, cellCount), capped: cellCount > maxCells, utmBounds, epsg, res };
+  if (empty || cellCount > maxCells) {
+    return { grid: null, cellCount, capped: !empty && cellCount > maxCells, utmBounds, epsg, res };
   }
 
   // Precompute the (nx+1)×(ny+1) corner lattice once, then assemble cells by
-  // sharing corners — a quarter of the projection work of doing it per cell.
+  // sharing corners: a quarter of the projection work of doing it per cell.
   const lng2d: number[][] = [];
   const lat2d: number[][] = [];
   for (let j = 0; j <= ny; j++) {
@@ -250,8 +268,11 @@ export function buildS2Grid(bounds: LngLatBounds, opts: BuildOptions = {}): Buil
     grid: {
       cells, zone, epsg, south, res,
       utmBounds,
-      tile: anchor?.tile,
-      anchored: !!anchor,
+      // An anchor with no usable origin is not an anchor: the lattice below is
+      // the deterministic one, so neither the tile id nor the claim of being
+      // anchored to a product would be true of it.
+      tile: usable ? anchor!.tile : undefined,
+      anchored: !!usable,
     },
     cellCount,
     capped: false,
@@ -320,8 +341,23 @@ const CATALOG_NAMES: Record<string, string> = {
   [EARTH_SEARCH_URL]: 'Earth Search',
 };
 
-const projTransform = (it: any, asset: string | null): number[] | undefined =>
-  (asset ? it.assets?.[asset]?.['proj:transform'] : null) ?? it.properties?.['proj:transform'];
+/**
+ * The item's affine transform, ONLY when it really holds an origin.
+ *
+ * This is parsed from a third party's JSON, and a transform that is short, or
+ * carries a null where a number belongs, made `t[2]` and `t[5]` undefined. That
+ * travelled the whole way: `phase()` turned it into NaN, NaN passed every
+ * `> maxCells` and `<= 0` guard in buildS2Grid (every comparison with NaN is
+ * false), and the grid builder reached `new Array(NaN)` and threw
+ * "Invalid array length". buildS2Grid runs in useFieldGrid's own body, outside
+ * every error boundary, and the chosen source and grid are both persisted, so
+ * that unmounted the page AND came back on the reload.
+ */
+const projTransform = (it: any, asset: string | null): number[] | undefined => {
+  const t = (asset ? it.assets?.[asset]?.['proj:transform'] : null) ?? it.properties?.['proj:transform'];
+  if (!Array.isArray(t) || t.length < 6) return undefined;
+  return Number.isFinite(t[2]) && Number.isFinite(t[5]) ? t : undefined;
+};
 const projEpsg = (it: any, asset: string | null): number | undefined =>
   (asset ? it.assets?.[asset]?.['proj:epsg'] : undefined) ?? it.properties?.['proj:epsg'];
 
@@ -330,18 +366,19 @@ const phase = (v: number, res: number): number => ((v % res) + res) % res;
 /**
  * Find the real product grid(s) covering an area and read each one's exact
  * pixel origin from the metadata (`proj:transform`). Grids are deduped by their
- * *lattice phase* (origin mod resolution), not the raw origin — Landsat scenes
+ * *lattice phase* (origin mod resolution), not the raw origin: Landsat scenes
  * are cropped to varying extents but all share one fixed lattice, so phase
  * collapses them to a single grid. Usually one grid; at a UTM-zone seam two,
- * which the caller lets the user choose between. Metadata only — no imagery.
+ * which the caller lets the user choose between. Metadata only, no imagery.
  */
 export async function fetchCoveringGrids(
   bounds: LngLatBounds,
   cfg: SourceConfig,
   signal?: AbortSignal,
+  timeoutMs = STAC_TIMEOUT_MS,
 ): Promise<CoveringGrid[]> {
   try {
-    const found = await searchLattices(bounds, cfg, signal);
+    const found = await searchLattices(bounds, cfg, signal, timeoutMs);
     if (found.length || !cfg.alt) return found;
   } catch (err) {
     // A dead catalog must not take the page down when a second one has the
@@ -349,13 +386,49 @@ export async function fetchCoveringGrids(
     // request is the caller redrawing, so it is passed straight on.
     if (!cfg.alt || signal?.aborted) throw err;
   }
-  return searchLattices(bounds, cfg.alt, signal);
+  // Each catalog gets its own deadline: a shared one would already be spent by
+  // the time the first catalog's stall handed over to the second.
+  return searchLattices(bounds, cfg.alt, signal, timeoutMs);
+}
+
+/**
+ * How long one catalog has to answer. A hung socket is not an error: `fetch`
+ * simply never settles, so without a deadline step 2 sat on "Identifying" for
+ * as long as the browser's own timeout (minutes), with no grid, no fallback and
+ * no way to tell a slow network from a dead one. Long enough that a slow answer
+ * still arrives, short enough that a dead one is not the whole visit.
+ */
+export const STAC_TIMEOUT_MS = 8000;
+
+/**
+ * `signal`, with a deadline of its own. Hand-rolled rather than
+ * AbortSignal.any + AbortSignal.timeout: those are recent, and the page ships
+ * to whatever browser the reader has. Returns the signal to pass to fetch and
+ * the teardown, which MUST run once the body is read, or a pending timer keeps
+ * every answered request alive to its deadline.
+ */
+function withDeadline(signal: AbortSignal | undefined, timeoutMs: number): { signal: AbortSignal; done: () => void } {
+  const ctrl = new AbortController();
+  const onAbort = () => ctrl.abort(signal?.reason);
+  // Already aborted: the listener would never fire, so copy the reason across now.
+  if (signal?.aborted) onAbort();
+  else signal?.addEventListener('abort', onAbort);
+  const timer = setTimeout(() => {
+    const err = new Error(`STAC search timed out after ${timeoutMs} ms`);
+    err.name = 'TimeoutError';
+    ctrl.abort(err);
+  }, timeoutMs);
+  return {
+    signal: ctrl.signal,
+    done: () => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); },
+  };
 }
 
 async function searchLattices(
   bounds: LngLatBounds,
   cfg: SourceConfig,
   signal?: AbortSignal,
+  timeoutMs = STAC_TIMEOUT_MS,
 ): Promise<CoveringGrid[]> {
   const cLng = (bounds[0] + bounds[2]) / 2;
   const cLat = (bounds[1] + bounds[3]) / 2;
@@ -366,14 +439,22 @@ async function searchLattices(
     sortby: [{ field: 'properties.datetime', direction: 'desc' }],
   };
   const url = cfg.url ?? MPC_STAC_URL;
-  const r = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal,
-  });
-  if (!r.ok) throw new Error(`STAC search failed (${r.status})`);
-  const data = await r.json();
+  // The deadline covers reading the body as well as opening the connection: a
+  // socket that accepts the request and then stops sending stalls on .json().
+  const deadline = withDeadline(signal, timeoutMs);
+  let data: any;
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: deadline.signal,
+    });
+    if (!r.ok) throw new Error(`STAC search failed (${r.status})`);
+    data = await r.json();
+  } finally {
+    deadline.done();
+  }
 
   const byLattice = new Map<string, CoveringGrid>();
   for (const it of data.features ?? []) {

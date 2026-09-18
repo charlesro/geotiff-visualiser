@@ -1,5 +1,5 @@
 import { EigenvalueDecomposition, Matrix } from 'ml-matrix';
-import { BARE, OFF_TRIAL, makeTruth, makeBetaSchedule, parsOf, TMAX, type FieldParams } from './simulate';
+import { BARE, MIXED, OFF_TRIAL, makeTruth, makeBetaSchedule, parsOf, TMAX, type FieldParams } from './simulate';
 import { coverShares, mixN, type CoverKind } from './util';
 import { embed, type DrMethod } from '../lib/projections';
 
@@ -20,8 +20,8 @@ export const NT = 24;
 const EPS = 1e-3;
 /** Fewest trial pixels worth embedding; below this the fit is not a result. */
 export const MIN_PTS = 8;
-/** % of the pixel one crop must hold for the pure/mixed encodings. */
-export const PURE_T = 80;
+/** Purity to assume when a caller has none to give (the engine's own default). */
+export const PURE_T_DEFAULT = 80;
 
 export type ColorBy = 'mixing' | 'species' | 'purity';
 export type ShapeBy = 'species' | 'purity' | 'none';
@@ -47,10 +47,27 @@ export interface CoverSource {
    * every view. Without it, the index in these arrays is used.
    */
   pixelIds?: ArrayLike<number> | null;
+  /**
+   * The engine's own verdict per pixel (FieldSim.mixed): MIXED, else the id of
+   * the cover that dominates it. Every purity number on the page is counted off
+   * these bytes, so anything that DRAWS a pixel pure or mixed has to read them
+   * too. The shares above cannot answer it the same way on a block or imported
+   * trial: the engine weighs the largest single PLOT against the whole pixel,
+   * while proportionBySpecies has already folded the plots of one variety
+   * together. A pixel split between two plots of the same variety came out mixed
+   * in the purity card and in every ladder count, and green in the scatter, on
+   * one screen. A source with no engine run behind it leaves this out and the
+   * share rule in pointStyle stands in.
+   */
+  mixed?: ArrayLike<number> | null;
 }
 
-/** `k` indexes the source arrays (selection maps back through it); `id` is the pixel's identity. */
-export interface FitPoint { s: number[]; fr: number[]; bare: number; off: number; k: number; id: number }
+/**
+ * `k` indexes the source arrays (selection maps back through it); `id` is the
+ * pixel's identity; `mixed` is the engine's verdict, undefined when the source
+ * carried none.
+ */
+export interface FitPoint { s: number[]; fr: number[]; bare: number; off: number; k: number; id: number; mixed?: boolean }
 
 /**
  * A ground pixel's identity, from its column and row on the absolute lattice
@@ -202,6 +219,10 @@ export function fitCover(
   const offAll = src.proportionOffTrial;
   const ids = src.pixelIds ?? null;
   const nAll = src.proportionA.length;
+  // Only when it describes THESE pixels. A caller assembles the verdicts and the
+  // shares as separate arrays, and a shorter or longer one would not throw: it
+  // would silently shift every pixel's pure/mixed colour by however far it is out.
+  const mixedAll = src.mixed && src.mixed.length === nAll ? src.mixed : null;
   let keepPixel: ((k: number) => boolean) | null = null;
   if (sample > 0) {
     let trial = 0;
@@ -259,7 +280,8 @@ export function fitCover(
     }
     const pts = r.scores.map((s, j) => {
       const k = keep[r.index[j]];
-      return { s, fr: fracs[r.index[j]], bare: bares[r.index[j]], off: offs[r.index[j]], k, id: ids ? ids[k] : k };
+      return { s, fr: fracs[r.index[j]], bare: bares[r.index[j]], off: offs[r.index[j]], k, id: ids ? ids[k] : k,
+               mixed: mixedAll ? mixedAll[k] === MIXED : undefined };
     });
     out = { pts, explained: r.explained, loadings: r.loadings, tooFew: 0 };
   }
@@ -371,12 +393,26 @@ function shareSigns(pts: FitPoint[], xi: number, yi: number): [number, number] {
 /**
  * How one pixel is drawn: its colour, symbol and what dominates it. Shared by
  * the scatter and the thumbnails so the same pixel is the same colour in both.
+ * `pureT` is the purity threshold in percent, as the slider sets it, and is only
+ * consulted for a point that carries no engine verdict.
  */
-export function pointStyle(p: FitPoint, colorBy: ColorBy, shapeBy: ShapeBy, colors: string[]):
+export function pointStyle(p: FitPoint, colorBy: ColorBy, shapeBy: ShapeBy, colors: string[], pureT = PURE_T_DEFAULT):
   { color: string; sym: SymbolType; kind: CoverKind; rim: boolean } {
-  // Shares of the WHOLE pixel, bare soil and off-trial ground included.
+  // Shares of the WHOLE pixel, bare soil and off-trial ground included. They say
+  // WHICH cover dominates, and so which colour and symbol the pixel takes.
   const d = coverShares(p.fr, p.bare, p.off).dominant;
-  const pure = d.kind === 'species' && d.share >= PURE_T / 100;
+  // Whether it counts as pure is the engine's answer wherever the source
+  // carries one, which every source the page builds does; the share rule below
+  // is the fallback for one that does not, not a second opinion on the same
+  // pixel. Reading `pureT` against `d.share` was not merely a different
+  // threshold, it was a different GROUPING: the engine weighs the largest single
+  // cover id, which on a block or imported trial is one PLOT, while `d` has the
+  // plots of a variety already folded together. So a pixel lying half in each of
+  // two plots of the same variety was mixed in the purity card and in every
+  // ladder count and green here, at once. `pureT` remains for a source with no
+  // engine run behind it (see CoverSource.mixed); the engine applied this very
+  // slider value as its mixThreshold, so the two agree where both can answer.
+  const pure = d.kind === 'species' && (p.mixed === undefined ? d.share >= pureT / 100 : !p.mixed);
   const groundColor = d.kind === 'bare' ? BARE.color : OFF_TRIAL.color;
   const color =
     colorBy === 'mixing' ? mixN(p.fr, colors, p.bare, p.off)

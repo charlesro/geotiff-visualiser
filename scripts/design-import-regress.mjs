@@ -41,7 +41,7 @@ for (const rel of ['src/pixel-grid/design-import.ts']) {
 }
 
 const {
-  readDesignFiles, detectVarietyColumn, detectNameColumn, varietiesOf, assignVarieties, varietyKeyOf,
+  readDesignFiles, detectVarietyColumn, detectNameColumn, varietiesOf, assignVarieties, varietyKeyOf, VARIETY_GUESS_PREFIX,
   varietyLabel, detectCrop, tooManyVarieties, formatNumber, parseXml, varietyWordRank,
   DesignImportError, MAX_IMPORT_BYTES, MAX_IMPORT_PLOTS, MAX_IMPORT_VARIETIES, NO_VARIETY_LABEL,
 } = await import(path.join(BUILD, 'src/pixel-grid/design-import.mjs'));
@@ -1174,6 +1174,22 @@ console.log('\nK. limits and refusals');
   ok('a few plots with only unique names: each its own variety, named by the column, with a warning',
     own.varietyColumn === 'plot' && own.nameColumn === 'plot' && varietiesOf(own).length === 4 &&
     own.warnings.includes('No column is named like a variety; varieties were guessed from "plot". Pick another column if that is wrong.'), JSON.stringify(own.warnings));
+  // The guess note is the ONE warning that describes a choice rather than a
+  // fact about the file, and the page lets the user overrule that choice. It
+  // carries an exported marker so the page can drop exactly this note when they
+  // do, instead of matching on its prose; without the marker it went on saying
+  // "guessed from COL" beside a dropdown reading MGRS_TILE.
+  ok('the guess note is the only warning carrying the marker the page filters on',
+    own.warnings.filter(w => w.startsWith(VARIETY_GUESS_PREFIX)).length === 1 &&
+    own.warnings.some(w => w.startsWith(VARIETY_GUESS_PREFIX) && w.includes('"plot"')),
+    JSON.stringify(own.warnings));
+  ok('and dropping it leaves every warning that IS a fact about the file',
+    (() => {
+      const reprojected = { warnings: ['Reprojected "x.shp" from A to WGS84.', ...own.warnings] };
+      const kept = reprojected.warnings.filter(w => !w.startsWith(VARIETY_GUESS_PREFIX));
+      return kept.length === reprojected.warnings.length - 1 && kept.every(w => !w.includes('guessed from'));
+    })());
+
   const constant = await readDesignFiles([file('const.geojson', squares(4, () => ({ id: 0 })))]);
   ok('only a constant unnamed column: varietyColumn "" and the warning says every plot is its own variety',
     constant.varietyColumn === '' && varietiesOf(constant).length === 4 && constant.warnings.includes('No column names the varieties, so every plot is its own variety.'), JSON.stringify(constant.warnings));
@@ -1185,10 +1201,39 @@ console.log('\nK. limits and refusals');
 
 console.log('\nL. house style');
 {
+  /**
+   * The no-em-dash rule, asked of everything the Pixel Grid Designer ships,
+   * not of the one file this suite happens to be about. It was checked on
+   * design-import.ts alone and passed for a year while two dozen other shipped
+   * files carried em dashes, which is the shape of a check that tests its
+   * author rather than the codebase.
+   *
+   * NOT_YET_CLEAN is the list of files that still carry one. It is allowed to
+   * SHRINK and never to grow: a file not on it is checked, so no new em dash
+   * can land anywhere, and cleaning a listed file never breaks this suite.
+   * Delete a name from the list once its file is clean.
+   */
   const EM_DASH = String.fromCharCode(0x2014);
-  for (const rel of ['src/pixel-grid/design-import.ts', 'scripts/design-import-regress.mjs']) {
-    ok(`${rel} has no em dash`, !fs.readFileSync(path.join(ROOT, rel), 'utf8').includes(EM_DASH));
-  }
+  const NOT_YET_CLEAN = new Set([
+    'scripts/clustering-regress.mjs', 'scripts/phenology-regress.mjs', 'src/lib/projections.ts',
+    'src/pixel-grid/FieldMap.tsx', 'src/pixel-grid/PcaSimVisual.tsx',
+    'src/pixel-grid/map-layers.tsx', 'src/pixel-grid/sensors.ts',
+    'src/pixel-grid/steps/AreaStep.tsx', 'src/pixel-grid/steps/GridStep.tsx', 'src/pixel-grid/steps/PcaStep.tsx',
+    'src/pixel-grid/steps/controls.tsx', 'src/pixel-grid/steps/props.ts', 'src/pixel-grid/ui.tsx',
+    'src/pixel-grid/util.ts',
+  ]);
+  const walk = (dir, exts) => fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true }).flatMap(d =>
+    d.isDirectory() ? walk(`${dir}/${d.name}`, exts)
+      : exts.some(x => d.name.endsWith(x)) ? [`${dir}/${d.name}`] : []);
+  const shipped = [...walk('src/pixel-grid', ['.ts', '.tsx']), 'src/lib/geo.ts', 'src/lib/projections.ts',
+    ...walk('scripts', ['.mjs'])].sort();
+  const dashed = shipped.filter(rel => fs.readFileSync(path.join(ROOT, rel), 'utf8').includes(EM_DASH));
+  ok('no em dash in any shipped file outside the list of ones not yet cleaned',
+    dashed.every(rel => NOT_YET_CLEAN.has(rel)), dashed.filter(rel => !NOT_YET_CLEAN.has(rel)).join(' ') ||
+    `${shipped.length} files checked, ${dashed.length} still to clean`);
+  ok('and the list itself names only files that exist',
+    [...NOT_YET_CLEAN].every(rel => fs.existsSync(path.join(ROOT, rel))),
+    [...NOT_YET_CLEAN].filter(rel => !fs.existsSync(path.join(ROOT, rel))).join(' '));
 }
 
 console.log(bad ? `\n${bad} DESIGN-IMPORT CHECK(S) FAILED` : '\nALL DESIGN-IMPORT CHECKS PASSED');

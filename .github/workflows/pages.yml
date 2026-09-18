@@ -33,6 +33,9 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # Types first: vite/esbuild strip them without checking, so a type error
+      # would otherwise publish happily.
+      - run: npm run lint
       - run: npm test
       # PIXEL_GRID_ONLY builds that one entry and leaves out public/ (the PCA
       # app's data); VITE_STANDALONE drops the page's links back to the PCA app.

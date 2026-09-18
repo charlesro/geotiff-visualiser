@@ -19,7 +19,10 @@ import { fmt } from '../util';
 
 // Flat sentence-case, not uppercase-tracked: nine shouting labels were most of
 // what made the panel feel loud.
-const LABEL = 'mb-1 block text-[11px] text-neutral-500';
+// A flex line, not a block: the rotation row hangs "as in file" and "vs aligned"
+// off the label with ml-auto, which does nothing in a block and dropped them onto
+// their own line as soon as the sidebar was narrow.
+const LABEL = 'mb-1 flex items-center gap-1 text-[11px] text-neutral-500';
 const FIELD = 'w-full rounded-md border border-white/10 bg-neutral-900 px-2 py-1.5 text-sm text-neutral-100 focus:border-sky-500 focus:outline-none';
 const UNIT = 'text-xs text-neutral-500';
 
@@ -209,8 +212,10 @@ export function BlockSummary({ design, plan, res, threshold, purePct }: {
  * job as BlockSummary, for plots that came from a file. Sizes are measured off
  * the resolved plan (the grid's metres), never off the file's degrees.
  */
-export function ImportedSummary({ plan, res, threshold, purePct }: {
+export function ImportedSummary({ plan, angle, res, threshold, purePct }: {
   plan: ImportedPlan;
+  /** The trial's angle to the pixel rows, so its size is measured along its OWN sides. */
+  angle: number;
   res?: number;
   threshold: number;
   purePct?: number;
@@ -225,7 +230,18 @@ export function ImportedSummary({ plan, res, threshold, purePct }: {
   const median = areas.length ? areas[Math.floor(areas.length / 2)] : 0;
   const side = Math.sqrt(median);
   const sidePx = res ? side / res : null;
-  const [e0, n0, e1, n1] = plan.bbox;
+  /**
+   * Measured along the trial's own sides, by turning its footprint back to zero
+   * before taking the box. Its north-south bounding box grows as you turn it: a
+   * 100 x 100 m trial at 45 degrees reads 141 x 141 m, which is the box's size,
+   * not the trial's, and it changed while nothing about the trial did.
+   */
+  const t = (-angle * Math.PI) / 180, cosA = Math.cos(t), sinA = Math.sin(t);
+  let e0 = Infinity, n0 = Infinity, e1 = -Infinity, n1 = -Infinity;
+  for (const [x, y] of plan.footprint) {
+    const u = x * cosA - y * sinA, v = x * sinA + y * cosA;
+    e0 = Math.min(e0, u); e1 = Math.max(e1, u); n0 = Math.min(n0, v); n1 = Math.max(n1, v);
+  }
   const note = sidePx != null && sidePx < 1
     ? `A typical plot is smaller than one ${res} m pixel, so no pixel can sit inside one. Pick a finer sensor.`
     : purePct === 0 && res

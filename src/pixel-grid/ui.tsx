@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useTransition } from 'react';
 import { ChevronDown, Info } from 'lucide-react';
 import { CROP_COLORS, CROP_PRESETS, TRUTH_TYPES, type FieldParams } from './simulate';
 
@@ -35,16 +35,55 @@ function Step({ n, title, summary, open, enabled = true, onClick, children }: {
   );
 }
 
+/**
+ * A curve parameter, dragged.
+ *
+ * The handle follows the pointer from LOCAL state, and the value is pushed to
+ * the page inside a transition. One step of a drag changes a crop curve, and a
+ * crop curve is the input to the big PCA and to all nine ladder thumbnails: as
+ * an urgent update, every intermediate position refitted tens of thousands of
+ * seasons before the next pointer event was even read, and the handle crawled.
+ * As a transition React can abandon the fits it has not finished, so the last
+ * position is the one that gets computed.
+ */
 const Slider = ({ label, value, min, max, step, fmt, onChange }: {
   label: string; value: number; min: number; max: number; step: number; fmt?: (v: number) => string; onChange: (v: number) => void;
-}) => (
-  <label className="block">
-    <span className="mb-0.5 flex justify-between text-[11px] text-neutral-400">
-      <span>{label}</span><span className="font-mono text-neutral-300">{fmt ? fmt(value) : value}</span>
-    </span>
-    <input type="range" min={min} max={max} step={step} value={value} onChange={e => onChange(parseFloat(e.target.value))} className="w-full accent-sky-500" />
-  </label>
-);
+}) => {
+  const [dragged, setDragged] = useState<number | null>(null);
+  const [pending, startTransition] = useTransition();
+  /**
+   * The local value is let go of when the PAGE has caught up, not when the
+   * pointer is released.
+   *
+   * Releasing was the obvious moment and the wrong one: the transition has not
+   * committed yet, so `value` is still the number the drag started from, and
+   * the handle jumped back there until it did. Measured in the running page,
+   * dragging Peak from 0.85 to 0.30: 0.30 at 265 ms, 0.85 at 301 ms, 0.30 again
+   * at 354 ms. That flash is the whole of the transition's commit latency, so
+   * it is longest exactly when the page is busiest and the drag mattered most.
+   *
+   * `pending` covers the clamping case too: if the page answers a drag with a
+   * different number, the transition still ends, the local value is dropped,
+   * and the handle settles on what the page actually took. A preset change or a
+   * Reset arrives with nothing pending and moves the handle immediately.
+   */
+  useEffect(() => { if (!pending) setDragged(null); }, [pending]);
+  const shown = dragged ?? value;
+  return (
+    <label className="block">
+      <span className="mb-0.5 flex justify-between text-[11px] text-neutral-400">
+        <span>{label}</span><span className="font-mono text-neutral-300">{fmt ? fmt(shown) : shown}</span>
+      </span>
+      <input type="range" min={min} max={max} step={step} value={shown}
+        onChange={e => {
+          const v = parseFloat(e.target.value);
+          setDragged(v);
+          startTransition(() => onChange(v));
+        }}
+        className="w-full accent-sky-500" />
+    </label>
+  );
+};
 
 /** Field picker with editable truth type + double-logistic params (repo set). */
 /**
@@ -71,7 +110,27 @@ function CropControl({ label, crop, preset, swatchColor, onCrop, onPreset, onCol
     document.addEventListener('keydown', key);
     return () => { document.removeEventListener('mousedown', doc); document.removeEventListener('keydown', key); };
   }, [pick]);
-  const set = (patch: Partial<FieldParams>) => onCrop({ ...crop, ...patch });
+  /**
+   * Edits accumulate on the LAST one sent, not on the `crop` prop.
+   *
+   * Each slider sends a whole FieldParams built by spreading `crop`, and the
+   * write is deferred into a transition (see Slider), so the prop can still be
+   * the pre-edit object when the next slider fires. The second patch was then
+   * merged onto a stale crop and silently undid the first. Measured in the
+   * running page: Peak 0.30 -> 0.55, then 30 ms later Green-up 150 -> 100, and
+   * the curve settled at Peak 0.30 with Green-up 100. Urgent updates had no
+   * such window, so this arrived with the transition.
+   *
+   * The ref is resynced from the prop on every commit, so a preset change, a
+   * Reset or a value the page clamped all win over what was typed here.
+   */
+  const latest = useRef(crop);
+  useEffect(() => { latest.current = crop; }, [crop]);
+  const set = (patch: Partial<FieldParams>) => {
+    const next = { ...latest.current, ...patch };
+    latest.current = next;
+    onCrop(next);
+  };
   const shown = swatchColor ?? crop.color;
   return (
     <div>

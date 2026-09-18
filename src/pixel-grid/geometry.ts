@@ -1,7 +1,7 @@
 import type { LngLatBounds } from './s2-grid';
 
 /**
- * Pure planar geometry over WGS84 rings — the predicates the page uses to ask
+ * Pure planar geometry over WGS84 rings: the predicates the page uses to ask
  * "is this pixel in the field?" and "what does this strip look like clipped to
  * it?". No React, no Leaflet, no projection: callers hand in rings and get
  * rings back.
@@ -46,7 +46,7 @@ const polyAreaHa = (ring: Poly): number => {
 /**
  * Sutherland–Hodgman: clip `subject` (any polygon) by the CONVEX `win` window.
  * Used to clip a crop-strip rectangle to the (possibly non-convex) field polygon
- * — here `subject` = the field, `win` = the rectangle, giving field ∩ rectangle.
+ * Here `subject` = the field, `win` = the rectangle, giving field ∩ rectangle.
  */
 const clipPolygon = (subject: Poly, win: Poly): Poly => {
   if (subject.length < 3 || win.length < 3) return [];
@@ -103,5 +103,28 @@ const fieldOverlapTest = (ring: Poly) => {
   };
 };
 
-export { pointInPoly, polyBbox, cellCenter, polyAreaHa, clipPolygon, fieldOverlapTest };
+/**
+ * Would a map centred here, in WGS84 [lat, lng], still be showing this field?
+ *
+ * The map reopens where it was left, and that view is saved under its own key,
+ * independently of the field. The two can end up describing different places:
+ * an import moves the field to the trial, removing it moves the field back, and
+ * a pinned default field can be on another continent entirely, while the saved
+ * view stays wherever the map last happened to be. Reopening there shows bare
+ * ground with no grid on it, which reads as "the tool is broken" rather than
+ * "you are looking somewhere else".
+ *
+ * The margin is the field's own span, with a floor of about a kilometre: at the
+ * zoom this page opens on, a centre further off than that has no part of the
+ * field on screen.
+ */
+const viewShowsField = (center: [number, number], field: [number, number, number, number] | null): boolean => {
+  if (!field) return true; // no field to miss
+  const [w, s, e, n] = field;
+  const padLng = Math.max(e - w, 0.01), padLat = Math.max(n - s, 0.01);
+  const [lat, lng] = center;
+  return lng >= w - padLng && lng <= e + padLng && lat >= s - padLat && lat <= n + padLat;
+};
+
+export { pointInPoly, polyBbox, cellCenter, polyAreaHa, clipPolygon, fieldOverlapTest, viewShowsField };
 export type { Poly };

@@ -216,10 +216,22 @@ export async function readDesignFiles(files: DesignFile[]): Promise<ImportedDesi
         : 'The file has no attributes, so every plot is its own variety.',
     );
   } else if (varietyWordRank(design.varietyColumn) < 0) {
-    warnings.push(`No column is named like a variety; varieties were guessed from "${design.varietyColumn}". Pick another column if that is wrong.`);
+    warnings.push(`${VARIETY_GUESS_PREFIX} varieties were guessed from "${design.varietyColumn}". Pick another column if that is wrong.`);
   }
   return design;
 }
+
+/**
+ * The opening of the reader's note about GUESSING the variety column.
+ *
+ * The note names the column the reader picked, and the page lets the user pick
+ * a different one afterwards. It is the only warning here that describes a
+ * choice rather than a fact about the file, so it is the only one that can stop
+ * being true while it is still on screen: it went on saying "guessed from COL"
+ * beside a dropdown reading MGRS_TILE. Exported so the page can drop exactly
+ * this note when the user answers it, without matching on prose.
+ */
+export const VARIETY_GUESS_PREFIX = 'No column is named like a variety;';
 
 const layerLabel = (l: LayerSource): string =>
   l.kind === 'shp' ? (l.parts.shp ?? l.parts.dbf ?? l.parts.shx ?? l.parts.prj ?? l.parts.cpg)!.path : l.entry.path;
@@ -1874,7 +1886,14 @@ export function varietyWordRank(col: string): number {
   return VARIETY_WORDS.findIndex(w => (SHORT_VARIETY_WORDS[w] ? SHORT_VARIETY_WORDS[w](tokens) : flat.includes(w)));
 }
 
-const distinctValues = (d: DesignLike, col: string): Set<string> => {
+/**
+ * Every value a column takes over the design, missing ones read as ''.
+ *
+ * Exported because the attribute table shows this count per column, and it is
+ * the number the variety detector below decides on: a table that counted them
+ * its own way could show "42 distinct" beside a detector that had found 41.
+ */
+export const distinctValues = (d: DesignLike, col: string): Set<string> => {
   const s = new Set<string>();
   for (const p of d.plots) s.add(cell(p.props, col));
   return s;

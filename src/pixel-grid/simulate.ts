@@ -5,7 +5,7 @@ import type { ImportedPlan } from './imported-types';
 import type { LngLatBounds, S2Grid } from './s2-grid';
 
 /**
- * Mixed-pixel simulator — a faithful port of github.com/charlesro/intercrop-simulator's
+ * Mixed-pixel simulator: a faithful port of github.com/charlesro/intercrop-simulator's
  * engine (makeTruth / makeBetaSchedule / simulate / cultureForCell / aggregate),
  * driven over the real Sentinel-2 / satellite pixel grid instead of an abstract
  * one. The sensor pixels are the actual grid cells (axis-aligned in UTM); the
@@ -42,7 +42,7 @@ export const PATTERNS: { id: PatternType; label: string }[] = [
   { id: 'imported', label: 'Imported trial (file)' },
 ];
 
-/** One field's parameters — the repo's per-field set, plus name/colour for UI. */
+/** One field's parameters: the repo's per-field set, plus name/colour for UI. */
 export interface FieldParams {
   name: string;
   color: string;
@@ -186,7 +186,7 @@ export const cultureForCell = (r: number, c: number, mode: PatternType): number 
   // Positive modulo, because JavaScript's % keeps the sign of the dividend:
   // -1 % 2 is -1, not 1. The pattern is periodic over ALL integers, and the map
   // overlay indexes strips from a rotated frame whose origin sits inside the
-  // field — so r and c go negative there. A returned -1 matched neither crop id
+  // field, so r and c go negative there. A returned -1 matched neither crop id
   // and painted the strip bare-soil brown, which is what made crop B vanish at
   // large rotations. Identical to the old expression for r, c >= 0, which is the
   // only range `aggregate` uses.
@@ -201,7 +201,7 @@ export const cultureForCell = (r: number, c: number, mode: PatternType): number 
   }
 };
 
-/** Bare-soil gap (alley) inserted between strips — a third land cover. */
+/** Bare-soil gap (alley) inserted between strips: a third land cover. */
 /**
  * Land-cover sentinels. Species and plot ids are CONTIGUOUS from 0, so the
  * markers sit at the top of the byte. BARE used to be id 2, which IS the third
@@ -226,6 +226,18 @@ export interface AggregateResult {
   rowsAgg: number;
   colsAgg: number;
   cropMapMixed: Uint8Array;
+  /**
+   * The dominant cover BEFORE the mixed threshold is applied, and the cover a
+   * point sample at the pixel centre would read. No screen reads either one:
+   * the page reads cropMapMixed, which is this classification with MIXED
+   * written in. They are kept because they are what pins this port to the
+   * repo's original engine (suite sections H and G2 read them pixel by pixel,
+   * and the differential fuzz compares the whole result object field by field),
+   * and because measuring says they are free: interleaved A/B runs of a 360,000
+   * pixel field, with and without the centre pass, differ by less than the
+   * run-to-run noise. The cost is 2 bytes per pixel of memory, nothing else.
+   * Drop them only together with those pins, never quietly.
+   */
   cropMapMajority: Uint8Array;
   cropMapCenter: Uint8Array;
   cropMapProportionA: Float32Array;
@@ -243,7 +255,14 @@ export interface AggregateResult {
   cropMapDominant: Uint8Array | null;
   /** That species' fraction of all cover in the pixel, alley soil included. */
   cropMapDominantFrac: Float32Array | null;
-  /** Dominant PLOT id per pixel, so per-plot coverage can be counted. */
+  /**
+   * Dominant PLOT id per pixel, so per-plot coverage can be counted. The one
+   * field of this result with no reader at all today, not even a test: it is
+   * 2 bytes per pixel and one comparison per cover slot, which measures as
+   * nothing next to the PSF pass. Deleting it is a change to what `aggregate`
+   * RETURNS, so it goes with a re-run of the differential fuzz against the
+   * pre-coverage oracle, which compares the result field by field.
+   */
   cropMapDominantPlot: Uint16Array | null;
   cropMapProportionOffTrial: Float32Array | null;
 }
@@ -784,8 +803,6 @@ export function aggregate(
                 sigmaX, sigmaY, includeOutside, mixThreshold, offX, offY, coverSpecies, centre);
   return result;
 }
-
-// ===== field driver (repo engine over the real S2 grid) ======================
 
 // ===== randomised complete block design ======================================
 
@@ -2137,6 +2154,13 @@ function aggregateImported(
   return result;
 }
 
+// ===== field driver (repo engine over the real S2 grid) ======================
+// Everything from here down is the driver: what a layout is (SimLayout), the
+// fine grid it is painted on (buildCropMap, strideFor), and the calls the page
+// makes (simulateField, simulatePatch, bestPhaseOffset, resolutionSweep). This
+// banner used to sit above the block design, labelling an empty section, while
+// the driver itself ran on unannounced for 500 lines.
+
 /**
  * The narrowest feature the fine grid must resolve. strideFor samples against
  * ONE width, but a block design's smallest feature is usually an alley, which
@@ -2239,7 +2263,7 @@ export const truthAt = (f: FieldParams, day: number): number =>
   makeTruth(f.truth, TMAX, parsOf(f))[Math.max(0, Math.min(TMAX - 1, Math.round(day)))];
 
 /**
- * Fine cells per sensor pixel — enough sub-sampling to resolve the strips.
+ * Fine cells per sensor pixel: enough sub-sampling to resolve the strips.
  * Uses ≥4 samples per strip width (factor 4) so the crop fraction is accurate;
  * too-coarse sampling quantises e.g. a 0.6 coverage to a flat 0.5 (all-mixed
  * artefact) when the pixel and strip periods resonate.
@@ -2458,15 +2482,15 @@ export function cultureAt(E: number, N: number, layout: SimLayout, ox: number, o
 
 /**
  * Find the pattern phase (origin shift, in metres) that maximises pure single-crop
- * pixels — i.e. slide the whole planting so strip edges land on pixel edges. Solved
+ * pixels: i.e. slide the whole planting so strip edges land on pixel edges. Solved
  * 1D per striping axis against the real pixel lattice (exact when rows follow the
  * pixels; a good heuristic when rotated). Returns [du, dv] in the rotated
  * (along-row u, cross-row v) frame; add it to the pattern origin.
  */
 /**
  * bestPhaseOffset is pure but costs ~35 ms (192 phases x 400 pixels x 16
- * sub-samples), and the resolution ladder calls it once per size — twice per size
- * with "vs aligned", with IDENTICAL arguments, since rotation is not an input.
+ * sub-samples), and the resolution ladder calls it once per size (twice per size
+ * with "vs aligned"), with IDENTICAL arguments, since rotation is not an input.
  * Results are cached by argument. `threshold` is deliberately left out of the
  * key: the search maximises continuous coverage and never reads it, so moving the
  * purity slider reuses every cached placement.
@@ -2475,21 +2499,24 @@ const phaseCache = new Map<string, [number, number]>();
 const PHASE_CACHE_MAX = 512;
 
 export function bestPhaseOffset(
-  pattern: PatternType, res: number, width: number, spacing: number, threshold: number, ox0: number, oy0: number,
+  // `threshold` is accepted but unread (see above); it stays in the signature
+  // because every caller has it in hand and dropping it would silently shift
+  // the two origins one slot left in the JS test suites, which are untyped.
+  pattern: PatternType, res: number, width: number, spacing: number, _threshold: number, ox0: number, oy0: number,
 ): [number, number] {
   // An imported trial sits where the file put it; there is no phase to slide.
   if (pattern === 'imported') return [0, 0];
   const key = `${pattern}|${res}|${width}|${spacing}|${ox0}|${oy0}`;
   const hit = phaseCache.get(key);
   if (hit) return [hit[0], hit[1]]; // a copy: callers must never share the cached tuple
-  const out = searchPhaseOffset(pattern, res, width, spacing, threshold, ox0, oy0);
+  const out = searchPhaseOffset(pattern, res, width, spacing, ox0, oy0);
   if (phaseCache.size >= PHASE_CACHE_MAX) phaseCache.delete(phaseCache.keys().next().value as string);
   phaseCache.set(key, out);
   return [out[0], out[1]];
 }
 
 function searchPhaseOffset(
-  pattern: PatternType, res: number, width: number, spacing: number, threshold: number, ox0: number, oy0: number,
+  pattern: PatternType, res: number, width: number, spacing: number, ox0: number, oy0: number,
 ): [number, number] {
   const W = width, P = width + Math.max(0, spacing);
   const assign = (k: number, two: boolean) => (two ? Math.floor(k / 2) : k) & 1;
@@ -2497,7 +2524,7 @@ function searchPhaseOffset(
     const STEPS = 192, SUB = 16, NPIX = 400;
     const m0 = Math.round(origin / res);
     // Maximise the mean dominant-crop coverage (continuous): this peaks only when
-    // strip edges land exactly on pixel edges — not merely when pixels are "pure
+    // strip edges land exactly on pixel edges, not merely when pixels are "pure
     // enough" to clear the threshold (which leaves a constant sub-pixel shift).
     let best = 0, bestScore = -1;
     for (let s = 0; s < STEPS; s++) {
@@ -2590,7 +2617,7 @@ export function resolutionSweep(
 ): SweepPoint[] {
   const [minE, minN, maxE, maxN] = utmEnvelope(bounds, epsg);
   const cx = (minE + maxE) / 2, cy = (minN + maxN) / 2;
-  const half = 50; // bounded window — purity of a periodic pattern is stationary
+  const half = 50; // bounded window: purity of a periodic pattern is stationary
   let wMinE = Math.max(minE, cx - half), wMaxE = Math.min(maxE, cx + half);
   let wMinN = Math.max(minN, cy - half), wMaxN = Math.min(maxN, cy + half);
   const imported = importedOf(layout);

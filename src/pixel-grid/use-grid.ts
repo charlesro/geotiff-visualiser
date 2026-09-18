@@ -25,25 +25,36 @@ import { inRange, oneOf, usePersistentState } from './persist';
 /**
  * Step 2: which satellite, and therefore exactly where its pixels fall.
  *
- * This is the page's spine — everything downstream (the simulation, the PCA, the
+ * This is the page's spine: everything downstream (the simulation, the PCA, the
  * shapefile, the map overlays) hangs off `build`. Three things live here that
  * look like they belong elsewhere, and don't:
  *
  *  - `sigmaX`/`sigmaY` are set HERE, in step 2, because the PSF is a property of
  *    the chosen satellite (an effect reseeds them from `SOURCES[].psf` on every
- *    source change) — even though steps 3 and 4 are what consume them. They are
+ *    source change), even though steps 3 and 4 are what consume them. They are
  *    returned as plain scalars and passed INTO the simulation hooks.
  *  - `viewBounds` is owned here even though the MAP reports it, because
  *    `renderGrid` clips to it. One owner keeps the map -> grid -> map cycle sane.
  *  - `onDownload` is here because it is a pure function of the built grid.
  *
  * The three `[sourceId]`-keyed effects must stay in THIS order (sigma reset, GSD
- * seed, catalog fetch). `pickRes` claims the GSD-seed guard before it switches
- * source: without that it lost the race and every sweep-panel click landed on a
- * 1 m grid instead of the size clicked. It deliberately leaves the sigma guard
- * alone, so picking a size still reseeds the blur from the sensor.
+ * seed, catalog fetch). `pickRes` claims BOTH seed guards before it switches
+ * source: without the GSD one it lost the race and every sweep-panel click
+ * landed on a 1 m grid instead of the size clicked, and without the sigma one
+ * the click also reseeded the blur, so the purity on the thumbnail clicked was
+ * not the purity that came back.
  */
-export function useFieldGrid({ aoi, aoiPoly }: { aoi: LngLatBounds | null; aoiPoly: Poly | null }) {
+export function useFieldGrid({ aoi, fieldRing }: {
+  aoi: LngLatBounds | null;
+  /**
+   * The field as a closed ring, however it was drawn: the traced shape, the
+   * drawn box's own four corners, or an imported trial's outline (use-area).
+   * Never "was a shape traced" - that is `area.aoiPoly`, and passing it here is
+   * what once let a box AOI keep, in the export and the count, edge pixels that
+   * the map's "In field only" was hiding.
+   */
+  fieldRing: Poly | null;
+}) {
   const [sourceId, setSourceId] = usePersistentState('sourceId', 's2-10', v => typeof v === 'string' && SOURCES.some(s => s.id === v));
   const [gsd, setGsd] = usePersistentState('gsd', 1, inRange(0.01, 1000));
   const [customAnchor, setCustomAnchor] = usePersistentState<'utm' | 'plot'>('customAnchor', 'utm', oneOf('utm', 'plot'));
@@ -59,8 +70,8 @@ export function useFieldGrid({ aoi, aoiPoly }: { aoi: LngLatBounds | null; aoiPo
   const source = SOURCES.find(s => s.id === sourceId)!;
 
   // Load each satellite's realistic default PSF (σ, from its published MTF) when it's
-  // picked — the user can still override σx/σy afterwards.
-  // Only when the satellite actually CHANGES — not on first render, where σ may
+  // picked; the user can still override sigmaX/sigmaY afterwards.
+  // Only when the satellite actually CHANGES, not on first render, where sigma may
   // have just been restored from the last session and would be overwritten the
   // instant the page loaded.
   const sigmaSource = useRef(sourceId);
@@ -87,7 +98,13 @@ export function useFieldGrid({ aoi, aoiPoly }: { aoi: LngLatBounds | null; aoiPo
   // For catalog sources, identify the real grid(s) covering the area.
   useEffect(() => {
     if (!aoi || source.kind !== 'catalog' || !source.cfg) {
-      setGrids(null); setGridState('idle'); setSelectedGridKey(null); return;
+      // The KEY is not cleared here. This branch runs on mount too, and a saved
+      // `sourceId` of 'custom' (what picking a size off the ladder leaves) then
+      // wiped the covering grid restored a line above it, so coming back to
+      // Sentinel-2 landed on the default tile instead of the one chosen. The
+      // fetch below is the only writer, and it already drops a key that no
+      // longer covers the area.
+      setGrids(null); setGridState('idle'); return;
     }
     const ctrl = new AbortController();
     setGridState('loading');
@@ -99,7 +116,7 @@ export function useFieldGrid({ aoi, aoiPoly }: { aoi: LngLatBounds | null; aoiPo
         setGridState(found.length ? 'ok' : 'error');
         const auto = utmZoneForLng((aoi[0] + aoi[2]) / 2);
         const pick = found.find(g => zoneFromEpsg(g.epsg) === auto) ?? found[0];
-        // Keep the choice — restored, or made before a redraw — whenever it is still
+        // Keep the choice (restored, or made before a redraw) whenever it is still
         // one of the grids covering this area; only otherwise take the default.
         setSelectedGridKey(prev => (prev && found.some(g => g.label === prev) ? prev : pick?.label ?? null));
       })
@@ -127,7 +144,7 @@ export function useFieldGrid({ aoi, aoiPoly }: { aoi: LngLatBounds | null; aoiPo
     if (gridState === 'error' && source.offlinePhase0) {
       // South of the equator the false northing (10 000 000 m) is not a multiple
       // of 30 or 60, so "origin at a multiple of the pixel size" misses the real
-      // lattice by 10 m at HLS 30 m and 20 m at S2 60 m — a third of a pixel,
+      // lattice by 10 m at HLS 30 m and 20 m at S2 60 m: a third of a pixel,
       // exported with no hint that it is less exact than the northern case.
       // Anchoring on the false northing itself is exact in both hemispheres.
       const zone = utmZoneForLng((aoi[0] + aoi[2]) / 2);
@@ -145,7 +162,7 @@ export function useFieldGrid({ aoi, aoiPoly }: { aoi: LngLatBounds | null; aoiPo
   const grid = build?.grid ?? null;
 
   // When the full grid is too fine to fill cells, render only the cells in the map
-  // view (capped low so panning stays smooth) — used by the sim / "Real field".
+  // view (capped low so panning stays smooth), used by the sim / "Real field".
   const renderGrid = useMemo(() => {
     if (grid) return grid;
     if (aoi && buildOpts && build?.capped && viewBounds) return buildS2Grid(aoi, { ...buildOpts, clip: viewBounds, maxCells: 6000 }).grid;
@@ -154,28 +171,40 @@ export function useFieldGrid({ aoi, aoiPoly }: { aoi: LngLatBounds | null; aoiPo
   const clippedView = !grid && !!renderGrid;
   const geojson = useMemo(() => (renderGrid ? gridToGeoJson(renderGrid) : null), [renderGrid]);
 
-  // The plain grid is drawn as lines over the visible window (phase-correct),
-  // independent of the cell cap — so even a 0.3 m grid shows instantly.
   /**
-   * Only the cells whose centre falls inside the traced field — exactly the test
-   * `onDownload` uses, so switching this on shows you the shapefile's contents
-   * rather than a second, differently-clipped version of it.
-   * Null when there is no traced polygon: a box AOI has nothing to clip away.
-   */
-  /**
-   * The pixels that overlap the field, for "In field only".
+   * Which cells of `renderGrid` belong to the field, decided ONCE.
    *
-   * `aoiPoly` is the field ring: the traced shape, the drawn box, or an
-   * imported trial's outline (see PixelGridApp). Every pixel sharing any area
-   * with it counts (field-membership.ts), the same rule the export and the
-   * pixel count use, so the three always agree. It used to be "centre inside",
-   * which left a tilted field's corners covered by no pixel at all.
+   * Membership is "the pixel's square shares area with the field ring"
+   * (field-membership.ts), the one rule the map, the count, the export and the
+   * PCA all ask, so they can never disagree. It used to be "centre inside",
+   * which left a tilted field's corners covered by no kept pixel at all.
+   *
+   * Answering it costs a polygon clip per cell, and four places asked it of the
+   * same cells on every change: the pixel count, the in-field overlay, the
+   * simulation overlay and the PCA. `renderGrid` IS `grid` whenever the whole
+   * grid fits, which is exactly when the count exists, so those three share
+   * this pass; the PCA reuses it when its grid is this same object (it can be a
+   * central subsample instead) and does its own pass otherwise.
+   * Null when there is no grid or no field: every cell is in.
    */
+  const inField = useMemo(() => {
+    if (!renderGrid || !fieldRing) return null;
+    const test = cellInFieldTest(fieldRing, renderGrid.epsg, renderGrid.res);
+    if (!test) return null;
+    const cells = renderGrid.cells;
+    const mask = new Uint8Array(cells.length);
+    let count = 0;
+    for (let k = 0; k < cells.length; k++) if (test(cells[k])) { mask[k] = 1; count++; }
+    return { grid: renderGrid, mask, count };
+  }, [renderGrid, fieldRing]);
+
+  // The plain grid is drawn as lines over the visible window (phase-correct),
+  // independent of the cell cap, so even a 0.3 m grid shows instantly.
+  /** The pixels that overlap the field, for "In field only". */
   const fieldGeojson = useMemo(() => {
-    if (!renderGrid || !aoiPoly) return null;
-    const inField = cellInFieldTest(aoiPoly, renderGrid.epsg, renderGrid.res);
-    return gridToGeoJson({ ...renderGrid, cells: inField ? renderGrid.cells.filter(inField) : renderGrid.cells });
-  }, [renderGrid, aoiPoly]);
+    if (!renderGrid || !inField) return null;
+    return gridToGeoJson({ ...renderGrid, cells: renderGrid.cells.filter((_, k) => inField.mask[k]) });
+  }, [renderGrid, inField]);
 
   const lineBox = useMemo((): [number, number, number, number] | null => {
     if (!build?.utmBounds) return null;
@@ -200,11 +229,17 @@ export function useFieldGrid({ aoi, aoiPoly }: { aoi: LngLatBounds | null; aoiPo
   // Stable identity: it is handed to the memoised PcaSweep, which would otherwise
   // redraw on every render just because a fresh function arrived.
   const pickRes = useCallback((r: number) => {
-    // Claim the GSD-seed guard BEFORE switching source. Otherwise the [sourceId]
-    // effect above sees 'custom' as a fresh choice and reseeds the GSD from that
-    // source's own 1 m default, so clicking the 2 m panel landed on a 1 m grid:
-    // the wrong size, and fine enough to trip the export cap.
+    // Claim BOTH [sourceId] guards before switching source. Otherwise the two
+    // effects above see 'custom' as a fresh choice and reseed from that source's
+    // own defaults:
+    //  - the GSD from its 1 m, so clicking the 2 m panel landed on a 1 m grid,
+    //    the wrong size and fine enough to trip the export cap;
+    //  - the blur from its sigma 0.55, where the thumbnail just clicked was
+    //    computed at the sensor's own (0.62 for Sentinel-2), so the purity you
+    //    clicked was not the purity you got. A size click changes the pixel
+    //    size and nothing else; switching satellite still reseeds both.
     gsdSource.current = 'custom';
+    sigmaSource.current = 'custom';
     setSourceId('custom');
     setGsd(r);
   }, []);
@@ -214,9 +249,10 @@ export function useFieldGrid({ aoi, aoiPoly }: { aoi: LngLatBounds | null; aoiPo
     const slug = source.provider.toLowerCase().replace(/[^a-z0-9]+/g, '');
     const where = grid.tile ? `_${grid.tile}` : `_z${grid.zone}${grid.south ? 'S' : 'N'}`;
     const stem = `${slug}_pixels_${grid.res}m${where}`;
-    // The exported pixels are the ones overlapping the field, as on the map.
-    const inField = cellInFieldTest(aoiPoly, grid.epsg, grid.res);
-    const out = inField ? { ...grid, cells: grid.cells.filter(inField) } : grid;
+    // The exported pixels are the ones overlapping the field, as on the map:
+    // the same mask the map drew, when it describes this grid.
+    const keep = inField && inField.grid === grid ? inField.mask : null;
+    const out = keep ? { ...grid, cells: grid.cells.filter((_, k) => keep[k]) } : grid;
     saveAs(gridToShapefileZip(out, stem), `${stem}.zip`);
   };
 
@@ -260,23 +296,21 @@ export function useFieldGrid({ aoi, aoiPoly }: { aoi: LngLatBounds | null; aoiPo
     : null;
   const areaHa = build ? (build.cellCount * pxSize * pxSize) / 10_000 : 0; // pixels covering the box
   // The traced field, or else the drawn box itself. Not `areaHa`: that counts
-  // every pixel touching the box, edge pixels whole — +15% on a 280 × 330 m box.
-  const fieldAreaHa = aoiPoly
-    ? polyAreaHa(aoiPoly)
+  // every pixel touching the box, edge pixels whole: +15% on a 280 x 330 m box.
+  const fieldAreaHa = fieldRing
+    ? polyAreaHa(fieldRing)
     : aoi ? polyAreaHa([[aoi[0], aoi[1]], [aoi[2], aoi[1]], [aoi[2], aoi[3]], [aoi[0], aoi[3]]]) : 0;
-  /** The same surface in square metres — what the panels display. Hectares stay
+  /** The same surface in square metres, what the panels display. Hectares stay
    *  internally for the cell-count cap, which is quoted in ha. */
   const fieldAreaM2 = fieldAreaHa * 10_000;
   const maxAreaHa = (40_000 * pxSize * pxSize) / 10_000;
-  // Pixels overlapping the field (what the export contains).
+  // Pixels overlapping the field (what the export contains). The mask above
+  // already walked these very cells: `renderGrid` is `grid` whenever `grid`
+  // exists, and this count exists only then.
   const fieldCellCount = useMemo(() => {
     if (!grid) return null;
-    const inField = cellInFieldTest(aoiPoly, grid.epsg, grid.res);
-    if (!inField) return grid.cells.length;
-    let c = 0;
-    for (const cell of grid.cells) if (inField(cell)) c++;
-    return c;
-  }, [grid, aoiPoly]);
+    return inField && inField.grid === grid ? inField.count : grid.cells.length;
+  }, [grid, inField]);
   /** S2/HLS use the MGRS tile word; Landsat uses a UTM zone. */
   const gridNoun = source.provider.startsWith('Landsat C2') ? 'zone' : 'tile';
   /** Whether a custom GSD nests cleanly inside Sentinel-2's 10 m grid. */
@@ -287,8 +321,9 @@ export function useFieldGrid({ aoi, aoiPoly }: { aoi: LngLatBounds | null; aoiPo
   const gridSummary = !aoi
     ? 'needs an area'
     : grid
-      // The pixels that will actually be exported (centre inside the field), not
-      // every pixel of the rounded-out grid: the header and the export agree.
+      // The pixels that will actually be exported (the ones overlapping the
+      // field), not every pixel of the rounded-out grid: the header and the
+      // export agree.
       ? `${source.provider} · ${grid.tile ?? `${grid.zone}${grid.south ? 'S' : 'N'}`} · ${fmt(fieldCellCount ?? build!.cellCount)} px`
       : build?.capped
         ? `${source.provider} · ${fmt(build.cellCount)} px (zoom to view)`
@@ -298,7 +333,7 @@ export function useFieldGrid({ aoi, aoiPoly }: { aoi: LngLatBounds | null; aoiPo
            sigmaX, setSigmaX, sigmaY, setSigmaY,
            psfOffX, setPsfOffX, psfOffY, setPsfOffY, psfOffXM, psfOffYM,
            grids, gridState, selectedGridKey, setSelectedGridKey, selectedGrid,
-           buildOpts, build, grid, renderGrid, clippedView, geojson, fieldGeojson, lineBox,
+           buildOpts, build, grid, renderGrid, clippedView, geojson, fieldGeojson, inField, lineBox,
            viewBounds, setViewBounds, pxSize, psfSigmaM, psfFwhmM, psfCenter,
            psfSigmaXM, psfSigmaYM, psfFwhmXM, psfFwhmYM, psfAnisotropic,
            dims, areaHa, fieldAreaHa, fieldAreaM2, maxAreaHa, fieldCellCount,

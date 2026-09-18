@@ -6,7 +6,7 @@ import { centralMeridian } from './s2-grid';
  *
  * Produces a real .zip (STORE / no compression) containing .shp/.shx/.dbf/.prj,
  * so QGIS/ArcGIS/R read it directly. Geometry is written in the grid's native
- * UTM CRS — the honest pixel squares — with a matching .prj, which is what you
+ * UTM CRS (the honest pixel squares) with a matching .prj, which is what you
  * want when aligning plots to pixels (reproject in your GIS if you need WGS84).
  *
  * Only what this app needs is implemented: Polygon (type 5), one ring per
@@ -179,7 +179,7 @@ function writeShpShx(grid: S2Grid): { shp: Uint8Array; shx: Uint8Array } {
     shp.i32le(0);                  // part 0 start index
     for (const [x, y] of ring) { shp.f64le(x); shp.f64le(y); }
 
-    // SHX entry (big-endian): offset, content length — both in 16-bit words.
+    // SHX entry (big-endian): offset, content length, both in 16-bit words.
     shx.i32be(offsetWords);
     shx.i32be(RECORD_CONTENT_WORDS);
     offsetWords += 4 + RECORD_CONTENT_WORDS;

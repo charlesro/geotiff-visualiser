@@ -81,7 +81,7 @@ function DotCanvas({ pts, height }: { pts: Dot[]; height: number }) {
   return <canvas ref={ref} style={{ width: '100%', height, display: 'block' }} />;
 }
 
-function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, colorBy, activeRes, activeSim, activePartial, showCounts, onPick }: {
+function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, threshold, colorBy, activeRes, activeSim, activePartial, showCounts, onPick }: {
   steps: SweepStep[];
   /**
    * A second ladder over the same resolutions (e.g. the rows laid along the
@@ -92,6 +92,8 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, col
   pairLabels?: [string, string];
   /** Every species in the design, already padded and recoloured for drawing. */
   species: FieldParams[]; colors: string[]; magnitude: number;
+  /** The purity threshold in percent, so a thumbnail's pure/mixed colouring is the chart's. */
+  threshold: number;
   /** The big scatter's colour encoding, so a pixel is the same colour in both. */
   colorBy: ColorBy;
   activeRes?: number;
@@ -135,18 +137,23 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, col
       const [sx, sy] = axisSigns(fit, 0, 1, species);
       const pts: Dot[] = samplePts(fit.pts, LADDER_POINTS).map(p => ({
         x: sx * (p.s[0] ?? 0), y: sy * (p.s[1] ?? 0),
-        color: pointStyle(p, colorBy, 'none', colors).color,
+        color: pointStyle(p, colorBy, 'none', colors, threshold).color,
       }));
-      // A count always comes from the rung itself: the big chart may be a central patch.
-      return { res: s.res, purePct: isActive ? activeSim!.purePct : s.purePct, pureCount: s.current ? NaN : (s.pureCount ?? NaN),
+      // A count always comes from the rung itself: the big chart may be a central
+      // patch, and its percentage is then taken over that patch. `rungPct` is the
+      // rate over the SAME pixels the count is over, so when the panel is
+      // labelled with a count, its colour and its tooltip cannot be describing a
+      // different population than the number beside them.
+      return { res: s.res, purePct: isActive ? activeSim!.purePct : s.purePct, rungPct: s.purePct,
+               pureCount: s.current ? NaN : (s.pureCount ?? NaN),
                partial: isActive ? !!activePartial : !!s.partial, pts, tooFew: fit.tooFew, waiting: false };
     });
   // The rotated ladder may substitute the big scatter; the 0° comparison ladder
   // is a different design and never does.
   const charts = useMemo(() => toCharts(steps, true),
-    [steps, speciesSig, magnitude, colorBy, colors.join(','), activeRes, activeSim, activePartial]); // eslint-disable-line react-hooks/exhaustive-deps
+    [steps, speciesSig, magnitude, threshold, colorBy, colors.join(','), activeRes, activeSim, activePartial]); // eslint-disable-line react-hooks/exhaustive-deps
   const pairCharts = useMemo(() => (pairWith ? toCharts(pairWith, false) : null),
-    [pairWith, speciesSig, magnitude, colorBy, colors.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
+    [pairWith, speciesSig, magnitude, threshold, colorBy, colors.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
   const pc = (v: number) => (v >= 70 ? 'text-emerald-400' : v >= 40 ? 'text-amber-400' : 'text-rose-400');
 
   const panel = (c: ReturnType<typeof toCharts>[number], key: string) => {
@@ -161,8 +168,14 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, col
       >
         <div className="flex items-baseline justify-between px-0.5 text-[10px]">
           <span className="font-mono text-neutral-300">{c.res} m{active ? ' ·' : ''}{c.partial ? ' ◦' : ''}</span>
+          {/* While comparing, every panel is labelled with its own count, and the
+              pair is only comparable that way. The rung at the displayed size is
+              counted by a later idle pass, so until it lands this reads "..."
+              rather than going blank and reading as a panel with no pure pixels. */}
           {showCounts
-            ? Number.isFinite(c.pureCount) && <span className={pc(c.purePct)} title={`${c.purePct.toFixed(0)}% of its trial pixels`}>{fmt(c.pureCount)} px</span>
+            ? Number.isFinite(c.pureCount)
+              ? <span className={pc(c.rungPct)} title={`${c.rungPct.toFixed(0)}% of its own trial pixels`}>{fmt(c.pureCount)} px</span>
+              : <span className="text-neutral-600" title="Counting this size">...</span>
             : Number.isFinite(c.purePct) && <span className={pc(c.purePct)}>{c.purePct.toFixed(0)}%</span>}
         </div>
         <div className="pointer-events-none">

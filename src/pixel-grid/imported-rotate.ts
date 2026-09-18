@@ -125,20 +125,47 @@ export function purePixels(plan: ImportedPlan, r: number, sensor: SensorParams, 
  * it, the plot edges can fall mid-pixel, and the comparison then blames the
  * angle for a bad position. N shrinks on large grids so the search stays
  * within about `budget` simulated pixels.
+ *
+ * `staked` says whether a search actually ran. It is the honest half of the
+ * budget: when N collapses to 1 the trial is turned and left where the rotation
+ * put it, so "aligned" means the best of a search at one pixel size and merely
+ * "turned" at another, and nothing on the page could tell the two apart. A
+ * caller that shows the aligned comparison should say which one it got rather
+ * than let the reader assume the search.
  */
 export function stakeOnGrid(
   plan: ImportedPlan, r: number, sensor: SensorParams, extent: [number, number, number, number], budget = 400_000,
-): { plan: ImportedPlan; shift: [number, number] } {
+): { plan: ImportedPlan; shift: [number, number]; staked: boolean } {
   const [b0, b1, b2, b3] = plan.bbox;
+  // A candidate costs its pixels PLUS a little per plot, added not multiplied.
+  //
+  // Measured over 15 combinations of plot count, footprint and pixel size, the
+  // simulation runs at 0.7 to 1.7 us per pixel with no useful dependence on how
+  // many plots are drawn: a pixel's work is the plot boundaries crossing THAT
+  // pixel, and more plots over a fixed area means smaller plots, not more work
+  // per pixel. The genuinely per-plot cost is shiftImportedPlan, which moves
+  // every vertex of every plot for each candidate: 0.08 ms at 50 plots, 1.5 ms
+  // at 2000. Against 0.89 us per pixel that is about two pixels per plot, and a
+  // least-squares fit over those 15 points agrees.
+  //
+  // It was once a FACTOR of `plots / 50`, which inverted the budget it was
+  // meant to enforce: a 200-plot trial was refused a search outright while a
+  // 50-plot trial over the same footprint was granted the full 3 x 3 and paid
+  // 378 ms for it, and the refused search was worth about 18% more pure pixels.
+  // The additive term still bounds what the factor was aimed at, a dense trial
+  // at a coarse size, where N reaches its cap and the per-plot shifting is most
+  // of the cost: a 2000-plot import at 10 m drops from 100 candidates to 64.
   const pixels = Math.max(1, ((b2 - b0) / r + 6) * ((b3 - b1) / r + 6));
-  const n = Math.max(1, Math.min(10, Math.floor(Math.sqrt(budget / pixels))));
+  const perCandidate = pixels + 2 * plan.plots.length;
+  const n = Math.max(1, Math.min(10, Math.floor(Math.sqrt(budget / perCandidate))));
   // A trial too big for one call to fit the budget leaves N at 1, and a 1 x 1
   // search offers only the trial where it stands: counting its pure pixels
   // decides nothing, and the count is never read again. Simulating it anyway
   // cost the whole trial (1.6 s of blocked main thread at 0.5 m on a 2000-plot
   // import), so the budget bounded the number of shifts but not the work. It
-  // bounds the work now: no shift to choose, no simulation.
-  if (n === 1) return { plan, shift: [0, 0] };
+  // bounds the work now: no shift to choose, no simulation. `staked: false` is
+  // what stops that being silent.
+  if (n === 1) return { plan, shift: [0, 0], staked: false };
   let best = plan, bestShift: [number, number] = [0, 0], bestCount = -1;
   for (let i = 0; i < n; i++) {
     for (let j = 0; j < n; j++) {
@@ -151,5 +178,5 @@ export function stakeOnGrid(
       if (count > bestCount) { bestCount = count; best = candidate; bestShift = shift; }
     }
   }
-  return { plan: best, shift: bestShift };
+  return { plan: best, shift: bestShift, staked: true };
 }

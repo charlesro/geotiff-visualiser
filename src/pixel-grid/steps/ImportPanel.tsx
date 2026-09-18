@@ -2,8 +2,10 @@ import { useRef, useState } from 'react';
 import { Upload } from 'lucide-react';
 import { Explain, InfoDot, Spinner } from '../ui';
 import { fmt } from '../util';
+import { VARIETY_GUESS_PREFIX } from '../design-import';
 import type { ImportedDesign, ImportedVariety } from '../imported-types';
 import { SELECT } from './controls';
+import { AttributeTable } from './AttributeTable';
 
 /** What the picker offers. Loose shapefile parts are accepted together, not one by one. */
 const ACCEPT = '.zip,.shp,.shx,.dbf,.prj,.cpg,.geojson,.json,.kml,.kmz';
@@ -29,6 +31,20 @@ export function ImportPanel({ design, varieties, busy, error, onFiles, onRemove,
   const [over, setOver] = useState(false);
   const pick = () => input.current?.click();
   const take = (list: FileList | null) => { if (list && list.length) onFiles(Array.from(list)); };
+
+  /**
+   * The reader's warnings, minus a guess it no longer stands by.
+   *
+   * Every other warning is a fact about the file (a reprojection, a skipped
+   * layer) and stays true for as long as the file is loaded. The variety guess
+   * is the one that describes a CHOICE, and the dropdown two lines below lets
+   * the user overrule it: it went on reading "guessed from COL" beside a
+   * dropdown set to MGRS_TILE. Filtered here rather than dropped when the user
+   * picks, so a design already saved with a stale note is repaired on load too.
+   */
+  const warnings = design
+    ? design.warnings.filter(w => !w.startsWith(VARIETY_GUESS_PREFIX) || w.includes(`"${design.varietyColumn}"`))
+    : [];
 
   const reps = varieties.map(v => v.plots);
   const repMin = reps.length ? Math.min(...reps) : 0, repMax = reps.length ? Math.max(...reps) : 0;
@@ -69,6 +85,7 @@ export function ImportPanel({ design, varieties, busy, error, onFiles, onRemove,
               {busy ? <Spinner className="h-3 w-3" /> : <Upload className="h-3 w-3" />} Replace file
             </button>
             <button type="button" onClick={onRemove}
+              title="Drop the trial and put your own field back"
               className="shrink-0 rounded px-1.5 py-0.5 text-[10px] text-neutral-400 hover:text-rose-300">Remove</button>
           </div>
           <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
@@ -88,6 +105,9 @@ export function ImportPanel({ design, varieties, busy, error, onFiles, onRemove,
                 <Explain text={<>Each distinct value is its own species, with its own curve, colour and purity count. Plots sharing a value are its repetitions.</>}><InfoDot /></Explain>
               </span>
               <select className={SELECT} value={design.varietyColumn} onChange={e => setVarietyColumn(e.target.value)}>
+                {/* A real state the reader produces when no column groups the plots,
+                    and the only way back to it once another column has been picked. */}
+                <option value="">(each plot its own variety)</option>
                 {design.columns.map(c => <option key={c} value={c}>{c}</option>)}
               </select>
             </label>
@@ -99,9 +119,23 @@ export function ImportPanel({ design, varieties, busy, error, onFiles, onRemove,
               </select>
             </label>
           </div>
-          {design.warnings.length > 0 && (
+          {/* The pickers above ask which column names the varieties. The table
+              answers it with the file's own values, and with the distinct count
+              per column that actually decides it. */}
+          <div className="mt-2">
+            <AttributeTable design={design} setVarietyColumn={setVarietyColumn} />
+          </div>
+
+          {/* The field silently became the trial's outline the moment this file
+              was read, and it moves again on every turn of the trial. Saying so
+              here is the only place the user finds out why their drawn field is
+              gone, and that Remove is what gives it back. */}
+          <p className="mt-2 text-[10px] leading-snug text-neutral-500">
+            The area measured is now the trial's outline, not the field you drew. Remove puts yours back.
+          </p>
+          {warnings.length > 0 && (
             <ul className="mt-2 space-y-0.5 text-amber-300/90">
-              {design.warnings.map((w, i) => <li key={i}>{w}</li>)}
+              {warnings.map((w, i) => <li key={i}>{w}</li>)}
             </ul>
           )}
         </div>

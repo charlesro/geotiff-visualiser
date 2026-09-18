@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import proj4 from 'proj4';
 import { crsToProj4Def } from '../lib/geo';
 import {
-  BARE, MIXED, OFF_TRIAL, CROP_COLORS, CROP_PRESETS, PATTERNS, TRUTH_TYPES, bestPhaseOffset, cropById, makeBetaSchedule, simulateField,
+  BARE, CROP_COLORS, CROP_PRESETS, PATTERNS, TRUTH_TYPES, bestPhaseOffset, cropById, makeBetaSchedule, simulateField,
   truthAt, utmEnvelope, TMAX, coverStats, speciesChannel, meanPerSpecies,
   blockPlacement, buildBlockPlan, layoutKey,
   type BlockDesign, type FieldParams, type FieldSim, type PatternType, type SensorParams, type SimLayout,
@@ -10,10 +10,11 @@ import {
 import { aoiUtmOrigin, buildS2Grid, type LngLatBounds, type S2Grid } from './s2-grid';
 import { fieldOverlapTest, type Poly } from './geometry';
 import { cellInFieldTest } from './field-membership';
-import { categoricalColors, distinctColors, lerpHex, mixN } from './util';
+import { categoricalColors, distinctColors, mixN } from './util';
 import { PCA_SAMPLE, RES_LADDER } from './sensors';
 import { pixelId } from './pca-field';
 import { importedTrialExtent, trialExtent } from './ladder';
+import { ladderKey, rungCellOrigin } from './ladder-rung';
 import type { SweepStep } from './PcaSweep';
 import type { useFieldGrid } from './use-grid';
 import { arrayOf, inRange, isLngLat, isNum, oneOf, readSaved, shape, usePersistentState } from './persist';
@@ -24,6 +25,18 @@ import type { ImportedDesign, ImportedPlan } from './imported-types';
 
 /** Largest field the resolution ladder samples whole; bigger fields use a central window. */
 const LADDER_MAX_CELLS = 40_000;
+
+/**
+ * Plants slide to the phase that leaves the most pure pixels (strip edges on
+ * pixel edges; a block trial is snapped by buildBlockPlan instead).
+ *
+ * Always on, and a module CONSTANT rather than state: the switch left the UI,
+ * and what was left was a `useState(true)` with no setter anywhere, a returned
+ * value nothing could change, and a segment of the map's cache key that could
+ * never move. It stays named, and read where the choice is made, so turning it
+ * back into a control is one line here rather than a hunt through three memos.
+ */
+const OPTIMIZE_PLACEMENT = true;
 
 /** A restored crop must still be a usable curve, not whatever happened to be stored. */
 const isFieldParams = (v: unknown): v is FieldParams => {
@@ -72,7 +85,7 @@ type GridApi = ReturnType<typeof useFieldGrid>;
  * Three hooks rather than one, because they have genuinely different lifetimes.
  * The experiment PARAMETERS are cheap and always live. The field SIMULATION is
  * viewport-clipped and only runs while a sim step is open. The PCA runs on the
- * FIELD — never the viewport — and defers itself behind a timeout so a spinner
+ * FIELD, never the viewport, and defers itself behind a timeout so a spinner
  * can paint first.
  *
  * Load-bearing, and very easy to "tidy" into a performance bug:
@@ -80,14 +93,14 @@ type GridApi = ReturnType<typeof useFieldGrid>;
  *  - `layout` and `sensor` are fresh object literals on every render and are
  *    deliberately absent from every dependency array; the primitives plus
  *    `sensorSig` stand in for them. Memoize them and add them to deps, and
- *    `simulateField` re-runs on every render — a few-hundred-millisecond freeze
+ *    `simulateField` re-runs on every render: a few-hundred-millisecond freeze
  *    per keystroke, byte-identical output, invisible to every gate.
  *  - `patternOrigin` is computed exactly ONCE, here, and shared by the map
  *    overlay, the canvas visual, the field sim and the PCA. A second copy makes
  *    the drawn pattern drift from the simulated one.
  *  - `runSweep`'s deps are all primitives on purpose: pass an object and the
  *    250 ms debounce re-arms every render, so the sweep never settles.
- *  - `simStyle` / `fieldOutlineStyle` are re-created per render on purpose —
+ *  - `simStyle` / `fieldOutlineStyle` are re-created per render on purpose:
  *    react-leaflet will not restyle on a prop change, so `geoKey` (assembled in
  *    the shell) is what actually repaints.
  */
@@ -117,9 +130,6 @@ export function useExperiment({ sigmaX, sigmaY, psfOffX, psfOffY, fieldBounds, f
   const [stripWidth, setStripWidth] = usePersistentState('stripWidth', 3, inRange(0.01, 1000));
   const [spacing, setSpacing] = usePersistentState('spacing', 0, inRange(0, 1000));
   const [rotation, setRotation] = usePersistentState('rotation', 0, inRange(0, 90));
-  // Always on: plants slide to max purity. The switch left the UI, so a saved
-  // "off" must not linger where nobody can turn it back on.
-  const [optimizePlacement, setOptimizePlacement] = useState(true);
   /**
    * The species under test, 2 to 8 of them. Stored as ONE array under new keys
    * rather than cropA/cropB, which could only ever describe two.
@@ -166,24 +176,14 @@ export function useExperiment({ sigmaX, sigmaY, psfOffX, psfOffY, fieldBounds, f
     return out;
   }), [setPresets]);
 
-  // The two-crop aliases, now expressed through the indexed setters so there is
-  // ONE write path rather than three that can drift apart.
-  const cropA = species[0], cropB = species[1];
-  const setCropA = useCallback((c: FieldParams) => setSpeciesAt(0, c), [setSpeciesAt]);
-  const setCropB = useCallback((c: FieldParams) => setSpeciesAt(1, c), [setSpeciesAt]);
-  const presetA = presets[0], presetB = presets[1];
-  const setPresetA = useCallback((id: string) => setPresetAt(0, id), [setPresetAt]);
-  const setPresetB = useCallback((id: string) => setPresetAt(1, id), [setPresetAt]);
   const [magnitude, setMagnitude] = usePersistentState('magnitude', 0.04, inRange(0, 0.15));
   const [alpha, setAlpha] = usePersistentState('alpha', 2, inRange(0.1, 10));
   const [beta, setBeta] = usePersistentState('beta', 2, inRange(0.1, 10));
   // 100% by default: a pixel counts as pure only if it is entirely one crop.
-  // The repo engine's own default is 80%, which flatters the design — it calls a
+  // The repo engine's own default is 80%, which flatters the design: it calls a
   // pixel "pure maize" when a fifth of it is wheat. Start strict; the slider in
   // "Noise & purity threshold" relaxes it.
   const [threshold, setThreshold] = usePersistentState('threshold', 100, inRange(50, 100));
-  const [day] = useState(196);
-  const [simView] = useState<'mixture' | 'purity' | 'ndvi'>('mixture');
 
   /**
    * The randomised block design. Persisted under its own key and validated
@@ -205,7 +205,17 @@ export function useExperiment({ sigmaX, sigmaY, psfOffX, psfOffY, fieldBounds, f
    * variety column is its own species, and the plots sharing a value are that
    * variety's repetitions. Persisted so a refresh keeps the trial.
    */
-  const [importedDesign, setImportedDesign] = usePersistentState<ImportedDesign | null>('importedDesign', null, isImportedDesign);
+  /**
+   * `importedDesignSaved` is false when the browser refused to store it, which
+   * is two different situations and the page tells them apart (saveRefusal in
+   * persist.ts, read by the shell). A trial is the whole geometry of up to 5,000
+   * plots and can pass the quota on its own, while the companion keys (the turn,
+   * the shift, the field it set) are small enough to save WHEN THE STORE IS
+   * SAVING ANYTHING; in a private window or with storage switched off, nothing
+   * is kept and those keys are just as lost. persist.ts drops the stale design
+   * rather than let an older trial come back under this one's field.
+   */
+  const [importedDesign, setImportedDesign, importedDesignSaved] = usePersistentState<ImportedDesign | null>('importedDesign', null, isImportedDesign);
   /**
    * What the editor set per variety, by variety KEY rather than position, so
    * switching the variety column and back loses nothing. A variety with no
@@ -227,8 +237,8 @@ export function useExperiment({ sigmaX, sigmaY, psfOffX, psfOffY, fieldBounds, f
     if (pattern !== 'block' || !fieldBounds || !fieldOrigin) return undefined;
     // The conversion into the engine's (u,v) frame lives in simulate.ts, not
     // here: a copy inlined in this hook is one the regression suite cannot run.
-    return buildBlockPlan(blockDesign, blockPlacement(fieldBounds, fieldOrigin, rotation, pixelSize, optimizePlacement));
-  }, [pattern, fieldBounds?.join(','), fieldOrigin?.[0], fieldOrigin?.[1], rotation, pixelSize, optimizePlacement,
+    return buildBlockPlan(blockDesign, blockPlacement(fieldBounds, fieldOrigin, rotation, pixelSize, OPTIMIZE_PLACEMENT));
+  }, [pattern, fieldBounds?.join(','), fieldOrigin?.[0], fieldOrigin?.[1], rotation, pixelSize,
       blockDesign.nSpecies, blockDesign.nBlocks, blockDesign.plotLength, blockDesign.plotWidth,
       blockDesign.plotAlley, blockDesign.blockAlley, blockDesign.blocksPerRow, blockDesign.seed]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -296,7 +306,7 @@ export function useExperiment({ sigmaX, sigmaY, psfOffX, psfOffY, fieldBounds, f
    * (maize compared against maize with one parameter changed) would otherwise
    * be drawn and labelled identically on the map, in the scatter and in every
    * legend. Decided in exactly one place, so those three cannot drift apart.
-   * Curves are never touched — only colour and label.
+   * Curves are never touched: only colour and label.
    */
   /**
    * How many species the CURRENT design actually needs.
@@ -359,13 +369,6 @@ export function useExperiment({ sigmaX, sigmaY, psfOffX, psfOffY, fieldBounds, f
     () => speciesActive.map((s, i) => (s.color === colors[i] && s.name === names[i] ? s : { ...s, color: colors[i], name: names[i] })),
     [speciesActive, colors, names]);
 
-  // Two-species aliases. distinctColors gives the first claimer the colour it
-  // asked for, so colors[0] is always cropA's own and these keep the exact
-  // meaning the call sites were written against.
-  const dupSpecies = cropA.color.toLowerCase() === cropB.color.toLowerCase();
-  const colB = colors[1];
-  const nameA = names[0], nameB = names[1];
-  const cropAd = speciesD[0], cropBd = speciesD[1];
 
   const fsig = (c: FieldParams) => `${c.truth}_${c.L1}_${c.k1}_${c.x01}_${c.k2}_${c.x02}_${c.tc}`;
   /**
@@ -399,30 +402,34 @@ export function useExperiment({ sigmaX, sigmaY, psfOffX, psfOffY, fieldBounds, f
   }, [importing, varieties, setPresetAt, setImportedCurves]);
 
   return { pattern, setPattern, stripWidth, setStripWidth, spacing, setSpacing, rotation, setRotation,
-           optimizePlacement, setOptimizePlacement,
            species, setSpecies, presets, setPresets, colors, names, speciesD, nActive,
            presetsActive, setSpeciesAt: setSpeciesAtAny, setPresetAt: setPresetAtAny,
-           importedDesign, setImportedDesign, importedCurves, setImportedCurves, varieties,
+           importedDesign, setImportedDesign, importedDesignSaved, importedCurves, setImportedCurves, varieties,
            importedPlan, importedBasePlan: imported.plan, importedError: imported.error,
            importedTurn, setImportedTurn, importedShift, setImportedShift, importedFileAngle, importedAngle,
-           cropA, setCropA, cropB, setCropB,
-           presetA, setPresetA, presetB, setPresetB, magnitude, setMagnitude,
-           alpha, setAlpha, beta, setBeta, threshold, setThreshold, day, simView,
+           magnitude, setMagnitude,
+           alpha, setAlpha, beta, setBeta, threshold, setThreshold,
            blockDesign, setBlockDesign, blockPlan,
-           layout, layoutSig, sensor, sensorSig, dupSpecies, colB, nameA, nameB, cropAd, cropBd, cropSig };
+           layout, layoutSig, sensor, sensorSig, cropSig };
 }
 
 export type Experiment = ReturnType<typeof useExperiment>;
 
 /** What the chosen sensor makes of the design, over the rendered grid. */
-export function useSimulation({ aoi, aoiPoly, gridApi, exp, simOn, fieldOrigin }: {
-  aoi: LngLatBounds | null; aoiPoly: Poly | null; gridApi: GridApi; exp: Experiment; simOn: boolean;
+export function useSimulation({ aoi, gridApi, exp, simOn, fieldOrigin }: {
+  aoi: LngLatBounds | null;
+  /**
+   * No field ring here: which pixels are in the field is decided once in
+   * use-grid and arrives as `gridApi.inField`, so the overlay cannot answer it
+   * differently from the count, the export and the PCA.
+   */
+  gridApi: GridApi; exp: Experiment; simOn: boolean;
   /** The field corner, computed once in the shell and shared with useExperiment. */
   fieldOrigin: [number, number] | null;
 }) {
-  const { renderGrid, build, } = gridApi;
-  const { pattern, stripWidth, spacing, rotation, optimizePlacement, threshold, layout, layoutSig, sensor,
-          sensorSig, cropA, cropB, colB, simView, day, magnitude, alpha, beta, speciesD, colors, cropSig } = exp;
+  const { renderGrid, build, inField } = gridApi;
+  const { pattern, stripWidth, spacing, rotation, threshold, layout, layoutSig, sensor,
+          sensorSig, magnitude, alpha, beta, speciesD, colors, cropSig } = exp;
 
   // Pattern origin: the field corner, optionally slid to the phase that maximises
   // pure pixels (strip edges land on pixel edges). `offset` = [along-row, cross-row] m.
@@ -432,13 +439,13 @@ export function useSimulation({ aoi, aoiPoly, gridApi, exp, simOn, fieldOrigin }
     // be two sources for one number, which is how the drawn and the simulated
     // pattern drift apart.
     const base = fieldOrigin;
-    if (!optimizePlacement) return { origin: base, offset: [0, 0] };
+    if (!OPTIMIZE_PLACEMENT) return { origin: base, offset: [0, 0] };
     const [du, dv] = bestPhaseOffset(pattern, build.res, stripWidth, spacing, threshold / 100, base[0], base[1]);
     const t = (rotation * Math.PI) / 180, cos = Math.cos(t), sin = Math.sin(t);
     return { origin: [base[0] + du * cos - dv * sin, base[1] + du * sin + dv * cos] as [number, number], offset: [du, dv] as [number, number] };
     // layoutSig rather than the loose primitives: it also covers the block
     // design, whose seed, plot size and alleys move none of them.
-  }, [aoi, build?.epsg, build?.res, optimizePlacement, layoutSig, threshold, fieldOrigin?.[0], fieldOrigin?.[1]]);
+  }, [aoi, build?.epsg, build?.res, layoutSig, threshold, fieldOrigin?.[0], fieldOrigin?.[1]]);
 
   const sim = useMemo(
     () => (simOn && renderGrid && patternOrigin ? simulateField(renderGrid, patternOrigin.origin, layout, sensor) : null),
@@ -501,28 +508,18 @@ export function useSimulation({ aoi, aoiPoly, gridApi, exp, simOn, fieldOrigin }
    * drawn as a two-crop mixture, plausibly and wrongly. mixN is the one blend in
    * the codebase, shared with the map legend, so they cannot disagree.
    */
-  const simStyle = (f: number, bare: number, mx: number, sp?: number[], off = 0) => {
+  const simStyle = (f: number, bare: number, sp?: number[], off = 0) => {
     const fr = sp && sp.length ? sp : [f, Math.max(0, 1 - f - bare)];
-    let color: string;
-    if (simView === 'purity') {
-      // OFF_TRIAL is not a pure pixel. It is ground the trial never covered, and
-      // falling through to green claimed a clean crop reading over land that
-      // holds no experiment at all, which for a block design is most of the field.
-      color = mx === MIXED ? '#ef4444'
-        : mx === BARE.id ? BARE.color
-        : mx === OFF_TRIAL.id ? OFF_TRIAL.color
-        : '#22c55e';
-    } else if (simView === 'ndvi') {
-      let ndvi = bare * BARE.ndvi + off * OFF_TRIAL.ndvi;
-      for (let i = 0; i < fr.length; i++) ndvi += fr[i] * truthAt(speciesD[i] ?? speciesD[0], day);
-      color = lerpHex('#5b4129', '#15803d', Math.max(0, Math.min(1, ndvi)));
-    } else {
-      // The off-trial fraction is a WEIGHT, not a leftover. Without it a pixel
-      // outside the trial has an all-zero species vector, mixN skips every zero,
-      // and the blend divides by `w || 1` and paints it solid black. On a block
-      // design that is most of the field.
-      color = mixN(fr, colors, bare, off);
-    }
+    // The off-trial fraction is a WEIGHT, not a leftover. Without it a pixel
+    // outside the trial has an all-zero species vector, mixN skips every zero,
+    // and the blend divides by `w || 1` and paints it solid black. On a block
+    // design that is most of the field.
+    //
+    // There used to be a purity view and an NDVI view here, chosen by a `simView`
+    // state that nothing could ever change: no control set it, so two thirds of
+    // this function could not run. They are in the history if they are wanted
+    // back, with a control to reach them.
+    const color = mixN(fr, colors, bare, off);
     return { stroke: true, color: '#000', weight: 0.6, opacity: 0.55, fillColor: color, fillOpacity: 0.8, interactive: false } as L.PathOptions;
   };
   /** "Real field" mode: transparent cells (the true pattern shows through) with
@@ -535,11 +532,12 @@ export function useSimulation({ aoi, aoiPoly, gridApi, exp, simOn, fieldOrigin }
     const spAll = sim.proportionBySpecies;
     const offAll = sim.proportionOffTrial;
     const features = [];
-    // The pixels overlapping the field, by the one rule the page uses (field-membership.ts).
-    const inField = cellInFieldTest(aoiPoly, renderGrid.epsg, renderGrid.res);
+    // The pixels overlapping the field, by the one rule the page uses, decided
+    // once for this grid in use-grid rather than clipped per cell a third time.
+    const keep = inField && inField.grid === renderGrid ? inField.mask : null;
     for (let k = 0; k < renderGrid.cells.length; k++) {
       const c = renderGrid.cells[k];
-      if (inField && !inField(c)) continue;
+      if (keep && !keep[k]) continue;
       // The cell's own species composition travels WITH it. Reconstructing it at
       // paint time from a single "crop A fraction" is what limited the overlay
       // to two species.
@@ -548,12 +546,12 @@ export function useSimulation({ aoi, aoiPoly, gridApi, exp, simOn, fieldOrigin }
         type: 'Feature' as const,
         // col/row identify the pixel, so "In field only" can hide it by the same
         // key the in-field pixel list uses.
-        properties: { col: c.col, row: c.row, f: sim.proportionA[k], b: sim.proportionBare[k], mx: sim.mixed[k], sp, off: offAll ? offAll[k] : 0 },
+        properties: { col: c.col, row: c.row, f: sim.proportionA[k], b: sim.proportionBare[k], sp, off: offAll ? offAll[k] : 0 },
         geometry: { type: 'Polygon' as const, coordinates: [c.ring] },
       });
     }
     return { type: 'FeatureCollection' as const, features };
-  }, [sim, renderGrid, aoiPoly]);
+  }, [sim, renderGrid, inField]);
 
   // A block trial is not described by a strip width, and naming two crops is
   // wrong when the design carries four: it would report a maize-and-wheat
@@ -567,14 +565,17 @@ export function useSimulation({ aoi, aoiPoly, gridApi, exp, simOn, fieldOrigin }
           : 'imported trial: no file yet')
     : pattern === 'block'
       ? `${bd.nSpecies} species × ${bd.nBlocks} blocks · ${bd.plotLength} × ${bd.plotWidth} m plots`
-      : `${cropA.name} × ${cropB.name} · ${stripWidth} m ${PATTERNS.find(p => p.id === pattern)?.label.toLowerCase() ?? ''}`;
+      : `${speciesD[0]?.name} × ${speciesD[1]?.name} · ${stripWidth} m ${PATTERNS.find(p => p.id === pattern)?.label.toLowerCase() ?? ''}`;
 
   return { patternOrigin, sim, ndviSeries, simStyle, fieldOutlineStyle, simGeojson, simSummary };
 }
 
-/** The PCA — always over the FIELD, never the viewport — plus the resolution sweep. */
-export function usePcaSim({ aoi, aoiPoly, gridApi, exp, patternOrigin, activeStep, compareAligned, mapSim }: {
-  aoi: LngLatBounds | null; aoiPoly: Poly | null; gridApi: GridApi; exp: Experiment;
+/** The PCA, always over the FIELD and never the viewport, plus the resolution sweep. */
+export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeStep, compareAligned, mapSim }: {
+  aoi: LngLatBounds | null;
+  /** The field as a closed ring (use-area `fieldRing`), never "was a shape traced". */
+  fieldRing: Poly | null;
+  gridApi: GridApi; exp: Experiment;
   patternOrigin: { origin: [number, number]; offset: [number, number] } | null;
   activeStep: 'area' | 'grid' | 'sim' | 'pca' | null;
   /** Also compute the ladder at 0° so the two can be shown side by side. */
@@ -582,13 +583,13 @@ export function usePcaSim({ aoi, aoiPoly, gridApi, exp, patternOrigin, activeSte
   /** The map's simulation of `renderGrid`, reused when the PCA runs on that same grid. */
   mapSim: FieldSim | null;
 }) {
-  const { grid, renderGrid, build, buildOpts, sigmaX, sigmaY, psfOffX, psfOffY } = gridApi;
-  const { pattern, stripWidth, spacing, rotation, optimizePlacement, threshold, sensorSig, layout, layoutSig, blockDesign,
-          importedAngle, importedFileAngle, importedBasePlan, importedTurn } = exp;
+  const { grid, renderGrid, build, buildOpts, inField, sigmaX, sigmaY, psfOffX, psfOffY } = gridApi;
+  const { pattern, stripWidth, spacing, rotation, threshold, sensorSig, layout, layoutSig, blockDesign,
+          importedAngle, importedFileAngle, importedBasePlan } = exp;
   const [selectedPixels, setSelectedPixels] = useState<number[]>([]); // pixels picked in the PCA → highlight on map
 
-  // The PCA always runs on the field itself — the full grid when it fits, else a
-  // central subsample of ~PCA_SAMPLE cells — so it works even when the grid is
+  // The PCA always runs on the field itself: the full grid when it fits, else a
+  // central subsample of ~PCA_SAMPLE cells, so it works even when the grid is
   // too fine to render on the map.
   const pcaGrid = useMemo(() => {
     if (grid) return grid;
@@ -657,10 +658,14 @@ export function usePcaSim({ aoi, aoiPoly, gridApi, exp, patternOrigin, activeSte
     // pixel in the ladder's thumbnails (pca-field pixelId).
     const idsOf = (ks: ArrayLike<number>) => Float64Array.from({ length: ks.length }, (_, j) => pixelId(cells[ks[j]].col, cells[ks[j]].row));
     const whole = () => ({ sim: { ...pcaSim, pixelIds: idsOf(cells.map((_, k) => k)) }, cellIndex: null, grid: runGrid, res: runGrid.res, subsampled });
-    if (!aoiPoly) return whole();
+    if (!fieldRing) return whole();
     const keep: number[] = [];
-    const inField = cellInFieldTest(aoiPoly, runGrid.epsg, runGrid.res)!;
-    for (let k = 0; k < cells.length; k++) if (inField(cells[k])) keep.push(k);
+    // The mask use-grid already built, when the PCA ran on that same grid. It
+    // does not when the field is too fine to render whole: `pcaGrid` is then a
+    // central subsample of its own, and this walks it once.
+    const mask = inField && inField.grid === runGrid ? inField.mask : null;
+    const test = mask ? null : cellInFieldTest(fieldRing, runGrid.epsg, runGrid.res)!;
+    for (let k = 0; k < cells.length; k++) if (mask ? mask[k] : test!(cells[k])) keep.push(k);
     if (!keep.length || keep.length === cells.length) return whole(); // all-in or degenerate → no remap
     const n = keep.length;
     const nSp = pcaSim.nSpecies;
@@ -696,7 +701,11 @@ export function usePcaSim({ aoi, aoiPoly, gridApi, exp, patternOrigin, activeSte
       pureA: st.pureBySpecies[0], pureB: st.pureBySpecies[1],
     };
     return { sim, cellIndex: keep, grid: runGrid, res: runGrid.res, subsampled };
-  }, [pcaRun, aoiPoly]);
+    // `inField` is deliberately NOT a dependency. A new mask describes a new
+    // renderGrid, which the check above then declines to use, so the result is
+    // identical either way - and listing it would rebuild every array here on
+    // every PAN of a capped map, the same trap `sharedSim` avoids above.
+  }, [pcaRun, fieldRing]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Cells the user picked in the PCA scatter (click / lasso), as map polygons.
   // Looked up in the grid the scatter was computed on, which for a moment after
@@ -716,13 +725,8 @@ export function usePcaSim({ aoi, aoiPoly, gridApi, exp, patternOrigin, activeSte
   const [sweep, setSweep] = useState<SweepStep[] | null>(null);
   const [sweepAligned, setSweepAligned] = useState<SweepStep[] | null>(null);
   const [sweepBusy, setSweepBusy] = useState(false);
-  /**
-   * The design as the ladder sees it: everything in layoutSig except the corner
-   * the current plan was snapped to. That corner follows the DISPLAYED pixel size,
-   * so keying the ladder on it rebuilt every rung on every thumbnail click, while
-   * each rung snaps its own plan anyway (see stepAt).
-   */
-  const ladderSig = layout.block ? layoutKey({ ...layout, block: { ...layout.block, u0: 0, v0: 0 } }) : layoutSig;
+  /** What a rebuilt ladder means, defined once and testable: ladder-rung.ts. */
+  const ladderSig = ladderKey(layout);
   /**
    * ONE resolution of the ladder at a GIVEN rotation, the unit the sweep is split
    * into. Parameterised by rotation so the comparison at 0° runs the identical code.
@@ -747,18 +751,19 @@ export function usePcaSim({ aoi, aoiPoly, gridApi, exp, patternOrigin, activeSte
     // plots carry n species: searchPhaseOffset keeps two counters and assigns
     // with `& 1`, so it would optimise "species 0 or 1 coverage" and ignore the
     // rest.
-    if (optimizePlacement && layout.pattern !== 'block' && layout.pattern !== 'imported') {
+    if (OPTIMIZE_PLACEMENT && layout.pattern !== 'block' && layout.pattern !== 'imported') {
       const [du, dv] = bestPhaseOffset(pattern, r, stripWidth, spacing, threshold / 100, base[0], base[1]);
       ox = base[0] + du * cos - dv * sin; oy = base[1] + du * sin + dv * cos;
     }
     /**
      * The WHOLE FIELD, on pixels snapped to multiples of r, keeping the pixels
-     * whose centre is inside the field: the same rule the big scatter, the pixel
-     * count and the export use.
+     * that OVERLAP the field: the same rule the big scatter, the pixel count and
+     * the export use (geometry.ts fieldOverlapTest). It used to be "centre
+     * inside", which left a tilted field's corners covered by no kept pixel.
      */
     let e0 = Math.floor(minE / r) * r, n0 = Math.floor(minN / r) * r;
     let e1 = Math.ceil(maxE / r) * r, n1 = Math.ceil(maxN / r) * r;
-    /** Pixels counted are those whose centre is inside this ring (UTM), else inside the field. */
+    /** Pixels counted are those overlapping this ring (UTM), else those overlapping the field. */
     let trialRing: [number, number][] | null = null;
     if (layout.pattern === 'imported') {
       // Already in this grid's metres: nothing to resolve per size, only the
@@ -778,8 +783,18 @@ export function usePcaSim({ aoi, aoiPoly, gridApi, exp, patternOrigin, activeSte
       if (plan) {
         layoutL = { ...layoutL, imported: plan };
         [e0, n0, e1, n1] = importedTrialExtent(plan, r, sensorL, [e0, n0, e1, n1]);
-        // Counted over its OWN outline: the drawn trial's would cut the corners
-        // off a turned one, and the two ladders must count by the same rule.
+        /**
+         * Counted over its OWN outline, not the field's: the drawn trial's
+         * would cut the corners off a turned one (the comparison ladder turns
+         * it again per rung), and the two ladders must count by the same rule.
+         *
+         * Both rules are "the pixels that see the trial": the other layouts
+         * count over the field ring, inside the same trial extent, and
+         * coverStats drops every pixel more than half off-trial either way.
+         * They differ in exactly one case, deliberately: a generated trial
+         * bigger than its field is cut down to the field, while an imported
+         * trial IS the field (the page sets the field from its outline).
+         */
         trialRing = plan.footprint;
       }
     } else if (layout.pattern === 'block') {
@@ -790,7 +805,7 @@ export function usePcaSim({ aoi, aoiPoly, gridApi, exp, patternOrigin, activeSte
        * instead, so borrowing it made each thumbnail describe a trial that
        * picking it would not show.
        */
-      const plan = buildBlockPlan(blockDesign, blockPlacement([e0, n0, e1, n1], base, rotationDeg, r, optimizePlacement));
+      const plan = buildBlockPlan(blockDesign, blockPlacement([e0, n0, e1, n1], base, rotationDeg, r, OPTIMIZE_PLACEMENT));
       layoutL = { ...layoutL, block: plan };
       // Only the pixels that see the trial, which a rung reproduces exactly
       // (see trialExtent); the rest of the field was most of a rung's cost.
@@ -812,13 +827,14 @@ export function usePcaSim({ aoi, aoiPoly, gridApi, exp, patternOrigin, activeSte
     const all = simulateField(box, [ox, oy], layoutL, sensorL);
     const nx = Math.round((e1 - e0) / r);
     const toUtm = proj4('EPSG:4326', crsToProj4Def(`EPSG:${epsg}`));
-    const ringUtm = trialRing ?? (aoiPoly ? aoiPoly.map(([lng, lat]) => toUtm.forward([lng, lat]) as [number, number]) : null);
+    const ringUtm = trialRing ?? (fieldRing ? fieldRing.map(([lng, lat]) => toUtm.forward([lng, lat]) as [number, number]) : null);
     // Pixels overlapping the ring, by the rule the whole page uses (geometry.ts).
     const overlaps = ringUtm ? fieldOverlapTest(ringUtm) : null;
     const keep: number[] = [];
     for (let k = 0; k < all.mixed.length; k++) {
-      // Cells run row by row from the south, west to east within a row.
-      if (!overlaps || overlaps(e0 + (k % nx) * r, n0 + Math.floor(k / nx) * r, r)) keep.push(k);
+      if (!overlaps) { keep.push(k); continue; }
+      const [cE, cN] = rungCellOrigin(k, nx, e0, n0, r);
+      if (overlaps(cE, cN, r)) keep.push(k);
     }
     const nSp = all.nSpecies, n = keep.length;
     const proportionA = new Float32Array(n), proportionBare = new Float32Array(n), mixed = new Uint8Array(n);
@@ -831,14 +847,18 @@ export function usePcaSim({ aoi, aoiPoly, gridApi, exp, patternOrigin, activeSte
       proportionA[j] = all.proportionA[k]; proportionBare[j] = all.proportionBare[k]; mixed[j] = all.mixed[k];
       if (proportionBySpecies && all.proportionBySpecies) for (let s = 0; s < nSp; s++) proportionBySpecies[j * nSp + s] = all.proportionBySpecies[k * nSp + s];
       if (proportionOffTrial && all.proportionOffTrial) proportionOffTrial[j] = all.proportionOffTrial[k];
-      pixelIds[j] = pixelId(Math.round((e0 + (k % nx) * r) / r), Math.round((n0 + Math.floor(k / nx) * r) / r));
+      const [cE, cN] = rungCellOrigin(k, nx, e0, n0, r);
+      pixelIds[j] = pixelId(Math.round(cE / r), Math.round(cN / r));
     });
     const st = coverStats({ mixed, coverSpecies: speciesChannel(layoutL).coverSpecies, nSpecies: nSp, offTrial: proportionOffTrial });
-    return { res: r, proportionA, proportionBare, purePct: st.purePct, pureCount: st.pureCrop, trialCount: st.total,
+    // `mixed` travels with the rung, not just its tally: the thumbnail colours
+    // each dot pure or mixed off these same bytes, so it cannot paint a pixel
+    // green that the purity printed under it counted as mixed.
+    return { res: r, proportionA, proportionBare, mixed, purePct: st.purePct, pureCount: st.pureCrop, trialCount: st.total,
              proportionBySpecies, nSpecies: nSp, proportionOffTrial, pixelIds, partial };
     // ladderSig covers the whole design, block parameters included; blockDesign's
     // fields are all in it.
-  }, [aoi, aoiPoly, build?.epsg, ladderSig, optimizePlacement, sigmaX, sigmaY, psfOffX, psfOffY, threshold]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [aoi, fieldRing, build?.epsg, ladderSig, sigmaX, sigmaY, psfOffX, psfOffY, threshold]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Bumped by every new run and every cancellation. A chunk that finds it changed
   // stops without writing, so a stale ladder can never land after a newer one.
@@ -856,8 +876,8 @@ export function usePcaSim({ aoi, aoiPoly, gridApi, exp, patternOrigin, activeSte
   const stubFor = (r: number): SweepStep => {
     let s = stubs.current.get(r);
     if (!s) {
-      s = { res: r, proportionA: new Float32Array(0), proportionBare: new Float32Array(0), proportionBySpecies: null,
-            proportionOffTrial: null, nSpecies: 0, purePct: NaN, current: true };
+      s = { res: r, proportionA: new Float32Array(0), proportionBare: new Float32Array(0), mixed: new Uint8Array(0),
+            proportionBySpecies: null, proportionOffTrial: null, nSpecies: 0, purePct: NaN, current: true };
       stubs.current.set(r, s);
     }
     return s;
@@ -933,7 +953,7 @@ export function usePcaSim({ aoi, aoiPoly, gridApi, exp, patternOrigin, activeSte
     };
     setTimeout(next, 30);
   }, [aoi, build?.epsg, build?.res, rotation, compareAligned, stepAt, layout.pattern, importedAngle]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Auto-recompute whenever an input that feeds the sweep changes — no button click
+  // Auto-recompute whenever an input that feeds the sweep changes: no button click
   // needed. Debounced so dragging a slider doesn't refit on every frame. Only while
   // the PCA step is open (nothing else shows the sweep). The crop / noise params only
   // change the PCA embed, which PcaSweep redoes from the cached data (no refit here).

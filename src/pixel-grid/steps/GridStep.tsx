@@ -1,4 +1,5 @@
 import { Chip, Explain, Hero, InfoDot, Step } from '../ui';
+import { Boundary } from '../Boundary';
 import { fmt } from '../util';
 import { FIXED, GSD_PRESETS, SOURCES, TASK } from '../sensors';
 import { zoneFromEpsg } from '../s2-grid';
@@ -10,7 +11,10 @@ import type { StepProps } from './props';
  * Rendered as a child of `Step`, which unmounts collapsed children — so NOTHING
  * here may hold state. Everything it reads comes from hooks the page shell owns.
  */
-export function GridStep(p: StepProps) {
+/** The blur the sensor model accepts, and the range its saved value is validated against. */
+const clampSigma = (raw: string) => Math.max(0, Math.min(5, parseFloat(raw) || 0));
+
+function GridStepBody(p: StepProps) {
   const { activeStep, toggleStep, gridSummary } = p;
   const { aoi } = p.area;
   const { sourceId, setSourceId, source, gsd, setGsd, customAnchor, setCustomAnchor, sigmaX, setSigmaX, sigmaY, setSigmaY, psfOffX, setPsfOffX, psfOffY, setPsfOffY, psfOffXM, psfOffYM, grids, gridState, selectedGridKey, setSelectedGridKey, selectedGrid, build, grid, pxSize, psfSigmaM, psfSigmaXM, psfSigmaYM, psfFwhmXM, psfFwhmYM, psfAnisotropic, dims, fieldAreaM2, maxAreaHa, fieldCellCount, gridNoun, nestsS2, onDownload } = p.gridApi;
@@ -48,11 +52,15 @@ export function GridStep(p: StepProps) {
           <div>
             <div className="flex items-center gap-2">
               <span className="w-10 shrink-0 text-[11px] text-neutral-500">Blur σ</span>
+              {/* Clamped to the range the restore validator accepts (use-grid.ts),
+                  because `max` on a number input is advisory: a pasted 500 gave the
+                  PSF a window of 1,500 pixels per axis and hung the page, and would
+                  have been thrown away on the next refresh anyway. */}
               <input type="number" min="0" max="5" step="0.1" value={sigmaX}
-                onChange={e => setSigmaX(Math.max(0, parseFloat(e.target.value) || 0))} className={NUM} />
+                onChange={e => setSigmaX(clampSigma(e.target.value))} className={NUM} />
               <span className="text-[11px] text-neutral-500">×</span>
               <input type="number" min="0" max="5" step="0.1" value={sigmaY}
-                onChange={e => setSigmaY(Math.max(0, parseFloat(e.target.value) || 0))} className={NUM} />
+                onChange={e => setSigmaY(clampSigma(e.target.value))} className={NUM} />
               <span className="text-[11px] text-neutral-500">px</span>
             </div>
             <div className="mt-1.5 flex items-center gap-2">
@@ -91,8 +99,8 @@ export function GridStep(p: StepProps) {
                 <button key={g} onClick={() => setGsd(g)}
                   className={`rounded-md border px-2 py-1 text-sm ${gsd === g ? 'border-sky-500 bg-sky-500/15 text-sky-300' : 'border-white/10 bg-neutral-900 text-neutral-300 hover:bg-neutral-800'}`}>{g} m</button>
               ))}
-              <input type="number" min="0.05" step="0.05" value={gsd}
-                onChange={e => { const v = parseFloat(e.target.value); if (v > 0) setGsd(v); }}
+              <input type="number" min="0.05" max="1000" step="0.05" value={gsd}
+                onChange={e => { const v = parseFloat(e.target.value); if (v > 0) setGsd(Math.max(0.01, Math.min(1000, v))); }}
                 className="w-16 rounded-md border border-white/10 bg-neutral-900 px-2 py-1 text-sm text-neutral-100 focus:border-sky-500 focus:outline-none" />
             </div>
             <p className="mt-1 text-[11px] leading-snug text-neutral-400">
@@ -179,4 +187,16 @@ export function GridStep(p: StepProps) {
         </>)}
         </Step>
   );
+}
+
+/**
+ * The panel, inside its own failure boundary.
+ *
+ * The boundary has to wrap the COMPONENT, not the tree it returns: a throw in
+ * this step's own body (a memo over the geometry, a bad restored value) happens
+ * before anything it returned exists, and React then unmounts the whole page.
+ * Wrapped here, the other steps, the map and the header's Reset survive it.
+ */
+export function GridStep(p: StepProps) {
+  return <Boundary name="Pixel grid and export"><GridStepBody {...p} /></Boundary>;
 }

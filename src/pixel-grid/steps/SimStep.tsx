@@ -1,7 +1,8 @@
 import { Disclosure, Explain, InfoDot, Step } from '../ui';
+import { Boundary } from '../Boundary';
 import { BlockSummary, ImportedSummary, LayoutFields, LayoutSelect, SpeciesList, SELECT } from './controls';
 import { ImportPanel } from './ImportPanel';
-import { LineChart, Line, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer } from 'recharts';
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { BARE } from '../simulate';
 import type { StepProps } from './props';
 
@@ -11,22 +12,31 @@ import type { StepProps } from './props';
  * Rendered as a child of `Step`, which unmounts collapsed children, so NOTHING
  * here may hold state. Everything it reads comes from hooks the page shell owns.
  */
-export function SimStep(p: StepProps) {
+function SimStepBody(p: StepProps) {
   const { activeStep, toggleStep, simSummary, simAdvOpen, setSimAdvOpen,
           compareAligned, setCompareAligned, setActiveStep } = p;
   const { aoi } = p.area;
   const { build } = p.gridApi;
   /**
-   * The purity the engine MEASURED, never an estimate.
+   * The purity the engine measured OVER THE FIELD, never an estimate and never a
+   * window of it.
    *
-   * Prefer the map's own simulation. When the grid is too fine to render (a
-   * 0.3 m sensor over a hectare is past the cell cap) that one is null, but the
-   * PCA runs on the FIELD rather than the viewport and has measured the same
-   * design already, so fall back to it. Both are real measurements; if neither
-   * exists the card shows geometry and states no percentage at all.
+   * The map's simulation only qualifies while the whole grid is rendered. Past
+   * the cell cap (a 0.3 m sensor over a hectare) `renderGrid` is the VIEWPORT,
+   * so that percentage would describe whatever happens to be on screen and would
+   * change as you pan: this card once claimed the trial's purity from a corner
+   * of it.
+   *
+   * There is no second measurement to fall back on, and reading `pca.pcaView`
+   * here only looked like one: `Step` renders {open && children}, so this body
+   * exists only while step 3 is open, and usePcaSim clears its run the moment
+   * the active step is not 'pca'. The value was null on every render but the one
+   * between the click and that effect. Past the cap the PCA is not field-wide
+   * either, since its grid is then a central subsample. So the card shows
+   * geometry, states no percentage, and the line below says why.
    */
-  const fieldSim = p.sim.sim ?? p.pca.pcaView?.sim ?? null;
-  const { pattern, setPattern, stripWidth, setStripWidth, spacing, setSpacing, rotation, setRotation, cropA, setCropA, cropB, setCropB, presetA, setPresetA, presetB, setPresetB, magnitude, setMagnitude, alpha, setAlpha, beta, setBeta, threshold, setThreshold, dupSpecies, colB, day, simView, blockDesign, setBlockDesign, blockPlan, colors, names, speciesD, presetsActive, setSpeciesAt, setPresetAt, importedDesign, varieties, importedPlan, importedAngle, importedFileAngle, importedTurn } = p.exp;
+  const fieldSim = p.gridApi.grid ? p.sim.sim : null;
+  const { pattern, setPattern, stripWidth, setStripWidth, spacing, setSpacing, rotation, setRotation, magnitude, setMagnitude, alpha, setAlpha, beta, setBeta, threshold, setThreshold, blockDesign, setBlockDesign, blockPlan, colors, names, speciesD, presetsActive, setSpeciesAt, setPresetAt, importedDesign, varieties, importedPlan, importedAngle, importedFileAngle, importedTurn } = p.exp;
   // The angle the controls show and edit: the trial's own for an imported one.
   const imported = pattern === 'imported';
   const angle = imported ? importedAngle : rotation;
@@ -97,7 +107,19 @@ export function SimStep(p: StepProps) {
             )}
 
             {pattern === 'imported' && importedPlan && (
-              <ImportedSummary plan={importedPlan} res={build?.res} threshold={threshold} purePct={fieldSim?.purePct} />
+              <ImportedSummary plan={importedPlan} angle={importedAngle} res={build?.res} threshold={threshold} purePct={fieldSim?.purePct} />
+            )}
+
+            {/* Said out loud, because a card that simply drops its purity row
+                reads as a trial with nothing to report rather than a sensor too
+                fine to simulate whole. It also points at the one place a capped
+                field still gets a number. */}
+            {build?.capped && (pattern === 'block' || (imported && importedPlan)) && (
+              <p className="text-[11px] leading-snug text-neutral-400">
+                Too many pixels at {build.res} m to simulate the whole field, so only the ones in view are simulated
+                and there is no trial-wide purity to state here. Step&nbsp;4 measures it on a central sample. To measure it
+                here instead, the grid has to fit: a coarser sensor, or a smaller area, since the cap is the two together.
+              </p>
             )}
 
             {/* Dozens of varieties would bury the rest of the step, so an imported
@@ -129,7 +151,6 @@ export function SimStep(p: StepProps) {
                       <XAxis dataKey="day" tick={{ fontSize: 9, fill: '#888' }} ticks={[0, 90, 180, 270, 365]} />
                       <YAxis domain={[0, 1]} tick={{ fontSize: 9, fill: '#888' }} />
                       <Tooltip contentStyle={{ background: '#111', border: '1px solid #333', fontSize: 11 }} labelFormatter={d => `day ${d}`} />
-                      {simView === 'ndvi' && <ReferenceLine x={day} stroke="#666" strokeDasharray="3 3" />}
                       {magnitude > 0 && <Line type="monotone" dataKey="hi" stroke="#64748b" dot={false} strokeWidth={0.75} name="noise +σ" />}
                       {magnitude > 0 && <Line type="monotone" dataKey="lo" stroke="#64748b" dot={false} strokeWidth={0.75} name="noise −σ" />}
                       {/* One line per species. Two hardcoded series plotted
@@ -170,4 +191,16 @@ export function SimStep(p: StepProps) {
         )}
         </Step>
   );
+}
+
+/**
+ * The panel, inside its own failure boundary.
+ *
+ * The boundary has to wrap the COMPONENT, not the tree it returns: a throw in
+ * this step's own body (a memo over the geometry, a bad restored value) happens
+ * before anything it returned exists, and React then unmounts the whole page.
+ * Wrapped here, the other steps, the map and the header's Reset survive it.
+ */
+export function SimStep(p: StepProps) {
+  return <Boundary name="Simulate experiment"><SimStepBody {...p} /></Boundary>;
 }
