@@ -182,47 +182,70 @@ const doc = simStep.slice(0, simStep.indexOf('const fieldSim'));
 check('the comment does not promise a PCA fallback',
   !/PCA runs on the field itself, so it is the fallback/.test(doc));
 
-console.log('\nU3. the aligned-vs-drawn verdict reads the number it ranked on');
+console.log('\nU3. the aligned-vs-drawn verdict reads the number it prints');
 {
   const src = fs.readFileSync(path.join(ROOT, 'src/pixel-grid/steps/PcaStep.tsx'), 'utf8');
 
   // (1) The ranking rule, lifted from the source and run, not reimplemented.
-  const tie = Number(src.match(/const TIE = ([\d.]+)\s*;/)[1]);
+  const tie = Number(src.match(/const TIE_POINTS = ([\d.]+)\s*;/)[1]);
   const pred = src.match(/rows\.filter\((x => [^)]*?)\)\.map/)[1];
-  const worse = new Function('TIE', `return (${pred});`)(tie);
-  ok('a pure pixel lost out of forty is a tie, not a verdict',
-    worse({ drawnCount: 40, alignedCount: 39 }) === false, `TIE=${tie}`);
-  ok('and a tenth of the pure pixels lost is called worse',
-    worse({ drawnCount: 100, alignedCount: 90 }) === true);
+  const worse = new Function('TIE_POINTS', `return (${pred});`)(tie);
+  ok('a point of purity is a tie, not a verdict',
+    worse({ drawn: 50, aligned: 49.5 }) === false, `TIE_POINTS=${tie}`);
+  ok('and a real drop is called worse', worse({ drawn: 50, aligned: 39 }) === true);
 
   // (2) Everything the rule reads must be printed in the sentence beside it.
-  // This is the assertion that fails on the shipped bug: the filter read
-  // drawnCount/alignedCount while the paragraph printed drawn/aligned percentages.
+  // This is the assertion that fails on the shipped bug, where the filter read
+  // counts while the paragraph printed percentages, and on its first fix, where
+  // it read counts and printed counts but the reader had asked for percentages.
+  // The rule is not WHICH quantity, it is that they are the same quantity.
   const para = src.slice(src.indexOf('Pure pixels at {'));
   const sentence = para.slice(0, para.indexOf('</p>'));
   const ranked = [...new Set([...pred.matchAll(/x\.(\w+)/g)].map(m => m[1]))];
   const shown = new Set([...sentence.matchAll(/comparison\.first\.(\w+)/g)].map(m => m[1]));
   ok('every field the verdict ranks on is printed in the same sentence',
     ranked.length > 0 && ranked.every(f => shown.has(f)), `ranks on ${ranked.join(', ')}`);
-  ok('and no per-ladder percentage is printed beside those counts',
-    !/purePct/.test(sentence) && ![...shown].some(f => f === 'drawn' || f === 'aligned'),
-    [...shown].join(', '));
+  ok('and the panel shows those as percentages, which is what was asked for',
+    /comparison\.first\.drawn\.toFixed\(0\)\}%/.test(sentence) &&
+    /comparison\.first\.aligned\.toFixed\(0\)\}%/.test(sentence), [...shown].join(', '));
 
-  // (3) The margin in the words is the margin in the rule. A hand-typed "3%" is
-  // how the doc comment came to describe a percentage-point rule that had already
-  // been replaced by a fraction-of-count one.
+  // (3) The margin in the words is the margin in the rule. A hand-typed figure is
+  // how the doc comment came to describe a rule that had already been replaced.
   ok('the tie margin the panel prints comes from the constant it ranks with',
-    /\$\{TIE_PCT\}%/.test(sentence) && !/\b3%/.test(sentence) &&
-    src.includes('const TIE_PCT = Math.round(TIE * 100)'));
+    /\$\{TIE_POINTS\}/.test(sentence) && !/\b3%/.test(sentence));
 
-  // (4) The counts are shown over their own totals, which is the only way the
-  // reader can see why the two percentages are not comparable, and the ladder
-  // panels are labelled with the same quantity (PcaSweep's showCounts).
+  // (4) Two shares over two different totals: the reader can only see why they
+  // are not strictly comparable if both denominators are on screen.
   ok('both trial totals reach the sentence, and only together',
     shown.has('drawnTotal') && shown.has('alignedTotal') &&
     /Number\.isFinite\(comparison\.first\.drawnTotal\) && Number\.isFinite\(comparison\.first\.alignedTotal\)/.test(sentence));
-  ok('the paired ladder panels are labelled with counts too',
-    /pairWith=\{sweepAligned\}[\s\S]{0,200}?showCounts/.test(src));
+  ok('and the ladder panels are labelled with the same quantity, a percentage',
+    /c\.purePct\.toFixed\(0\)\}%/.test(fs.readFileSync(path.join(ROOT, 'src/pixel-grid/PcaSweep.tsx'), 'utf8')));
+}
+
+
+console.log('\nU4. a ladder panel reports its OWN rung, never the chart it borrows');
+{
+  const src = read('src/pixel-grid/PcaSweep.tsx');
+  const body = src.slice(src.indexOf('const toCharts'), src.indexOf('const charts = useMemo'));
+  const ret = body.slice(body.lastIndexOf('return {'));
+
+  // The big chart IS lent to the panel at the displayed size, on purpose: the
+  // picture must not change when a thumbnail is picked. What must not be
+  // borrowed is any NUMBER, because it is a different measurement (the whole
+  // field, sometimes subsampled, against the rung's own trial extent). A panel
+  // worth 49% read 50% for exactly as long as it was the size on screen, so
+  // clicking along the ladder moved the figures it was being read for.
+  ok('the drawing may still come from the big chart', /isActive \? activeSim! : s/.test(body));
+  for (const field of ['purePct', 'pureCount', 'trialCount', 'partial']) {
+    const m = ret.match(new RegExp(field + ':\\s*([^,\\n]+)'));
+    ok(`${field} is read off the rung, not the borrowed chart`,
+      !!m && !/activeSim|isActive/.test(m[1]), m ? m[1].trim() : 'not returned');
+  }
+  // And the stub for the size the big chart is drawing carries no number at all,
+  // rather than the chart's: it gets its own once the idle pass has built it.
+  ok('the not-yet-built rung shows no number rather than the chart\'s',
+    /purePct: NaN, pureCount: NaN, trialCount: NaN/.test(body));
 }
 
 

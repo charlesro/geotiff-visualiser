@@ -40,6 +40,16 @@ export interface StepProps {
   pcaColorBy: ColorBy; setPcaColorBy: (c: ColorBy) => void;
   pcaShapeBy: ShapeBy; setPcaShapeBy: (s: ShapeBy) => void;
   /** Reading a trial file: owned by the shell, since a read can outlast a collapsed step. */
+  /** See PixelGridApp: the angle the comparison's left ladder is pinned to. */
+  compareFrom: number | null;
+  setCompareFrom: (deg: number | null) => void;
+  /**
+   * Turning the trial from a CONTROL rather than from the ladder. It forgets any
+   * adopted placement, because a hand-set angle is the design's own again and
+   * there is nothing to step back to. The ladder uses importApi.setAngle
+   * directly so that it can remember one.
+   */
+  setAngleByHand: (deg: number) => void;
   importApi: {
     busy: boolean;
     error: string | null;

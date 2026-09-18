@@ -98,6 +98,19 @@ export default function PixelGridApp() {
   const [simAdvOpen, setSimAdvOpen] = usePersistentState('simAdvOpen', false, isBool);
   const [pcaRetuneOpen, setPcaRetuneOpen] = usePersistentState('pcaRetuneOpen', false, isBool);
   const [compareAligned, setCompareAligned] = usePersistentState('compareAligned', false, isBool);  // rotated vs 0° ladders
+  /**
+   * Where the design was before the aligned placement was adopted from the
+   * ladder, so the comparison outlives the choice made with it.
+   *
+   * Picking the aligned panel turns the design to 0, which left the two ladders
+   * describing the same thing: the comparison disappeared at the moment it was
+   * used, with no way back to the placement it had just been weighed against.
+   * Held here, deliberately NOT persisted: it is about the click just made, and
+   * a refresh is a fresh look at whatever the design is now. Cleared the moment
+   * the angle is set any other way, since then there is no adopted placement to
+   * step back from.
+   */
+  const [compareFrom, setCompareFrom] = useState<number | null>(null);
   // PCA point encodings: shared by the big scatter and the ladder thumbnails.
   const [pcaColorBy, setPcaColorBy] = usePersistentState<ColorBy>('pcaColorBy', 'mixing', oneOf('mixing', 'species', 'purity'));
   const [pcaShapeBy, setPcaShapeBy] = usePersistentState<ShapeBy>('pcaShapeBy', 'species', oneOf('species', 'purity', 'none'));
@@ -321,6 +334,14 @@ export default function PixelGridApp() {
     setVarietyColumn: (c: string) => setImportedDesign(d => (d ? { ...d, varietyColumn: c } : d)),
     setNameColumn: (c: string) => setImportedDesign(d => (d ? { ...d, nameColumn: c } : d)),
   };
+  /**
+   * See StepProps.setAngleByHand. Deliberately not memoised: `importApi` is
+   * rebuilt every render and its `setAngle` closes over this render's design,
+   * grid and sensor, so a callback pinned with an empty dep list would go on
+   * calling the first render's and stake against a trial that had moved on.
+   */
+  const setAngleByHand = (deg: number) => { setCompareFrom(null); importApi.setAngle(deg); };
+
   // Only what `geoKey` needs; the panels read the rest straight off `exp`.
   const { layoutSig, sensorSig, cropSig } = exp;
 
@@ -328,7 +349,7 @@ export default function PixelGridApp() {
   const { patternOrigin, simSummary } = simApi;
 
   // mapSim: when the PCA runs on the grid the map already simulated, it reuses that result.
-  const pcaApi = usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeStep, compareAligned, mapSim: simApi.sim });
+  const pcaApi = usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeStep, compareAligned, compareFrom, mapSim: simApi.sim });
 
   // `layoutSig` stands in for the four layout segments this used to splice in
   // (pattern, width, spacing, rotation). Those move for none of a block
@@ -397,7 +418,7 @@ export default function PixelGridApp() {
   const stepProps = { activeStep, toggleStep, area, search, gridApi, exp: shownExp, sim: simApi, pca: pcaApi,
                       areaSummary, gridSummary, simSummary, geoKey, showPsf, setShowPsf,
                       simAdvOpen, setSimAdvOpen, pcaRetuneOpen, setPcaRetuneOpen,
-                      compareAligned, setCompareAligned, setActiveStep,
+                      compareAligned, setCompareAligned, compareFrom, setCompareFrom, setAngleByHand, setActiveStep,
                       pcaColorBy, setPcaColorBy, pcaShapeBy, setPcaShapeBy, importApi, curvesOpen, setCurvesOpen };
 
   return (

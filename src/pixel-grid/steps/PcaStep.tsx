@@ -10,15 +10,18 @@ import PcaSweep from '../PcaSweep';
 import type { StepProps } from './props';
 
 /**
- * How close two pure pixel counts have to be to be called a tie, as a fraction.
- * How the comparison is staked and measured moves a count by about a percent on
- * its own: the same trial has read 1660 against 1679 at 2 m, and a real file
- * 1650 against 1657 (the ladder section of the pixel-grid suite). A gap under
- * this one says nothing about the placement. The sentence prints the figure from
- * this constant, so the words and the ranking cannot drift apart.
+ * How far apart two purities have to be, in percentage POINTS, before the panel
+ * will call one placement worse than the other.
+ *
+ * Two points, because that is the width of the measurement rather than a round
+ * number. Over a large field a rung is simulated on a central window
+ * (LADDER_MAX_CELLS), and shrinking that window from 40,000 pixels to 20,000
+ * moved the gap between the two ladders by about half a point; staking and
+ * rounding account for about as much again. A verdict inside that is a verdict
+ * about the sample, not about the placement. The sentence prints this same
+ * number, so what is said and what is ranked cannot drift apart.
  */
-const TIE = 0.97;
-const TIE_PCT = Math.round(TIE * 100);
+const TIE_POINTS = 2;
 
 /**
  * Step 4: the PCA over the field, and the same PCA across resolutions.
@@ -32,9 +35,14 @@ function PcaStepBody(p: StepProps) {
   const { sourceId, setSourceId, build, pickRes } = p.gridApi;
   const { pattern, setPattern, stripWidth, setStripWidth, spacing, setSpacing, rotation, setRotation, magnitude, threshold, blockDesign, setBlockDesign, speciesD, presetsActive, colors, names, setSpeciesAt, setPresetAt, importedDesign, varieties, importedPlan, importedAngle } = p.exp;
   const imported = pattern === 'imported';
-  // The angle the ladder compares: the trial's own for an imported one.
-  const angle = imported ? importedAngle : rotation;
+  // The angle the ladder compares: the trial's own for an imported one, or the
+  // one it was turned FROM when the aligned placement was adopted from the
+  // ladder, which is the side of the comparison the design is no longer at.
+  const own = imported ? importedAngle : rotation;
+  const angle = p.compareFrom ?? own;
   const angleLabel = Math.round(angle * 10) / 10;
+  /** Which of the two placements is the one currently on the map. */
+  const onMap: 0 | 1 = p.compareFrom === null ? 0 : 1;
   const aligned = Math.min(angle, 90 - angle) < 0.05;
   const { pcaBusy, pcaView, pcaSubsampled, setSelectedPixels, sweep, sweepBusy } = p.pca;
   const { pcaRetuneOpen, setPcaRetuneOpen, compareAligned, setCompareAligned, pcaColorBy, setPcaColorBy, pcaShapeBy, setPcaShapeBy } = p;
@@ -44,42 +52,92 @@ function PcaStepBody(p: StepProps) {
   // shows the old one; until the new one lands that thumbnail draws its own rung.
   const activeSim = pcaView && build && Math.abs(pcaView.res - build.res) < 1e-9 ? pcaView.sim : null;
   /**
-   * The two ladders compared size by size, on the number of each trial's own
-   * pixels that come out pure (both counted over the pixels overlapping their
-   * own outline), only where both rungs are complete: a placeholder or a central
-   * window is not the trial.
+   * The big chart is only lent to the left-hand ladder while that ladder IS the
+   * placement on the map.
    *
-   * Counts, not percentages, and the panel prints what is ranked here. The two
-   * placements cover the same ground but not the same number of edge pixels, so
-   * each rung's percentage is taken over its own total and a pair can rank
-   * backwards: 40 pure of 80 trial pixels (50%) against 39 of 100 (39%) is one
-   * pure pixel lost, not eleven points, and the sentence used to call that a tie
-   * while printing the two percentages that contradicted it.
+   * The panel at the displayed size borrows the big scatter's own simulation
+   * rather than computing the size twice. That is only the same trial while the
+   * design sits at the left ladder's angle: once the aligned placement is
+   * adopted, the big chart is the RIGHT ladder's trial, and lending it to the
+   * left made one cell of a ladder that must not move read 12% where its own
+   * rung says 13%. Withheld rather than lent to the other side: the rung is then
+   * filled by the idle pass, which is a moment of "..." instead of a number that
+   * belongs to the other placement.
+   */
+  const lendable = onMap === 0 ? activeSim : null;
+  /**
+   * The two ladders compared size by size, on the SHARE of each trial's own
+   * pixels that come out pure, only where both rungs are complete: a placeholder
+   * or a central window is not the trial.
    *
-   * The count is also the decision: more pure pixels is more usable data off the
-   * same ground, and that is what the reader is choosing between. A placement
-   * can hold a HIGHER rate over a smaller total and still hand back fewer pixels
-   * to analyse, so both totals are carried through and printed beside the counts
-   * rather than hidden, and the denominators are visibly not the same. (An
-   * imported trial is staked by maximising this same count, purePixels; a
-   * periodic layout's phase search maximises mean coverage instead, so do not
-   * read this as "the verdict reads whatever the search optimised".)
+   * The percentage is the quantity, and it is also the one ranked on, which is
+   * the part that was wrong before. The verdict used to be decided on raw counts
+   * while the sentence printed percentages, so the two could contradict each
+   * other in one breath: 40 pure of 80 (50%) against 39 of 100 (39%) is one
+   * pure pixel lost, read as a tie, printed beside two numbers eleven points
+   * apart. Whatever is shown is what decides, so the reader can see why.
+   *
+   * The two placements cover the same ground but catch a different number of
+   * edge pixels, so the denominators are not identical. Both totals are carried
+   * through and printed, rather than leaving two bare percentages to imply they
+   * were taken over the same thing.
    */
   const comparison = (() => {
     if (!sweep || !sweepAligned) return null;
     const rows = sweepAligned.flatMap(al => {
       const own = sweep.find(s => Math.abs(s.res - al.res) < 1e-9);
       if (!own || own.current || own.partial || al.partial) return [];
-      const d = own.pureCount ?? NaN, a = al.pureCount ?? NaN;
-      if (!Number.isFinite(d) || !Number.isFinite(a) || (d === 0 && a === 0)) return [];
-      return [{ res: al.res, drawnCount: d, alignedCount: a,
+      if (!Number.isFinite(own.purePct) || !Number.isFinite(al.purePct) || (own.purePct === 0 && al.purePct === 0)) return [];
+      return [{ res: al.res, drawn: own.purePct, aligned: al.purePct,
                 drawnTotal: own.trialCount ?? NaN, alignedTotal: al.trialCount ?? NaN }];
     });
     if (!rows.length) return null;
-    return { first: rows[0], worse: rows.filter(x => x.alignedCount < x.drawnCount * TIE).map(x => x.res) };
+    // `sizes` is how many pairs were actually judged, which is NOT every panel
+    // on screen: a rung sampled over a central window is excluded, and those
+    // panels still show their own percentages. Without saying how many were
+    // compared, a verdict reading "at every size" sits above a 0.5 m pair nine
+    // points apart and looks like it is contradicting them.
+    return { first: rows[0], sizes: rows.length,
+             worse: rows.filter(x => x.aligned < x.drawn - TIE_POINTS).map(x => x.res) };
   })();
+  /**
+   * Picking a rung of the ALIGNED ladder. Those panels are the design turned
+   * along the pixel rows, so the click has to turn it: picking one used to set
+   * the pixel size and leave the map showing the design at its own angle, which
+   * is neither of the two things being compared. It is the same turn the "vs
+   * aligned" ladder simulated, so what lands on the map is the panel clicked.
+   */
+  const pickAligned = (r: number) => {
+    pickRes(r);
+    // Remembered BEFORE the turn, so the comparison keeps showing the placement
+    // this one was chosen over, and clicking back is one click.
+    p.setCompareFrom(angle);
+    if (imported) p.importApi.setAngle(0);
+    else setRotation(0);
+  };
+  /**
+   * Picking a rung of the left-hand ladder. It is the design at its own angle,
+   * so this is also the way BACK from having adopted the aligned placement: the
+   * panel is that placement, and clicking it puts it on the map again.
+   */
+  const pickOwn = (r: number) => {
+    pickRes(r);
+    if (p.compareFrom !== null) {
+      if (imported) p.importApi.setAngle(p.compareFrom);
+      else setRotation(p.compareFrom);
+      p.setCompareFrom(null);
+    }
+  };
   // A fresh array every render would defeat PcaSweep's memo; keyed on the angle only.
-  const pairLabels = useMemo<[string, string]>(() => [`at ${angleLabel}° · your design`, 'at 0° · on the pixel grid'], [angleLabel]);
+  /**
+   * Both placements are named by their angle, and the one actually on the map is
+   * marked. Before, the left was flatly "your design": adopting the right-hand
+   * placement then made that label a lie, on the one panel that had not changed.
+   */
+  const pairLabels = useMemo<[string, string]>(() => [
+    `at ${angleLabel}° · your design${onMap === 0 ? ' · shown' : ''}`,
+    `at 0° · on the pixel grid${onMap === 1 ? ' · shown' : ''}`,
+  ], [angleLabel, onMap]);
 
   const compareBtn = (
     <button type="button" onClick={() => setCompareAligned(v => !v)} disabled={aligned}
@@ -124,23 +182,29 @@ function PcaStepBody(p: StepProps) {
                   // One row per resolution: your design on the left, the same design
                   // with the rows along the pixels on the right, so 0.5 m sits next
                   // to 0.5 m, 1 m next to 1 m, and only the angle differs in a pair.
-                  // Labelled with counts, the quantity the two placements share.
                   <div className="space-y-2">
                     <PcaSweep steps={sweep} pairWith={sweepAligned}
-                      pairLabels={pairLabels} showCounts
+                      pairLabels={pairLabels}
                       species={speciesD} colors={colors} magnitude={magnitude} threshold={threshold} colorBy={pcaColorBy}
-                      activeRes={build?.res} activeSim={activeSim} activePartial={pcaView?.subsampled} onPick={pickRes} />
+                      activeRes={build?.res} activeSim={lendable}
+                      onPick={pickOwn} onPickPair={pickAligned} />
                     {comparison ? (
                       <p className="text-[11px] leading-snug text-neutral-500">
-                        Pure pixels at {comparison.first.res} m: <span className="font-mono text-sky-300">{fmt(comparison.first.drawnCount)}</span>
-                        {/* The totals are printed only when both rungs reported one, never one side alone: half a ratio would read as the other's. */}
-                        {Number.isFinite(comparison.first.drawnTotal) && Number.isFinite(comparison.first.alignedTotal)
-                          ? <> of {fmt(comparison.first.drawnTotal)} trial pixels at {angleLabel}° vs <span className="font-mono text-neutral-300">{fmt(comparison.first.alignedCount)}</span> of {fmt(comparison.first.alignedTotal)} along the pixel rows.</>
-                          : <> at {angleLabel}° vs <span className="font-mono text-neutral-300">{fmt(comparison.first.alignedCount)}</span> along the pixel rows.</>}
+                        Pure pixels at {comparison.first.res} m: <span className="font-mono text-sky-300">{comparison.first.drawn.toFixed(0)}%</span> at {angleLabel}°
+                        vs <span className="font-mono text-neutral-300">{comparison.first.aligned.toFixed(0)}%</span> along the pixel rows.
+                        {/* The two shares are taken over each placement's own trial pixels, and the
+                            placements catch different numbers of edge pixels. Printed only when both
+                            rungs reported a total, never one side alone: half a ratio reads as the other's. */}
+                        {Number.isFinite(comparison.first.drawnTotal) && Number.isFinite(comparison.first.alignedTotal) && (
+                          <> Of {fmt(comparison.first.drawnTotal)} and {fmt(comparison.first.alignedTotal)} trial pixels.</>
+                        )}
                         {/* Said only as far as the numbers show it, in the figure they were ranked on. */}
+                        {/* Said only as far as the numbers show it: never worse by more than
+                            the tie band is the claim the ranking supports, not "as pure", and
+                            the sizes it was checked over are the ones measured whole. */}
                         {comparison.worse.length === 0
-                          ? ` Along the rows keeps at least ${TIE_PCT}% of your design's pure pixels at every size compared.`
-                          : ` Along the rows keeps under ${TIE_PCT}% of your design's pure pixels at ${comparison.worse.join(', ')} m.`}
+                          ? ` Along the rows is never more than ${TIE_POINTS} points behind, over the ${comparison.sizes} ${comparison.sizes === 1 ? 'size' : 'sizes'} measured whole.`
+                          : ` Along the rows is less pure at ${comparison.worse.join(', ')} m.`}
                       </p>
                     ) : (
                       <p className="text-[11px] leading-snug text-neutral-500">Comparing the two ladders…</p>
@@ -148,7 +212,7 @@ function PcaStepBody(p: StepProps) {
                   </div>
                 ) : (
                   <PcaSweep steps={sweep} species={speciesD} colors={colors} magnitude={magnitude} threshold={threshold} colorBy={pcaColorBy}
-                    activeRes={build?.res} activeSim={activeSim} activePartial={pcaView?.subsampled} onPick={pickRes} />
+                    activeRes={build?.res} activeSim={activeSim} onPick={pickRes} />
                 )
               ) : <p className="text-[11px] leading-snug text-neutral-500">Computing the PCA at {RES_LADDER[0]}–{RES_LADDER[RES_LADDER.length - 1]} m…</p>}
             </div>
@@ -181,7 +245,7 @@ function PcaStepBody(p: StepProps) {
                   {importedPlan && (
                     <LayoutFields stripWidth={stripWidth} setStripWidth={setStripWidth}
                       spacing={spacing} setSpacing={setSpacing} pattern={pattern}
-                      rotation={angle} setRotation={p.importApi.setAngle} rotationLabel="Trial angle"
+                      rotation={angle} setRotation={p.setAngleByHand} rotationLabel="Trial angle"
                       rotationAction={compareBtn} />
                   )}
                   {varieties.length > 0 && (

@@ -76,7 +76,7 @@ const { ladderKey, rungCellOrigin } = await import(path.join(BUILD, 'src/pixel-g
 // The real ladder, so a size added to the page is a size these checks cover.
 const { RES_LADDER } = await import(path.join(BUILD, 'src/pixel-grid/sensors.mjs'));
 const { resolveImportedPlan, varietyKeyOf, convexHull, hullWidth, narrowestFeature, foldRing } = await import(path.join(BUILD, 'src/pixel-grid/imported-plan.mjs'));
-const { purePixels, stakeOnGrid } = await import(path.join(BUILD, 'src/pixel-grid/imported-rotate.mjs'));
+const { purePixels, stakeOnGrid, rotateImportedPlan } = await import(path.join(BUILD, 'src/pixel-grid/imported-rotate.mjs'));
 const { varietiesOf: readerVarietiesOf, varietyKeyOf: readerVarietyKeyOf } = await import(path.join(BUILD, 'src/pixel-grid/design-import.mjs'));
 const { pointInPoly, fieldOverlapTest, viewShowsField } = await import(path.join(BUILD, 'src/pixel-grid/geometry.mjs'));
 const { cellInFieldTest } = await import(path.join(BUILD, 'src/pixel-grid/field-membership.mjs'));
@@ -2805,6 +2805,78 @@ console.log('\nL. the exported shapefile is a real zipped shapefile');
   ok('a southern grid is written with the southern false northing and zone name',
     stext.includes('WGS_1984_UTM_Zone_21S') && stext.includes('PARAMETER["False_Northing",10000000]'),
     /WGS_1984_UTM_Zone_\w+/.exec(stext)?.[0] + ' ' + /False_Northing",[-\d.]+/.exec(stext)?.[0]);
+}
+
+console.log('\nH13b. a ladder rung is measured in its own placement, not the adopted one');
+{
+  // The comparison's two ladders are two PLACEMENTS of one trial, and the page
+  // lets the user adopt either. A rung has to report the same purity whichever
+  // one is adopted, or the act of choosing changes the numbers the choice was
+  // made on. It failed twice, for two different reasons, and both are here.
+  //
+  // (1) The rung's outer box came from the FIELD, and the field is the outline
+  // of whatever placement is adopted. Measuring the other placement inside it
+  // cut that trial's corners off: the same rung read 10,445 trial pixels where
+  // it had read 11,037.
+  const sensorB = { sigmaX: 0.62, sigmaY: 0.62, mixThreshold: 0.9 };
+  const E0 = 500000, N0 = 4000000, epsgB = 32631;
+  const planB = (plots, nSpecies, tag) => {
+    const all = plots.flatMap(p => p.rings.flat());
+    return { epsg: epsgB, plots, coverSpecies: Uint8Array.from(plots, p => p.species), plotIds: true, nSpecies,
+      footprint: convexHull(all),
+      bbox: [Math.min(...all.map(q => q[0])), Math.min(...all.map(q => q[1])), Math.max(...all.map(q => q[0])), Math.max(...all.map(q => q[1]))],
+      minFeature: 1, sig: `h13b-${tag}` };
+  };
+  const UNCLIPPED = [-Infinity, -Infinity, Infinity, Infinity];
+  // The other placement's own box, snapped, with no room to spare: this is what
+  // the field's envelope amounts to once the aligned placement has been adopted.
+  const boxOf = (plan, r) => {
+    const [a, b, c, d] = plan.bbox;
+    return [Math.floor(a / r) * r, Math.floor(b / r) * r, Math.ceil(c / r) * r, Math.ceil(d / r) * r];
+  };
+  const tilted = planB(Array.from({ length: 24 }, (_, i) => {
+    const t = 11.6 * Math.PI / 180, cs = Math.cos(t), sn = Math.sin(t);
+    const X = (i % 6) * 12, Y = ((i / 6) | 0) * 9;
+    const ring = [[0, 0], [10, 0], [10, 7], [0, 7]].map(([dx, dy]) =>
+      [E0 + (X + dx) * cs - (Y + dy) * sn, N0 + (X + dx) * sn + (Y + dy) * cs]);
+    ring.push(ring[0]);
+    return { rings: [ring], species: i % 4 };
+  }), 4, 'tilted');
+  const straight = rotateImportedPlan(tilted, -11.6);
+
+  const moved = [];
+  for (const r of [1, 2, 3]) {
+    // What the page measures now: the trial's own widened box, clamped by
+    // nothing, so the same rung answers the same whichever placement is adopted.
+    const own = importedTrialExtent(tilted, r, sensorB, UNCLIPPED);
+    const [a, b, c, d] = tilted.bbox;
+    ok(`at ${r} m the tilted trial is measured over its OWN box, not a field's`,
+      own[0] <= Math.floor(a / r) * r && own[1] <= Math.floor(b / r) * r &&
+      own[2] >= Math.ceil(c / r) * r && own[3] >= Math.ceil(d / r) * r, own.join());
+    // What it used to do once the aligned placement had been adopted: the field
+    // was that placement's outline, and the tilted trial was measured inside it.
+    const clipped = importedTrialExtent(tilted, r, sensorB, boxOf(straight, r));
+    ok(`... and measuring it inside the ALIGNED hull really would cut it, at ${r} m`,
+      clipped.join() !== own.join(), `${clipped.join()} vs ${own.join()}`);
+    moved.push([r, purePixels(tilted, r, sensorB, clipped), purePixels(tilted, r, sensorB, own)]);
+  }
+  // Not "always lower": a smaller window drops edge pixels, and at a coarse size
+  // where the trial is barely a pixel per plot that can go either way. The point
+  // is that the number MOVES, which is what a click must never do to it.
+  ok('and a rung\'s purity really does move when it is measured in the wrong hull',
+    moved.some(([, cut, full]) => cut !== full),
+    moved.map(([r, cut, full]) => `${r} m: ${cut} vs ${full}`).join(', '));
+
+  // (2) The comparison rung re-stakes at every size, and that must not depend on
+  // where the design happens to sit: staking the aligned plan is a function of
+  // the plan and the pixel size, nothing else.
+  const a1 = stakeOnGrid(straight, 2, sensorB, importedTrialExtent(straight, 2, sensorB, UNCLIPPED));
+  const a2 = stakeOnGrid(straight, 2, sensorB, importedTrialExtent(straight, 2, sensorB, UNCLIPPED));
+  ok('staking the aligned placement is reproducible, so its ladder cannot drift',
+    a1.shift.join() === a2.shift.join() &&
+    purePixels(a1.plan, 2, sensorB, importedTrialExtent(a1.plan, 2, sensorB, UNCLIPPED)) ===
+    purePixels(a2.plan, 2, sensorB, importedTrialExtent(a2.plan, 2, sensorB, UNCLIPPED)),
+    `shift ${a1.shift.join()}`);
 }
 
 console.log('\nH14. the two rules the resolution ladder is built on');

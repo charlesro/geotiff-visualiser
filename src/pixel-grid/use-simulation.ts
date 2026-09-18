@@ -23,8 +23,30 @@ import { resolveImportedPlan } from './imported-plan';
 import { isAligned, nearestTurn, rotateImportedPlan, shiftImportedPlan, stakeOnGrid, trialAngle } from './imported-rotate';
 import type { ImportedDesign, ImportedPlan } from './imported-types';
 
-/** Largest field the resolution ladder samples whole; bigger fields use a central window. */
-const LADDER_MAX_CELLS = 40_000;
+/**
+ * Largest field one ladder rung simulates whole; beyond it a central window of
+ * this many pixels stands in, and the panel is flagged with a circle.
+ *
+ * This is a budget for a THUMBNAIL, not for an answer. A rung is 92 pixels tall
+ * and draws at most 500 dots, so simulating tens of thousands to choose them is
+ * oversampling by two orders of magnitude, and it is paid 18 times over when the
+ * aligned comparison is on: measured on a 300-plot trial, building both ladders
+ * cold blocked the main thread for 3.9 s in nine visible janks, which reads as
+ * the page freezing. simulateField is 72 of the 90 ms of a 40,000-pixel rung, so
+ * the cost is very nearly linear in this number.
+ *
+ * Small trials are unaffected: under the cap a rung is exact and carries no
+ * flag. It binds only at the fine end of the ladder over a large field, where
+ * the rung was already an estimate over a central window and said so.
+ *
+ * Not lower than this, because the window is a sample and its size is the
+ * sample's noise. Measured against a 40,000-pixel window on a 40-variety block
+ * trial, 12,000 moved a rung's purity by up to 2.1 points and the gap between
+ * the two ladders by 1.2; 20,000 halves that, which keeps it under the tie band
+ * the comparison is judged on (TIE_POINTS in PcaStep). A cheaper thumbnail is
+ * not worth a verdict that sampling could flip.
+ */
+const LADDER_MAX_CELLS = 20_000;
 
 /**
  * Plants slide to the phase that leaves the most pure pixels (strip edges on
@@ -571,7 +593,7 @@ export function useSimulation({ aoi, gridApi, exp, simOn, fieldOrigin }: {
 }
 
 /** The PCA, always over the FIELD and never the viewport, plus the resolution sweep. */
-export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeStep, compareAligned, mapSim }: {
+export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeStep, compareAligned, compareFrom, mapSim }: {
   aoi: LngLatBounds | null;
   /** The field as a closed ring (use-area `fieldRing`), never "was a shape traced". */
   fieldRing: Poly | null;
@@ -580,6 +602,18 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
   activeStep: 'area' | 'grid' | 'sim' | 'pca' | null;
   /** Also compute the ladder at 0° so the two can be shown side by side. */
   compareAligned: boolean;
+  /**
+   * The angle the comparison's left-hand ladder is built at, when that is NOT
+   * the design's current angle.
+   *
+   * Adopting the aligned placement from the ladder turns the design to 0, and
+   * the comparison then had nothing to compare and vanished, taking away the
+   * thing that had just been used to make the choice. Remembering where the
+   * design came from keeps both placements on screen, so the click can be
+   * looked at and undone. Null whenever the angle was set any other way, since
+   * then the design's own angle is the one side of the comparison.
+   */
+  compareFrom: number | null;
   /** The map's simulation of `renderGrid`, reused when the PCA runs on that same grid. */
   mapSim: FieldSim | null;
 }) {
@@ -734,7 +768,7 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
    * nothing about the resolution currently displayed, which is what lets the rungs
    * be kept between clicks.
    */
-  const stepAt = useCallback((rotationDeg: number, r: number): SweepStep | null => {
+  const stepAt = useCallback((rotationDeg: number, r: number, asDrawn = true): SweepStep | null => {
     if (!aoi || !build?.epsg) return null;
     const epsg = build.epsg;
     // The SHARED layout, with only the rotation overridden: "vs aligned" reruns
@@ -774,15 +808,47 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
       // included. The comparison's rungs turn it by the smallest turn to that
       // angle and stake it on THIS rung's grid, the best it could be at that
       // size, the way a block trial is snapped per size.
+      /**
+       * A rung is measured in its OWN placement's frame, never in the field's.
+       *
+       * The field is the outline of whichever placement is currently adopted
+       * (the page sets it from the trial), so clamping a rung to it measured the
+       * OTHER placement inside the wrong outline: turning the trial 11.6 degrees
+       * inside the envelope of its own 0 degree hull cuts the corners off, and
+       * the same rung then reported 10,445 trial pixels where it had reported
+       * 11,037. Clicking a panel changed the purity of the ladder it was in,
+       * which is the one thing a comparison may not do.
+       *
+       * Infinity is the honest bound: widenedExtent clamps with max/min, so this
+       * leaves the trial's own widened box exactly as it computes it, rather than
+       * restating its kernel reach here and letting the two drift.
+       */
+      const UNCLIPPED: [number, number, number, number] = [-Infinity, -Infinity, Infinity, Infinity];
+      /**
+       * The comparison ladder ALWAYS re-stakes, whichever placement the design
+       * happens to be sitting at.
+       *
+       * It used to decide by comparing angles, so the moment the aligned
+       * placement was adopted the right-hand ladder stopped meaning "the best
+       * this trial could be at each size" and started meaning "the trial exactly
+       * as it stands", staked once at the size that was clicked. Its numbers
+       * changed under the reader as a result of their own click: 54% at 1 m
+       * became 45%, 16% at 3 m became 12%. A comparison has to measure the same
+       * thing before and after it is acted on, so which ladder this is decides
+       * it, not where the design currently sits.
+       */
       let plan = layout.imported;
       const turn = nearestTurn(importedFileAngle, rotationDeg);
-      if (Math.abs(rotationDeg - importedAngle) >= 1e-9 && importedBasePlan) {
+      const asStands = asDrawn && Math.abs(rotationDeg - importedAngle) < 1e-9;
+      if (!asStands && importedBasePlan) {
         plan = rotateImportedPlan(importedBasePlan, turn);
-        if (isAligned(importedFileAngle + turn)) plan = stakeOnGrid(plan, r, sensorL, [e0, n0, e1, n1]).plan;
+        if (isAligned(importedFileAngle + turn)) {
+          plan = stakeOnGrid(plan, r, sensorL, importedTrialExtent(plan, r, sensorL, UNCLIPPED)).plan;
+        }
       }
       if (plan) {
         layoutL = { ...layoutL, imported: plan };
-        [e0, n0, e1, n1] = importedTrialExtent(plan, r, sensorL, [e0, n0, e1, n1]);
+        [e0, n0, e1, n1] = importedTrialExtent(plan, r, sensorL, UNCLIPPED);
         /**
          * Counted over its OWN outline, not the field's: the drawn trial's
          * would cut the corners off a turned one (the comparison ladder turns
@@ -893,7 +959,11 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
     // The comparison run: the same design with the strips along the pixel rows.
     // Only computed while the user asks for it, and pointless at 0°.
     // An imported trial has its own angle (the file's, plus any turn).
-    const angle = layout.pattern === 'imported' ? importedAngle : rotation;
+    // The design's own angle, unless the aligned placement was adopted FROM the
+    // ladder: then it is where the design was before that click, so the pair the
+    // user was comparing survives the choice they made with it.
+    const own = layout.pattern === 'imported' ? importedAngle : rotation;
+    const angle = compareFrom ?? own;
     // The same tolerance the "vs aligned" button uses, so it never builds a
     // comparison the button says there is no point in.
     const wantAligned = compareAligned && Math.min(angle, 90 - angle) >= 0.05;
@@ -913,7 +983,7 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
       let worked = false;
       while (i < jobs.length && !worked) {
         const [rot, r, which] = jobs[i++];
-        let step = cache.get(`${rot}|${r}`) ?? null;
+        let step = cache.get(`${rot}|${r}|${which}`) ?? null;
         if (!step && which === 0 && isCurrent(r)) {
           // The current resolution's thumbnail draws the big scatter's own
           // simulation (PcaSweep swaps it in), so it is not simulated here now:
@@ -921,8 +991,8 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
           step = stubFor(r);
         } else if (!step) {
           setSweepBusy(true);
-          step = stepAt(rot, r);
-          if (step) cache.set(`${rot}|${r}`, step);
+          step = stepAt(rot, r, which === 0);
+          if (step) cache.set(`${rot}|${r}|${which}`, step);
           worked = true;
         }
         if (step) (which ? al : cur).push(step);
@@ -942,9 +1012,9 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
       const fill = () => {
         if (gen !== sweepGen.current) return;
         const stub = pending.shift()!;
-        const made = stepAt(angle, stub.res);
+        const made = stepAt(angle, stub.res, true);
         if (made) {
-          cache.set(`${angle}|${stub.res}`, made);
+          cache.set(`${angle}|${stub.res}|0`, made);
           setSweep(prev => (prev ? prev.map(s => (s === stub ? made : s)) : prev));
         }
         if (pending.length) idle(fill);
@@ -952,7 +1022,7 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
       idle(fill);
     };
     setTimeout(next, 30);
-  }, [aoi, build?.epsg, build?.res, rotation, compareAligned, stepAt, layout.pattern, importedAngle]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [aoi, build?.epsg, build?.res, rotation, compareAligned, compareFrom, stepAt, layout.pattern, importedAngle]); // eslint-disable-line react-hooks/exhaustive-deps
   // Auto-recompute whenever an input that feeds the sweep changes: no button click
   // needed. Debounced so dragging a slider doesn't refit on every frame. Only while
   // the PCA step is open (nothing else shows the sweep). The crop / noise params only

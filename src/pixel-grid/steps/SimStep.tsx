@@ -75,12 +75,12 @@ function SimStepBody(p: StepProps) {
             <LayoutFields stripWidth={stripWidth} setStripWidth={setStripWidth}
               spacing={spacing} setSpacing={setSpacing}
               pattern={pattern} blockDesign={blockDesign} setBlockDesign={setBlockDesign}
-              rotation={angle} setRotation={imported ? p.importApi.setAngle : setRotation}
+              rotation={angle} setRotation={imported ? p.setAngleByHand : setRotation}
               rotationLabel={pattern === 'block' || imported ? 'Trial angle' : 'Strip angle'}
               rotationAction={<>
                 {/* Back to the file's own angle, which is rarely a round number to retype. */}
                 {imported && importedTurn !== 0 && (
-                  <button type="button" onClick={() => p.importApi.setAngle(importedFileAngle)}
+                  <button type="button" onClick={() => p.setAngleByHand(importedFileAngle)}
                     title={`Back to the file's angle, ${importedFileAngle.toFixed(1)}°`}
                     className="ml-auto rounded px-1.5 py-0.5 text-[10px] font-normal normal-case tracking-normal text-neutral-500 transition-colors hover:text-neutral-300">
                     as in file

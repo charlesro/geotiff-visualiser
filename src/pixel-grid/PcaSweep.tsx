@@ -81,7 +81,7 @@ function DotCanvas({ pts, height }: { pts: Dot[]; height: number }) {
   return <canvas ref={ref} style={{ width: '100%', height, display: 'block' }} />;
 }
 
-function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, threshold, colorBy, activeRes, activeSim, activePartial, showCounts, onPick }: {
+function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, threshold, colorBy, activeRes, activeSim, onPick, onPickPair }: {
   steps: SweepStep[];
   /**
    * A second ladder over the same resolutions (e.g. the rows laid along the
@@ -105,14 +105,20 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
    */
   activeSim?: (CoverSource & { purePct: number }) | null;
   /** The big scatter ran on a central subsample of the field, not all of it. */
-  activePartial?: boolean;
   /**
    * Label panels with pure pixel COUNTS instead of percentages. Two placements
    * of one trial cover the same area but not the same number of edge pixels, so
    * their percentages have different denominators and can rank them backwards.
    */
-  showCounts?: boolean;
   onPick?: (res: number) => void;
+  /**
+   * Clicking a panel of the PAIRED ladder. That ladder draws a DIFFERENT
+   * placement of the design, not merely a different pixel size, so picking one
+   * has to put that placement on the map as well: with only `onPick`, clicking
+   * the aligned panel showed the size it asked for underneath the design as
+   * drawn, which is a third thing that is neither panel.
+   */
+  onPickPair?: (res: number) => void;
 }) {
   const speciesSig = species.map(c => `${c.truth}_${c.L1}_${c.k1}_${c.x01}_${c.k2}_${c.x02}_${c.tc}`).join('|');
 
@@ -121,7 +127,7 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
       const isActive = mayUseActive && !!activeSim && activeRes != null && Math.abs(activeRes - s.res) < 1e-6;
       if (!isActive && s.current) {
         // Waiting for the big chart's simulation, which this panel will draw.
-        return { res: s.res, purePct: NaN, pureCount: NaN, partial: false, pts: [] as Dot[], tooFew: 0, waiting: true };
+        return { res: s.res, purePct: NaN, pureCount: NaN, trialCount: NaN, partial: false, pts: [] as Dot[], tooFew: 0, waiting: true };
       }
       const src: CoverSource = isActive ? activeSim! : s;
       // Every rung is fitted on ALL its trial pixels, exactly as the big chart
@@ -139,44 +145,58 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
         x: sx * (p.s[0] ?? 0), y: sy * (p.s[1] ?? 0),
         color: pointStyle(p, colorBy, 'none', colors, threshold).color,
       }));
-      // A count always comes from the rung itself: the big chart may be a central
-      // patch, and its percentage is then taken over that patch. `rungPct` is the
-      // rate over the SAME pixels the count is over, so when the panel is
-      // labelled with a count, its colour and its tooltip cannot be describing a
-      // different population than the number beside them.
-      return { res: s.res, purePct: isActive ? activeSim!.purePct : s.purePct, rungPct: s.purePct,
-               pureCount: s.current ? NaN : (s.pureCount ?? NaN),
-               partial: isActive ? !!activePartial : !!s.partial, pts, tooFew: fit.tooFew, waiting: false };
+      /**
+       * EVERY number on a panel comes from that panel's own rung. Only the
+       * drawing is borrowed.
+       *
+       * The big chart is lent to the panel at the displayed size so the picture
+       * cannot change when a thumbnail is picked, but it is a different
+       * measurement: the whole field, sometimes a central subsample, where the
+       * rung is the trial's own extent under LADDER_MAX_CELLS. Reading its
+       * percentage made a panel worth 49% show 50% for exactly as long as it was
+       * the size being displayed, so clicking along the ladder moved the numbers
+       * it was being read for. A rung's purity has to be a property of the rung.
+       *
+       * The current rung's own figure arrives with the idle pass, so until then
+       * the panel shows no number rather than the big chart's.
+       */
+      return { res: s.res, purePct: s.purePct,
+               pureCount: s.current ? NaN : (s.pureCount ?? NaN), trialCount: s.trialCount ?? NaN,
+               partial: !!s.partial, pts, tooFew: fit.tooFew, waiting: false };
     });
   // The rotated ladder may substitute the big scatter; the 0° comparison ladder
   // is a different design and never does.
   const charts = useMemo(() => toCharts(steps, true),
-    [steps, speciesSig, magnitude, threshold, colorBy, colors.join(','), activeRes, activeSim, activePartial]); // eslint-disable-line react-hooks/exhaustive-deps
+    [steps, speciesSig, magnitude, threshold, colorBy, colors.join(','), activeRes, activeSim]); // eslint-disable-line react-hooks/exhaustive-deps
   const pairCharts = useMemo(() => (pairWith ? toCharts(pairWith, false) : null),
     [pairWith, speciesSig, magnitude, threshold, colorBy, colors.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
   const pc = (v: number) => (v >= 70 ? 'text-emerald-400' : v >= 40 ? 'text-amber-400' : 'text-rose-400');
 
-  const panel = (c: ReturnType<typeof toCharts>[number], key: string) => {
+  const panel = (c: ReturnType<typeof toCharts>[number], key: string, paired = false) => {
     const active = activeRes != null && Math.abs(activeRes - c.res) < 1e-6;
+    const sampled = c.partial ? ' (sampled over the central part of a large field)' : '';
     return (
       <button
         key={key}
         type="button"
-        onClick={() => onPick?.(c.res)}
-        title={`Show the field at ${c.res} m${c.partial ? ' (sampled over the central part of a large field)' : ''}`}
+        onClick={() => (paired ? onPickPair : onPick)?.(c.res)}
+        title={paired
+          ? `Turn the design along the pixel rows and show it at ${c.res} m${sampled}`
+          : `Show the field at ${c.res} m${sampled}`}
         className={`rounded-md border p-1 text-left transition-colors ${active ? 'border-sky-400 bg-sky-500/10 ring-1 ring-sky-400/40' : 'border-white/10 bg-black/30 hover:border-sky-500/40 hover:bg-white/[0.04]'}`}
       >
         <div className="flex items-baseline justify-between px-0.5 text-[10px]">
           <span className="font-mono text-neutral-300">{c.res} m{active ? ' ·' : ''}{c.partial ? ' ◦' : ''}</span>
-          {/* While comparing, every panel is labelled with its own count, and the
-              pair is only comparable that way. The rung at the displayed size is
-              counted by a later idle pass, so until it lands this reads "..."
-              rather than going blank and reading as a panel with no pure pixels. */}
-          {showCounts
-            ? Number.isFinite(c.pureCount)
-              ? <span className={pc(c.rungPct)} title={`${c.rungPct.toFixed(0)}% of its own trial pixels`}>{fmt(c.pureCount)} px</span>
-              : <span className="text-neutral-600" title="Counting this size">...</span>
-            : Number.isFinite(c.purePct) && <span className={pc(c.purePct)}>{c.purePct.toFixed(0)}%</span>}
+          {/* The share of this rung's own trial pixels that come out pure. The
+              count behind it is in the tooltip: it is what the share is taken
+              over, and the two placements of a pair do not catch the same number
+              of edge pixels, so the denominators are worth being able to read. */}
+          {Number.isFinite(c.purePct) && (
+            <span className={pc(c.purePct)}
+              title={Number.isFinite(c.pureCount) ? `${fmt(c.pureCount)} pure of ${fmt(c.trialCount ?? NaN)} trial pixels` : undefined}>
+              {c.purePct.toFixed(0)}%
+            </span>
+          )}
         </div>
         <div className="pointer-events-none">
           {c.waiting
@@ -203,7 +223,7 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
           return (
             <Fragment key={c.res}>
               {panel(c, `a-${c.res}`)}
-              {twin ? panel(twin, `b-${c.res}`) : <div />}
+              {twin ? panel(twin, `b-${c.res}`, true) : <div />}
             </Fragment>
           );
         })}
