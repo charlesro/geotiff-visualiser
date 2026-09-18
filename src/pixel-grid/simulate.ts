@@ -1621,6 +1621,7 @@ let swXHi = new Float64Array(64), swYHi = new Float64Array(64);
 let swSrc = new Int32Array(64);
 let swXa = new Float64Array(64), swXb = new Float64Array(64);
 let swOrd = new Int32Array(64), swKey = new Float64Array(64);
+let swYOrd = new Int32Array(64);
 let swEv = new Float64Array(256);
 let swParity = new Uint8Array(16);
 
@@ -1675,27 +1676,49 @@ function sweepPixel(
   if (nE === 0) { out[nSrc] = s * s; return; }
 
   let nY = 0;
-  const room = 2 * nE + 2 + (nE * (nE - 1)) / 2;
-  if (swEv.length < room) swEv = new Float64Array(room);
+  // Every edge contributes its two ends, and the crossings are added as they
+  // are found: a pixel holding n edges could in principle hold n(n-1)/2 of
+  // them, but it never does, and asking for that many up front is gigabytes of
+  // zeroed array for a dense ring that crosses itself a handful of times.
+  if (swEv.length < 2 * nE + 2) swEv = new Float64Array(Math.max(2 * swEv.length, 2 * nE + 2));
   swEv[nY++] = 0; swEv[nY++] = s;
   for (let i = 0; i < nE; i++) {
     swEv[nY++] = swYLo[i] < 0 ? 0 : swYLo[i] > s ? s : swYLo[i];
     swEv[nY++] = swYHi[i] < 0 ? 0 : swYHi[i] > s ? s : swYHi[i];
   }
-  for (let i = 0; i < nE; i++) {
-    const si = swSrc[i];
-    for (let j = i + 1; j < nE; j++) {
+  // Two edges can only cross where their heights overlap. Reading the edges
+  // lowest end first lets the inner loop stop at the first edge starting above
+  // the outer one's top, which skips the pairs the height test would have
+  // thrown away anyway: same crossings, and a dense ring inside one pixel no
+  // longer costs a pass over every pair. Sorting is only worth its own cost
+  // once there are edges enough to skip, so a small pixel is read as it lies.
+  const sorted = nE > 64;
+  if (sorted) {
+    if (swYOrd.length < nE) swYOrd = new Int32Array(Math.max(2 * swYOrd.length, nE));
+    const ord = swYOrd.subarray(0, nE);
+    for (let i = 0; i < nE; i++) ord[i] = i;
+    ord.sort((a, b) => swYLo[a] - swYLo[b]);
+  }
+  for (let a = 0; a < nE; a++) {
+    const i = sorted ? swYOrd[a] : a;
+    const si = swSrc[i], hi = swYHi[i];
+    for (let b = a + 1; b < nE; b++) {
+      const j = sorted ? swYOrd[b] : b;
+      if (sorted && swYLo[j] >= hi) break;           // it starts above this edge's top, and so does every edge after it
       const sj = swSrc[j];
       // Two edges of one ring that never meets itself cannot cross, so only a
       // pair from different covers, or from a shape that may cross itself, is
       // worth the arithmetic.
       if (si === sj && srcSimple[si]) continue;
-      const ya = Math.max(swYLo[i], swYLo[j]), yb = Math.min(swYHi[i], swYHi[j]);
+      const ya = Math.max(swYLo[i], swYLo[j]), yb = Math.min(hi, swYHi[j]);
       if (!(yb > ya)) continue;
       const da = sweepX(i, ya) - sweepX(j, ya), db = sweepX(i, yb) - sweepX(j, yb);
       if (!((da < 0 && db > 0) || (da > 0 && db < 0))) continue;
       const y = ya + ((yb - ya) * da) / (da - db);
-      if (y > ya && y < yb) swEv[nY++] = y;
+      if (y > ya && y < yb) {
+        if (nY === swEv.length) { const grown = new Float64Array(2 * nY); grown.set(swEv); swEv = grown; }
+        swEv[nY++] = y;
+      }
     }
   }
   const ev = swEv.subarray(0, nY);

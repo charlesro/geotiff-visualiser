@@ -132,6 +132,13 @@ export function stakeOnGrid(
   const [b0, b1, b2, b3] = plan.bbox;
   const pixels = Math.max(1, ((b2 - b0) / r + 6) * ((b3 - b1) / r + 6));
   const n = Math.max(1, Math.min(10, Math.floor(Math.sqrt(budget / pixels))));
+  // A trial too big for one call to fit the budget leaves N at 1, and a 1 x 1
+  // search offers only the trial where it stands: counting its pure pixels
+  // decides nothing, and the count is never read again. Simulating it anyway
+  // cost the whole trial (1.6 s of blocked main thread at 0.5 m on a 2000-plot
+  // import), so the budget bounded the number of shifts but not the work. It
+  // bounds the work now: no shift to choose, no simulation.
+  if (n === 1) return { plan, shift: [0, 0] };
   let best = plan, bestShift: [number, number] = [0, 0], bestCount = -1;
   for (let i = 0; i < n; i++) {
     for (let j = 0; j < n; j++) {

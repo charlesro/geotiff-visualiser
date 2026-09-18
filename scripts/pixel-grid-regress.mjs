@@ -43,7 +43,7 @@ const REVEAL = {
 };
 
 fs.rmSync(BUILD, { recursive: true, force: true });
-for (const rel of ['src/lib/geo.ts', 'src/lib/projections.ts', 'src/pixel-grid/s2-grid.ts', 'src/pixel-grid/geometry.ts', 'src/pixel-grid/simulate.ts', 'src/pixel-grid/shapefile.ts', 'src/pixel-grid/util.ts', 'src/pixel-grid/pca-field.ts', 'src/pixel-grid/ladder.ts', 'src/pixel-grid/design-import.ts', 'src/pixel-grid/imported-plan.ts']) {
+for (const rel of ['src/lib/geo.ts', 'src/lib/projections.ts', 'src/pixel-grid/s2-grid.ts', 'src/pixel-grid/geometry.ts', 'src/pixel-grid/simulate.ts', 'src/pixel-grid/shapefile.ts', 'src/pixel-grid/util.ts', 'src/pixel-grid/pca-field.ts', 'src/pixel-grid/ladder.ts', 'src/pixel-grid/design-import.ts', 'src/pixel-grid/imported-plan.ts', 'src/pixel-grid/imported-rotate.ts']) {
   let ts = fs.readFileSync(path.join(ROOT, rel), 'utf8');
   for (const decl of REVEAL[rel] ?? []) ts = reveal(ts, decl);
   // esbuild only strips types; relative specifiers still need an extension to
@@ -72,6 +72,7 @@ const { embed } = await import(path.join(BUILD, 'src/lib/projections.mjs'));
 const { fitCover, axisSigns, pointStyle, samplePts, linearPca, pixelId, MIN_PTS } = await import(path.join(BUILD, 'src/pixel-grid/pca-field.mjs'));
 const { trialExtent, importedTrialExtent } = await import(path.join(BUILD, 'src/pixel-grid/ladder.mjs'));
 const { resolveImportedPlan, varietyKeyOf, convexHull, hullWidth, narrowestFeature, foldRing } = await import(path.join(BUILD, 'src/pixel-grid/imported-plan.mjs'));
+const { purePixels, stakeOnGrid } = await import(path.join(BUILD, 'src/pixel-grid/imported-rotate.mjs'));
 const { varietiesOf: readerVarietiesOf } = await import(path.join(BUILD, 'src/pixel-grid/design-import.mjs'));
 const { pointInPoly } = await import(path.join(BUILD, 'src/pixel-grid/geometry.mjs'));
 const { gridToShapefileZip } = await import(path.join(BUILD, 'src/pixel-grid/shapefile.mjs'));
@@ -2084,6 +2085,91 @@ console.log('\nH13. an imported trial is measured, not sampled');
     const coarse = { ...drawn, minFeature: 40, sig: `${drawn.sig}|coarse` };
     ok('and the measurement no longer depends on how finely the old grid would have sampled',
       pureCount(coarse, 4) === pureCount(drawn, 4) && minFeatureM(importedLayout(coarse)) !== minFeatureM(importedLayout(drawn)));
+  }
+
+  // ---- the edges of the exact path ------------------------------------------
+  {
+    // Two plots are added up rather than swept unless the pair can be PROVEN to
+    // overlap, and the proof allows a billionth of the smaller plot for the
+    // width a shared edge picks up from rounding. Plots that really overlap by
+    // less than that are added up, so the earlier one keeps a sliver the later
+    // one should win, and the sliver is counted twice: the pixel's background
+    // is short by it. It comes out of the background and never out of the
+    // pixel's area, and it is bounded by the tolerance itself. Both plots are
+    // 15 m2 here, so the tolerance is 1.5e-8 m2 of shared ground.
+    const lapPlan = (d) => planOf([
+      { rings: [boxRing(E0, N0, 5, 3)], species: 0 },
+      { rings: [boxRing(E0 + 5 - d, N0, 5, 3)], species: 1 },
+      { rings: [boxRing(E0, N0 + 5, 10, 3)], species: 2 },   // a third plot, so the pixel below is inside the footprint
+    ], 3, `lap${d}`);
+    // The pixel x [E0+4, E0+6], y [N0+2, N0+4]: plot 0 holds 1 m2 of it, plot 1
+    // holds 1 m2 plus the overlap, and the 2 m2 above the plots is bare alley.
+    const lapPixel = (d) => sharesOf(lapPlan(d), E0, N0, 5, 4, 2)[1 * 5 + 2];
+    {
+      const d = 4e-9, m = lapPixel(d);                       // 4e-9 m2 of shared ground, under the 1.5e-8 tolerance
+      const sum = [...m.values()].reduce((a, b) => a + b, 0);
+      ok('an overlap below the proof tolerance is left with the earlier plot, out of the background',
+        Math.abs((m.get(0) ?? 0) - 1) < 1e-10 && Math.abs((m.get(BARE.id) ?? 0) - (2 - d)) < 1e-10 &&
+        Math.abs((m.get(BARE.id) ?? 0) - 2) <= 1e-9 * 15,
+        `plot 0 ${(m.get(0) ?? 0).toFixed(12)}, bare ${(m.get(BARE.id) ?? 0).toFixed(12)} of 2`);
+      ok('and the pixel is still shared out whole, with nothing negative in it',
+        sum === 4 && [...m.values()].every(v => v > 0), `${sum} m2 of 4`);
+    }
+    {
+      const d = 4e-6, m = lapPixel(d);                       // a thousand times wider: proven, and swept exactly
+      const sum = [...m.values()].reduce((a, b) => a + b, 0);
+      ok('an overlap the proof can see is measured exactly, the later plot taking the shared ground',
+        Math.abs((m.get(0) ?? 0) - (1 - d)) < 1e-10 && Math.abs((m.get(1) ?? 0) - (1 + d)) < 1e-10 &&
+        Math.abs((m.get(BARE.id) ?? 0) - 2) < 1e-10 && sum === 4,
+        `plot 0 ${(m.get(0) ?? 0).toFixed(12)}, plot 1 ${(m.get(1) ?? 0).toFixed(12)}, bare ${(m.get(BARE.id) ?? 0).toFixed(12)}`);
+    }
+
+    // The sweep cuts a pixel at every height where two of its edges cross. It
+    // used to ask for room for every PAIR of edges before looking for one: a
+    // dense ring inside a single pixel meant hundreds of megabytes of zeroed
+    // array for the handful of crossings it actually has. The crossings are
+    // appended as they are found now, and the edges are read lowest end first
+    // so the pairs whose heights cannot meet are skipped instead of tested.
+    const dense = planOf([{ rings: [circleRing(E0, N0, 20, 2000), circleRing(E0, N0, 8, 1000)] , species: 0 }], 1, 'dense');
+    const buffers = () => process.memoryUsage().arrayBuffers ?? process.memoryUsage().external ?? 0;
+    const memBefore = buffers();
+    const dsh = sharesOf(dense, E0 - 30, N0 - 30, 1, 1, 60)[0];
+    const grewMB = (buffers() - memBefore) / 1e6;
+    const dsum = [...dsh.values()].reduce((a, b) => a + b, 0);
+    // 3000 edges in one pixel: the pair array alone was 100 MB of it.
+    ok('a dense ring swept inside one pixel does not ask for room for every pair of its edges',
+      grewMB < 16, `${grewMB.toFixed(1)} MB`);
+    ok('and the ring with the hole in it still measures its own area',
+      Math.abs((dsh.get(0) ?? 0) - Math.PI * (400 - 64)) < 0.01 && Math.abs(dsum - 60 * 60) < 1e-9,
+      `${(dsh.get(0) ?? 0).toFixed(3)} of ${(Math.PI * (400 - 64)).toFixed(3)} m2, pixel ${dsum}`);
+
+    // Staking the aligned comparison: the trial is tried at an N x N grid of
+    // sub-pixel shifts, N chosen so the search stays within a budget of
+    // simulated pixels. A trial too big for ONE simulation to fit that budget
+    // leaves N at 1, which offers the trial where it stands and nothing to
+    // choose between, and counting its pure pixels answered a question nobody
+    // asked: half a second of blocked page here, 1.6 s on a 2000-plot import.
+    const s13 = { sigmaX: 0.55, sigmaY: 0.55, mixThreshold: 0.9 };
+    const wide = planOf([[0, 0], [380, 0], [0, 380], [380, 380]].map(([u, v], i) =>
+      ({ rings: [boxRing(E0 + u, N0 + v, 20, 20)], species: i })), 4, 'wide');
+    const wideField = [wide.bbox[0] - 20, wide.bbox[1] - 20, wide.bbox[2] + 20, wide.bbox[3] + 20];
+    const t13 = performance.now();
+    const staked = stakeOnGrid(wide, 0.5, s13, wideField);   // 660,000 pixels: one call is already over budget
+    const stakeMs = performance.now() - t13;
+    ok('a trial too big to search is staked where it stands, without simulating it to find that out',
+      staked.plan === wide && staked.shift[0] === 0 && staked.shift[1] === 0 && stakeMs < 50,
+      `${stakeMs.toFixed(1)} ms, shift ${staked.shift.join(',')}`);
+
+    // and a trial the budget does cover is still searched, and the search still
+    // pays: this one keeps pure pixels at a shift it loses where it stands.
+    const small = planOf(Array.from({ length: 12 }, (_, i) =>
+      ({ rings: [boxRing(E0 + (i % 4) * 15, N0 + ((i / 4) | 0) * 15, 14, 14)], species: i })), 12, 'small');
+    const smallField = [small.bbox[0] - 20, small.bbox[1] - 20, small.bbox[2] + 20, small.bbox[3] + 20];
+    const picked = stakeOnGrid(small, 2, s13, smallField);
+    ok('a trial the budget covers is still staked at the best sub-pixel shift it can find',
+      purePixels(picked.plan, 2, s13, smallField) >= purePixels(small, 2, s13, smallField) &&
+      picked.shift.every(v => v >= 0 && v < 2),
+      `shift ${picked.shift.join(',')}: ${purePixels(picked.plan, 2, s13, smallField)} pure vs ${purePixels(small, 2, s13, smallField)} where it stands`);
   }
 
   // ---- every other layout is untouched --------------------------------------

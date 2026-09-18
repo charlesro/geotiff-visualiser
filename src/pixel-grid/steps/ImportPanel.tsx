@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import { Upload } from 'lucide-react';
 import { Explain, InfoDot, Spinner } from '../ui';
 import { fmt } from '../util';
 import type { ImportedDesign, ImportedVariety } from '../imported-types';
@@ -52,15 +53,23 @@ export function ImportPanel({ design, varieties, busy, error, onFiles, onRemove,
               </>}
         </button>
       ) : (
-        <div className="rounded-md border border-white/10 bg-white/[0.02] px-2.5 py-2 text-[11px] text-neutral-300">
+        // The loaded card takes a dropped file too: after the first import the
+        // drop zone is gone, and a small "Replace" next to the name was easy to
+        // miss when the panel sat folded inside step 4.
+        <div
+          onDragOver={e => { e.preventDefault(); setOver(true); }}
+          onDragLeave={() => setOver(false)}
+          onDrop={e => { e.preventDefault(); setOver(false); take(e.dataTransfer.files); }}
+          className={`rounded-md border px-2.5 py-2 text-[11px] text-neutral-300 transition-colors ${over ? 'border-sky-400 bg-sky-500/10' : 'border-white/10 bg-white/[0.02]'}`}>
           <div className="flex items-center gap-2">
             <span className="min-w-0 flex-1 truncate font-mono text-neutral-100" title={design.fileName}>{design.fileName}</span>
             <button type="button" onClick={pick} disabled={busy}
-              className="rounded px-1.5 py-0.5 text-[10px] text-neutral-400 hover:text-neutral-200 disabled:opacity-40">
-              {busy ? <Spinner className="h-3 w-3" /> : 'Replace'}
+              title="Import another file, or drop one on this card"
+              className="flex shrink-0 items-center gap-1 rounded border border-white/15 px-1.5 py-0.5 text-[10px] text-neutral-200 transition-colors hover:border-sky-500/60 hover:text-sky-200 disabled:opacity-40">
+              {busy ? <Spinner className="h-3 w-3" /> : <Upload className="h-3 w-3" />} Replace file
             </button>
             <button type="button" onClick={onRemove}
-              className="rounded px-1.5 py-0.5 text-[10px] text-neutral-400 hover:text-rose-300">Remove</button>
+              className="shrink-0 rounded px-1.5 py-0.5 text-[10px] text-neutral-400 hover:text-rose-300">Remove</button>
           </div>
           <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
             <span><span className="font-mono text-neutral-100">{fmt(design.plots.length)}</span> plots</span>
