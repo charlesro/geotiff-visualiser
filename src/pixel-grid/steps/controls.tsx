@@ -120,7 +120,8 @@ export function LayoutFields({ pattern, stripWidth, setStripWidth, spacing, setS
             hint="How many treatments each block contains. Every block gets all of them, in its own random order." />
           <NumField label="Blocks" value={d.nBlocks} onChange={set('nBlocks')} min={1} max={20}
             hint="Repetitions. Each is a complete set of the species." />
-          <NumField label="Per row" value={d.blocksPerRow} onChange={set('blocksPerRow')} min={1} max={20} />
+          <NumField label="Per row" value={d.blocksPerRow} onChange={set('blocksPerRow')} min={1} max={20}
+            hint="How many blocks sit side by side before the next row starts. A row runs across the plots, so more per row makes the trial wider and shorter." />
         </div>
         <div className="grid grid-cols-3 gap-2">
           <NumField label="Plot length" value={d.plotLength} onChange={set('plotLength')} min={0.5} max={1000} step={0.5} unit="m" />

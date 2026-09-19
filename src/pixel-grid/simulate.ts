@@ -938,12 +938,23 @@ export function buildBlockPlan(
   const cols = Math.max(1, Math.min(nBlocks, design.blocksPerRow | 0 || 1));
   const rows = Math.ceil(nBlocks / cols);
 
+  /**
+   * A block is one plot LONG (u) and all its species WIDE (v), and a row of
+   * blocks runs along u, across the plots rather than behind them.
+   *
+   * It used to run along v, the axis the species already stack on, so raising
+   * "per row" made the trial longer in the direction it was already longest:
+   * two blocks at "11 per row" came out as all ten plots in a single file
+   * 248.5 m long, hanging out of both ends of a 156 m field, while "1 per row"
+   * was the compact 61.5 x 123.5 m arrangement. The control did the opposite of
+   * its name, and its worst value was the one a reader would reach for.
+   */
   const blockU = plotLength;
   const blockV = nSpecies * plotWidth + (nSpecies - 1) * plotAlley;
   const pitchU = blockU + blockAlley;
   const pitchV = blockV + blockAlley;
-  const totalU = rows * pitchU - blockAlley;
-  const totalV = cols * pitchV - blockAlley;
+  const totalU = cols * pitchU - blockAlley;
+  const totalV = rows * pitchV - blockAlley;
 
   const resolved: BlockDesign = {
     nSpecies, nBlocks, plotLength, plotWidth, plotAlley, blockAlley,
@@ -984,10 +995,11 @@ export function blockCoverUV(u: number, v: number, p: BlockPlan): number {
   // Bounds FIRST: the map draws in a rotated frame where u and v go negative,
   // and a negative index would otherwise read some other plot's id.
   if (du < 0 || du >= p.totalU || dv < 0 || dv >= p.totalV) return OFF_TRIAL.id;
-  const r = Math.floor(du / p.pitchU), c = Math.floor(dv / p.pitchV);
+  // `cols` blocks run along u; successive rows stack along v (buildBlockPlan).
+  const c = Math.floor(du / p.pitchU), r = Math.floor(dv / p.pitchV);
   const b = r * p.cols + c;
   if (b >= p.design.nBlocks) return OFF_TRIAL.id;                 // ragged last row
-  const uIn = du - r * p.pitchU, vIn = dv - c * p.pitchV;
+  const uIn = du - c * p.pitchU, vIn = dv - r * p.pitchV;
   if (uIn >= p.blockU || vIn >= p.blockV) return BARE.id;         // alley between blocks
   const pitch = p.design.plotWidth + p.design.plotAlley;
   const k = Math.floor(vIn / pitch);
@@ -1001,7 +1013,7 @@ export function blockPlots(p: BlockPlan): BlockPlot[] {
   const pitch = p.design.plotWidth + p.design.plotAlley;
   for (let b = 0; b < p.design.nBlocks; b++) {
     const r = Math.floor(b / p.cols), c = b % p.cols;
-    const bu = p.u0 + r * p.pitchU, bv = p.v0 + c * p.pitchV;
+    const bu = p.u0 + c * p.pitchU, bv = p.v0 + r * p.pitchV;
     for (let k = 0; k < p.design.nSpecies; k++) {
       const plot = b * p.design.nSpecies + k;
       const v0 = bv + k * pitch;

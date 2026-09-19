@@ -790,9 +790,19 @@ console.log('\nH3. the randomised block design: geometry and reproducibility');
   ok('a block spans its plots plus the alleys between them',
     Math.abs(plan.blockV - (4 * 2 + 3 * 0.5)) < 1e-9 && plan.blockU === 8,
     `${plan.blockU} x ${plan.blockV}`);
+  // One block per row, so the four stack along v, each row a block deep. A row
+  // of blocks runs along u; see buildBlockPlan on why it is that way round.
   ok('the footprint is the blocks plus the alleys between blocks, with none trailing',
-    Math.abs(plan.totalU - (4 * (8 + 1.5) - 1.5)) < 1e-9 && Math.abs(plan.totalV - plan.blockV) < 1e-9,
+    Math.abs(plan.totalU - plan.blockU) < 1e-9 && Math.abs(plan.totalV - (4 * (plan.blockV + 1.5) - 1.5)) < 1e-9,
     `${plan.totalU} x ${plan.totalV}`);
+  // ... and asking for all four in ONE row turns it through the other way:
+  // wider by four blocks, and only one block deep.
+  ok('all the blocks in one row makes the trial wide rather than long',
+    (() => {
+      const wide = buildBlockPlan({ ...design, blocksPerRow: 4 }, { centerU: 0, centerV: 0, snap: 0 });
+      return Math.abs(wide.totalU - (4 * (wide.blockU + 1.5) - 1.5)) < 1e-9 &&
+             Math.abs(wide.totalV - wide.blockV) < 1e-9 && wide.totalU > wide.totalV;
+    })(), 'four per row');
 
   // Randomisation: complete blocks, reproducible, and stable when extended.
   ok('every block is a complete permutation of the species',
@@ -855,8 +865,8 @@ console.log('\nH3. the randomised block design: geometry and reproducibility');
   ok('the ragged last row is off-trial, not a phantom block',
     (() => {
       const ragged = buildBlockPlan({ ...design, nBlocks: 3, blocksPerRow: 2 }, { centerU: 0, centerV: 0, snap: 0 });
-      const u = ragged.u0 + ragged.pitchU + ragged.blockU / 2;   // second row
-      const v = ragged.v0 + ragged.pitchV + ragged.blockV / 2;   // second column: block 3, absent
+      const u = ragged.u0 + ragged.pitchU + ragged.blockU / 2;   // second along the row
+      const v = ragged.v0 + ragged.pitchV + ragged.blockV / 2;   // second row: block 3, absent
       return blockCoverUV(u, v, ragged) === OFF_TRIAL.id;
     })());
 
@@ -1237,7 +1247,9 @@ console.log('\nH10b. the scatter and the purity numbers decide pure/mixed by ONE
 {
   // Two species, six touching blocks, and a purity threshold of 90%: the plots
   // that meet along the block boundaries carry the same variety on both sides.
-  const design = { nSpecies: 2, nBlocks: 6, plotLength: 6, plotWidth: 6, plotAlley: 0, blockAlley: 0, blocksPerRow: 1, seed: 3 };
+  // All six blocks in ONE row, so they sit end to end along u and the plots that
+  // meet across a block boundary can carry the same variety on both sides.
+  const design = { nSpecies: 2, nBlocks: 6, plotLength: 6, plotWidth: 6, plotAlley: 0, blockAlley: 0, blocksPerRow: 6, seed: 3 };
   const pureT = 90;
   const resP = 1;
   const originP = aoiUtmOrigin(AOI, 32631);
