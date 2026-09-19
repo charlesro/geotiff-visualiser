@@ -3,9 +3,9 @@ import { Boundary } from '../Boundary';
 import type { StepProps } from './props';
 
 /**
- * Step 1 — draw or trace the experiment or search for it.
+ * Step 1: draw or trace the experiment or search for it.
  *
- * Rendered as a child of `Step`, which unmounts collapsed children — so NOTHING
+ * Rendered as a child of `Step`, which unmounts collapsed children, so NOTHING
  * here may hold state. Everything it reads comes from hooks the page shell owns.
  */
 function AreaStepBody(p: StepProps) {

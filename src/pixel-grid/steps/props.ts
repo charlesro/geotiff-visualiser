@@ -31,7 +31,7 @@ export interface StepProps {
    */
   simAdvOpen: boolean; setSimAdvOpen: (v: boolean | ((p: boolean) => boolean)) => void;
   pcaRetuneOpen: boolean; setPcaRetuneOpen: (v: boolean | ((p: boolean) => boolean)) => void;
-  /** Show the resolution ladder twice — at the current rotation and at 0°. */
+  /** Show the resolution ladder twice: at the current rotation and at 0°. */
   compareAligned: boolean; setCompareAligned: (v: boolean | ((p: boolean) => boolean)) => void;
   /**
    * How PCA points are coloured and shaped. Here rather than in the scatter so the

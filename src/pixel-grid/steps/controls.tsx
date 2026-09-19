@@ -7,7 +7,7 @@ import { fmt } from '../util';
 /**
  * The planting controls steps 3 and 4 both carry.
  *
- * They are the SAME controls over the SAME state — step 4 repeats them so you
+ * They are the SAME controls over the SAME state: step 4 repeats them so you
  * can retune the design while watching the PCA, rather than jumping back a step.
  * Before this file they were duplicated verbatim, differing only in the three
  * cosmetic knobs below, which is exactly how the two copies drift apart.
@@ -26,7 +26,7 @@ const LABEL = 'mb-1 flex items-center gap-1 text-[11px] text-neutral-500';
 const FIELD = 'w-full rounded-md border border-white/10 bg-neutral-900 px-2 py-1.5 text-sm text-neutral-100 focus:border-sky-500 focus:outline-none';
 const UNIT = 'text-xs text-neutral-500';
 
-/** One select style for the whole page — the old large/small split was cosmetic drift. */
+/** One select style for the whole page: the old large/small split was cosmetic drift. */
 export const SELECT = 'w-full rounded-md border border-white/10 bg-neutral-900 px-2 py-1.5 text-sm text-neutral-100 focus:border-sky-500 focus:outline-none';
 
 export function LayoutSelect({ pattern, setPattern, selectClass }: {
@@ -326,7 +326,7 @@ export function ImportedSummary({ plan, angle, res, threshold, purePct }: {
  *
  * `onColor` deliberately bypasses `onCrop`: the colour is display only, so
  * recolouring must NOT flip the preset to "Custom" the way editing the growth
- * curve does — the crop is still maize, it is just drawn differently.
+ * curve does: the crop is still maize, it is just drawn differently.
  */
 /**
  * One editor per species in the design, 2 to 8 of them.

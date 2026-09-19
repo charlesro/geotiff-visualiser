@@ -1208,27 +1208,21 @@ console.log('\nL. house style');
    * files carried em dashes, which is the shape of a check that tests its
    * author rather than the codebase.
    *
-   * NOT_YET_CLEAN is the list of files that still carry one. It is allowed to
-   * SHRINK and never to grow: a file not on it is checked, so no new em dash
-   * can land anywhere, and cleaning a listed file never breaks this suite.
-   * Delete a name from the list once its file is clean.
+   * NOT_YET_CLEAN was the list of files that still carried one, allowed to
+   * shrink and never to grow. It is EMPTY now: every shipped file has been
+   * cleaned, so the rule is simply the rule, and the first em dash to land
+   * anywhere in this set fails the suite. Keep it empty; adding a name back is
+   * conceding the rule rather than fixing the file.
    */
   const EM_DASH = String.fromCharCode(0x2014);
-  const NOT_YET_CLEAN = new Set([
-    'scripts/clustering-regress.mjs', 'scripts/phenology-regress.mjs', 'src/lib/projections.ts',
-    'src/pixel-grid/FieldMap.tsx', 'src/pixel-grid/PcaSimVisual.tsx',
-    'src/pixel-grid/map-layers.tsx', 'src/pixel-grid/sensors.ts',
-    'src/pixel-grid/steps/AreaStep.tsx', 'src/pixel-grid/steps/GridStep.tsx', 'src/pixel-grid/steps/PcaStep.tsx',
-    'src/pixel-grid/steps/controls.tsx', 'src/pixel-grid/steps/props.ts', 'src/pixel-grid/ui.tsx',
-    'src/pixel-grid/util.ts',
-  ]);
+  const NOT_YET_CLEAN = new Set([]);
   const walk = (dir, exts) => fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true }).flatMap(d =>
     d.isDirectory() ? walk(`${dir}/${d.name}`, exts)
       : exts.some(x => d.name.endsWith(x)) ? [`${dir}/${d.name}`] : []);
   const shipped = [...walk('src/pixel-grid', ['.ts', '.tsx']), 'src/lib/geo.ts', 'src/lib/projections.ts',
     ...walk('scripts', ['.mjs'])].sort();
   const dashed = shipped.filter(rel => fs.readFileSync(path.join(ROOT, rel), 'utf8').includes(EM_DASH));
-  ok('no em dash in any shipped file outside the list of ones not yet cleaned',
+  ok('no em dash in any shipped file',
     dashed.every(rel => NOT_YET_CLEAN.has(rel)), dashed.filter(rel => !NOT_YET_CLEAN.has(rel)).join(' ') ||
     `${shipped.length} files checked, ${dashed.length} still to clean`);
   ok('and the list itself names only files that exist',

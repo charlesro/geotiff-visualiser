@@ -6,9 +6,9 @@ import { zoneFromEpsg } from '../s2-grid';
 import type { StepProps } from './props';
 
 /**
- * Step 2 — pick the satellite, see where its pixels really fall, export them.
+ * Step 2: pick the satellite, see where its pixels really fall, export them.
  *
- * Rendered as a child of `Step`, which unmounts collapsed children — so NOTHING
+ * Rendered as a child of `Step`, which unmounts collapsed children, so NOTHING
  * here may hold state. Everything it reads comes from hooks the page shell owns.
  */
 /** The blur the sensor model accepts, and the range its saved value is validated against. */
@@ -33,7 +33,7 @@ function GridStepBody(p: StepProps) {
           <p className="text-xs text-neutral-400">Draw an experiment area in step&nbsp;1 first.</p>
         ) : (<>
 
-        {/* Sensor — the select states its own value, so it needs no label. */}
+        {/* Sensor: the select states its own value, so it needs no label. */}
         <div className="flex items-center gap-2">
           <select value={sourceId} onChange={e => setSourceId(e.target.value)} className={SELECT}>
             {[FIXED, TASK].map(g => (
@@ -47,7 +47,7 @@ function GridStepBody(p: StepProps) {
           <Explain align="right" text={source.note}><InfoDot /></Explain>
         </div>
 
-        {/* Blur — σ stays visible; the derivation and the citation go on demand. */}
+        {/* Blur: σ stays visible; the derivation and the citation go on demand. */}
         {build && (
           <div>
             <div className="flex items-center gap-2">

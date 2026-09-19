@@ -1,10 +1,10 @@
 /**
- * Regression suite for src/lib/species-clusters.ts — `npm run test:clustering`.
+ * Regression suite for src/lib/species-clusters.ts, run with `npm run test:clustering`.
  *
  * The thing under test is the split between the two date axes. k-means needs a
  * complete, well-covered matrix to decide who resembles whom; the curves that
  * get drawn and fitted must NOT be limited to that, or a partly-cloudy
- * acquisition — exactly the kind a user inserts to fill a hole — silently
+ * acquisition, exactly the kind a user inserts to fill a hole, silently
  * fails to appear on the very curve it was fetched for.
  */
 import fs from 'node:fs';
@@ -27,7 +27,7 @@ const ok = (name, cond, extra = '') => {
 
 /**
  * Build an extraction: `nFields` fields of one species, one interior pixel
- * each, over `dates`. `seenOn[dateIndex]` is how many fields saw that date —
+ * each, over `dates`. `seenOn[dateIndex]` is how many fields saw that date,
  * the rest carry no property for it at all, exactly as a partly-covered
  * acquisition comes out of the zone extraction.
  */

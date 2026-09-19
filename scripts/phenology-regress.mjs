@@ -1,5 +1,5 @@
 /**
- * Regression suite for src/lib/phenology.ts — run with `npm run test:phenology`.
+ * Regression suite for src/lib/phenology.ts, run with `npm run test:phenology`.
  *
  * There is no test runner in this project, so this transpiles the module with
  * the esbuild that ships inside Vite and exercises it directly from node. It
@@ -95,7 +95,7 @@ console.log('\nC. day axis (exact civil arithmetic)');
 
 console.log('\nD. identifiability');
 {
-  // This model carries no baseline term — it decays to zero either side — so it
+  // This model carries no baseline term (it decays to zero either side), so it
   // is fitted to the plant period's zeroed growth signal, never to raw VI
   // sitting on a soil floor. `zero()` is what the app feeds it.
   const zero = (days, vals, period) => {
@@ -183,7 +183,7 @@ console.log('\nH. season from user-marked windows');
 console.log('\nI. only a well-determined fit may move a suggested window');
 {
   // A thin fit interpolates its points, so its bounds cannot be trusted to
-  // relocate a window — it may still draw a curve inside one the user marked.
+  // relocate a window: it may still draw a curve inside one the user marked.
   const sparse = ['2021-05-30', '2021-07-19', '2021-09-07', '2021-10-20', '2021-11-15', '2021-12-21'];
   const bump = [0.20, 0.72, 0.76, 0.55, 0.35, 0.22];
   const g = growingSeasonFromClusters({ dates: sparse, groups: [{ species: 'X', centroids: [bump], sizes: [40] }] }, {});
@@ -207,7 +207,7 @@ console.log('\nJ. marks survive a re-clustering');
   };
   const picks = { [pickKey('Mais', 0)]: { start: 121, end: 268 } };
 
-  // (1) the same partition, renumbered — the mark must follow its own fields.
+  // (1) the same partition, renumbered: the mark must follow its own fields.
   const swapped = {
     dates: before.dates,
     groups: [{ species: 'Mais', fields: [...fields(['d', 'e'], 0), ...fields(['a', 'b', 'c'], 1)] }],
@@ -217,7 +217,7 @@ console.log('\nJ. marks survive a re-clustering');
     r1[pickKey('Mais', 1)]?.start === 121 && !(pickKey('Mais', 0) in r1),
     JSON.stringify(r1));
 
-  // (2) an earlier acquisition moves the base year — the window must move with it.
+  // (2) an earlier acquisition moves the base year: the window must move with it.
   const earlier = { dates: ['2020-12-29', ...before.dates], groups: before.groups };
   const r2 = remapSeasonPicks(before, earlier, picks);
   const shift = 366; // 2020 is a leap year
@@ -320,20 +320,20 @@ console.log('\nN. a real cycle is accepted; only an undescribable one is refused
   const days = [], per = { start: 60, end: 330 };
   for (let t = 60; t <= 330; t += 12) days.push(t);
 
-  // Rise, plateau, then a harvest that removes the canopy almost overnight —
+  // Rise, plateau, then a harvest that removes the canopy almost overnight:
   // and a period whose end sits right on the drop, so the zeroing leaves a
   // near-vertical edge. This is one growth cycle and must be fitted.
   const harvest = days.map(t =>
     t < 150 ? 0.02 : t < 200 ? 0.02 + 0.63 * ((t - 150) / 50) : t < 290 ? 0.65 : Math.max(0, 0.65 - 0.62 * ((t - 290) / 12))
   );
   const f = fitPlantPeriod(days, harvest, per);
-  ok('a rise-plateau-fall with an abrupt harvest is fitted', !f.note, `r2=${f.r2.toFixed(3)} note=${f.note ?? '—'}`);
+  ok('a rise-plateau-fall with an abrupt harvest is fitted', !f.note, `r2=${f.r2.toFixed(3)} note=${f.note ?? 'none'}`);
   ok('and its R² is high', f.r2 > 0.9, `r2=${f.r2.toFixed(3)}`);
 
   // Three cuts in a season: one rise and fall cannot describe it.
   const perennial = days.map(t => 0.3 + 0.35 * Math.abs(Math.sin((t / 330) * Math.PI * 3)));
   const g = fitPlantPeriod(days, perennial, per);
-  ok('a multi-cut perennial is still refused', !!g.note, `r2=${g.r2.toFixed(3)} note=${g.note ?? '—'}`);
+  ok('a multi-cut perennial is still refused', !!g.note, `r2=${g.r2.toFixed(3)} note=${g.note ?? 'none'}`);
 
   // A flat curve carries no cycle to fit either.
   const flat = days.map(() => 0.31);

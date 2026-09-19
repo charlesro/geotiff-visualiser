@@ -15,7 +15,7 @@ const LEGEND_MAX = 12;
  * The map half of the page: basemap, the drawn field, the pixel the
  * simulation overlay, the PSF footprint, and the two draw tools.
  *
- * It takes the hook objects whole rather than 30-odd scalars — the alternative
+ * It takes the hook objects whole rather than 30-odd scalars: the alternative
  * is a prop list nobody can read. `geoKey` is the exception and arrives as an
  * opaque string: it is assembled in the SHELL because that is the only scope
  * where all of its inputs are live, and it exists because react-leaflet

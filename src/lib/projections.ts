@@ -4,16 +4,16 @@ import { PCA } from 'ml-pca';
 /**
  * Dimensionality-reduction methods for the pixel time-series scatter.
  *
- * All of them take the same two matrices the PCA uses — the *fit* rows (which
+ * All of them take the same two matrices the PCA uses: the *fit* rows (which
  * define the space, for the linear methods) and the *proj* rows (the pixels
- * actually placed/displayed) — and return 2–3D coordinates per projected pixel,
+ * actually placed/displayed), and return 2 to 3D coordinates per projected pixel,
  * so the existing scatter, boundary finder and CSV work unchanged.
  *
  * Linear methods (pca, whitened, ica, mnf, random) build a feature→component
  * projection on the fit rows and apply it to every proj row (full coverage).
  * Nonlinear methods (kpca, isomap, diffusion, tsne) embed an even subsample of
  * the proj rows directly (an n×n problem), so only those pixels get coordinates
- * — `index` says which. Every method is wrapped so a failure falls back to PCA
+ * and `index` says which. Every method is wrapped so a failure falls back to PCA
  * rather than breaking the panel.
  */
 
@@ -91,9 +91,9 @@ export const DR_METHODS: DrMethodInfo[] = [
 ];
 
 export interface EmbedInput {
-  /** Fit rows — define the space for the linear methods. */
+  /** Fit rows: they define the space for the linear methods. */
   fit: number[][];
-  /** Projected rows — the pixels displayed; these get coordinates. */
+  /** Projected rows: the pixels displayed; these get coordinates. */
   proj: number[][];
   /** Map positions [lng, lat] of the fit rows, for the spatial methods. */
   fitPos?: [number, number][];
@@ -485,7 +485,7 @@ const isomapEmbed = (X: number[][], k: number): { scores: number[][]; explained:
     }
   }
   // Ensure the graph is connected (Isomap needs it): bridge separate components
-  // by their nearest cross-pair, so every pixel keeps a geodesic — none dropped.
+  // by their nearest cross-pair, so every pixel keeps a geodesic, none dropped.
   const parent = Array.from({ length: n }, (_, i) => i);
   const find = (i: number): number => {
     while (parent[i] !== i) {

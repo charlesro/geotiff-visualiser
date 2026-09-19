@@ -46,7 +46,7 @@ function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, onSel
   // Validated against the real list: an unknown method would make embed() throw.
   const [method, setMethodState] = usePersistentState<DrMethod>('pcaMethod', 'pca', v => DR_METHODS.some(m => m.id === v));
   const [pending, startTransition] = useTransition();
-  // Switching the DR method re-embeds (slow for the nonlinear ones) — run it as a
+  // Switching the DR method re-embeds (slow for the nonlinear ones), so run it as a
   // transition so the spinner shows and the old chart stays until it's ready.
   const setMethod = (m: DrMethod) => startTransition(() => setMethodState(m));
   const working = !!busy || pending;
@@ -132,7 +132,7 @@ function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, onSel
 
   return (
     // Fragment (not a wrapper div) so the sticky chart's containing block is the
-    // whole step — it stays pinned while the parameters below it scroll.
+    // whole step: it stays pinned while the parameters below it scroll.
     <>
       {/* Chart stays pinned at the top so you keep an eye on it while editing the
           field / plant parameters that scroll underneath it. */}
@@ -299,7 +299,7 @@ function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, onSel
         )}
       </div>
 
-      {/* Chart controls — scroll under the pinned chart. */}
+      {/* Chart controls, scrolling under the pinned chart. */}
       {tab === 'scatter' && (
         <>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px] text-neutral-400">

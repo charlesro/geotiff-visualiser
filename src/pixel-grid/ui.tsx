@@ -6,17 +6,17 @@ import { CROP_COLORS, CROP_PRESETS, TRUTH_TYPES, type FieldParams } from './simu
  * The page's own chrome: the numbered stepper section, the labelled slider, the
  * crop curve editor, the spinner.
  *
- * Deliberately NOT src/components/ui.tsx — that one is the PCA app's, on a
+ * Deliberately NOT src/components/ui.tsx: that one is the PCA app's, on a
  * slate-* palette, and adopting it here would repaint this page. These are kept
  * separate on purpose.
  *
- * IMPORTANT — `Step` renders {open && children}, so a COLLAPSED step unmounts
+ * IMPORTANT: `Step` renders {open && children}, so a COLLAPSED step unmounts
  * its children and every piece of state inside them is lost. Any state a step's
  * controls own must therefore live in a hook called by the page shell, never in
  * a component rendered as a `Step` child.
  */
 
-/** A collapsible numbered step — matches the PCA app's flat stepper sections. */
+/** A collapsible numbered step, matching the PCA app's flat stepper sections. */
 function Step({ n, title, summary, open, enabled = true, onClick, children }: {
   n: number; title: string; summary?: string; open: boolean; enabled?: boolean; onClick: () => void; children: React.ReactNode;
 }) {
@@ -95,7 +95,7 @@ const Slider = ({ label, value, min, max, step, fmt, onChange }: {
 function CropControl({ label, crop, preset, swatchColor, onCrop, onPreset, onColor, align = 'left' }: {
   label: string; crop: FieldParams; preset: string; swatchColor?: string;
   onCrop: (c: FieldParams) => void; onPreset: (id: string) => void;
-  /** Recolour WITHOUT flipping the preset to "custom" — the curve is unchanged. */
+  /** Recolour WITHOUT flipping the preset to "custom": the curve is unchanged. */
   onColor?: (hex: string) => void;
   align?: 'left' | 'right';
 }) {
@@ -207,7 +207,7 @@ const Spinner = ({ className = '' }: { className?: string }) => (
  * On-demand explanation.
  *
  * Deliberately NOT the Explain in src/components/ui.tsx: that one is
- * `pointer-events-none`, which is fine for a bare sentence and fatal here — the
+ * `pointer-events-none`, which is fine for a bare sentence and fatal here: the
  * popovers in this page are the only home for the ESA citation link, and a
  * pointer-events-none popover makes an <a href> permanently unclickable. It is
  * also hover-only, leaving no keyboard or touch path.
@@ -216,7 +216,7 @@ const Spinner = ({ className = '' }: { className?: string }) => (
  * the panel itself is interactive so links inside it work.
  *
  * `align="right"` / `below` exist because the sidebar scroll container computes
- * to overflow-x: auto and will CLIP a popover that overhangs its edge — use them
+ * to overflow-x: auto and will CLIP a popover that overhangs its edge, so use them
  * on anchors near the right edge or the top of the panel.
  */
 export function Explain({ text, children, align = 'left', below = false }: {
@@ -264,7 +264,7 @@ export function Chip({ tone = 'neutral', children }: { tone?: 'neutral' | 'amber
   return <span className={`rounded px-1.5 py-0.5 ${t}`}>{children}</span>;
 }
 
-/** A closed-by-default section. `open` lives in the page shell — Step unmounts. */
+/** A closed-by-default section. `open` lives in the page shell, since Step unmounts. */
 export function Disclosure({ label, open, onToggle, children }: {
   label: string; open: boolean; onToggle: () => void; children: React.ReactNode;
 }) {

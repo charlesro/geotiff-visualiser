@@ -6,7 +6,7 @@ import { EARTH_SEARCH_URL, type SourceConfig } from './s2-grid';
  *
  * Two families, and the difference is the whole point of the page. A `catalog`
  * source has a REAL, time-invariant pixel lattice that is read from product
- * metadata — you align your plots to it. A `custom` source is tasked and agile,
+ * metadata: you align your plots to it. A `custom` source is tasked and agile,
  * so there is no lattice to discover: you impose one and hand the recipe to the
  * provider.
  *
@@ -47,10 +47,10 @@ interface Source {
    * Which lattice an OFFLINE grid must use south of the equator, because the two
    * products are distributed differently and the default rule fits neither:
    *
-   *  'false-northing' — Sentinel-2: southern CRS (327xx). Its false northing,
+   *  'false-northing' is Sentinel-2: southern CRS (327xx). Its false northing,
    *    10 000 000 m, is not a multiple of 60, so anchoring on 0 misses the real
    *    60 m lattice by 20 m. Anchor on the false northing instead.
-   *  'north-crs' — HLS: keeps the NORTHERN CRS (326xx) with negative northings
+   *  'north-crs' is HLS: keeps the NORTHERN CRS (326xx) with negative northings
    *    south of the equator, so the offline grid must be built there too;
    *    building it in the southern CRS misses the 30 m lattice by 10 m.
    *

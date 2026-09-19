@@ -10,7 +10,7 @@ import type { LngLatBounds } from './s2-grid';
 /**
  * Everything drawn ON the Leaflet map, and the two draw tools that put a field
  * there. Kept in one file because the layers' stacking is encoded in the two
- * custom pane z-indices below ('truth' at 300, 'psf' at 460) — they are only
+ * custom pane z-indices below ('truth' at 300, 'psf' at 460): they are only
  * meaningful relative to each other and to Leaflet's own overlay pane, so
  * splitting them apart invites a silent re-ordering.
  *
@@ -181,7 +181,7 @@ function TruthOverlay({ extent, epsg, layout, layoutSig, origin, colors, clipPol
 
 /**
  * The pixel grid drawn as LINES (one MultiLineString) instead of one polygon
- * per cell — O(rows+cols) not O(rows×cells), so even a 0.3 m grid draws fast.
+ * per cell, O(rows+cols) not O(rows×cells), so even a 0.3 m grid draws fast.
  * `box` is the UTM window to draw (the visible part of the field).
  */
 /** Smallest gap between ruled lines, in screen pixels, before they stop being readable. */
@@ -234,12 +234,12 @@ function GridLines({ box, res, epsg, color, weight, onStep }: {
 /**
  * The sensor PSF drawn on the ground as a bold, smooth Gaussian glow (a real
  * exp(−r²/2σ²) footprint rendered to a canvas and placed as a georeferenced
- * ImageOverlay, so it scales with zoom), plus a crisp FWHM ring — so you can see
+ * ImageOverlay, so it scales with zoom), plus a crisp FWHM ring, so you can see
  * how far one ground point's signal actually spreads across the pixel grid.
  */
 function PsfOverlay({ center, sigmaXM, sigmaYM, fwhmXM, fwhmYM, light = false }: {
   center: [number, number]; sigmaXM: number; sigmaYM: number; fwhmXM: number; fwhmYM: number;
-  /** True for a pale basemap — see the blend-mode note below. */
+  /** True for a pale basemap: see the blend-mode note below. */
   light?: boolean;
 }) {
   const map = useMap();
@@ -257,7 +257,7 @@ function PsfOverlay({ center, sigmaXM, sigmaYM, fwhmXM, fwhmYM, light = false }:
     // geographic bounds below, which stretch it by σx and σy independently.
     //
     // Alpha carries a GAMMA rather than tracking the Gaussian linearly. Linear
-    // alpha falls to 32/255 by 2σ and 12/255 by 2.45σ — so the glow looked like
+    // alpha falls to 32/255 by 2σ and 12/255 by 2.45σ, so the glow looked like
     // it stopped at about 1.5σ, while 95% of a point's energy needs 2.45σ. The
     // picture read as a far tighter footprint than the sensor actually has. The
     // gamma only affects how far the haze stays *perceptible*; the two contour
@@ -289,12 +289,12 @@ function PsfOverlay({ center, sigmaXM, sigmaYM, fwhmXM, fwhmYM, light = false }:
   if (sMax <= 0) return null;
 
   // Leaflet has no ellipse, and these contours of an anisotropic Gaussian are
-  // ellipses — so they are traced as polygons rather than faked with circles.
+  // ellipses, so they are traced as polygons rather than faked with circles.
   //
   // TWO rings, because one was misleading. For a 2-D Gaussian the half-maximum
   // radius (FWHM/2 = 1.177σ) encloses exactly HALF the energy: half of every
   // ground point lands outside the inner ring. The outer ring is the 95%
-  // contour at σ·sqrt(-2·ln 0.05) = 2.448σ — the honest extent of the smear.
+  // contour at σ·sqrt(-2·ln 0.05) = 2.448σ, the honest extent of the smear.
   const [lat, lng] = center;
   const mPerLat = 111320, mPerLng = 111320 * Math.cos((lat * Math.PI) / 180);
   const R95 = Math.sqrt(-2 * Math.log(0.05)); // 2.448 σ

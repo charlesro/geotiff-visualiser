@@ -38,7 +38,7 @@ const mixN = (fracs: ArrayLike<number>, colors: string[], pBare = 0, pOffTrial =
   return `#${[r / d, g / d, b / d].map(v => Math.round(v).toString(16).padStart(2, '0')).join('')}`;
 };
 
-/** Fraction-weighted blend of crop A / crop B / bare soil — reduces to a clean
+/** Fraction-weighted blend of crop A / crop B / bare soil, reducing to a clean
  *  A↔B gradient when there's no bare gap. Kept as the two-species spelling of
  *  mixN so the existing map colouring is provably the same blend. */
 const mix3 = (pA: number, pB: number, pBare: number, colA: string, colB: string): string =>
