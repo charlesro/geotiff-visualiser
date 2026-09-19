@@ -55,6 +55,13 @@ export interface S2Grid {
   tile?: string;
   /** True when the origin came from a real product transform (not the rule). */
   anchored: boolean;
+  /**
+   * Every `stride`-th pixel of the lattice was kept, in both axes; 1 (or absent)
+   * means the grid is every pixel of its extent. The cells still carry their
+   * true col/row, so a strided grid names the same ground as the whole one; what
+   * it does not do is tile it.
+   */
+  stride?: number;
 }
 
 export interface BuildResult {
@@ -135,6 +142,16 @@ export interface BuildOptions {
    * too-fine grid can still be drawn where you're looking.
    */
   clip?: LngLatBounds;
+  /**
+   * Keep only every `stride`-th pixel along each axis, spreading a small number
+   * of cells over the WHOLE extent instead of clipping to part of it.
+   *
+   * `clip` and this answer different questions. Clipping asks "what is here",
+   * which is right for a viewport; striding asks "what is this field like",
+   * which is what a sample is for. The cap is checked against the STRIDED count,
+   * so a field too fine to build whole can still be sampled end to end.
+   */
+  stride?: number;
 }
 
 const DEFAULT_MAX_CELLS = 40_000;
@@ -215,7 +232,11 @@ export function buildS2Grid(bounds: LngLatBounds, opts: BuildOptions = {}): Buil
   // guard written as a comparison and arrived at `new Array(NaN)`. An anchor
   // read from catalogue JSON is the way one gets in (see projTransform).
   const empty = !(nx >= 1) || !(ny >= 1);
-  const cellCount = empty ? 0 : nx * ny;
+  // Cells actually produced, which is what the cap is about and what the caller
+  // gets back: a strided grid covers the same ground with fewer of them.
+  const stride = Math.max(1, Math.floor(opts.stride ?? 1));
+  const sx = Math.ceil(nx / stride), sy = Math.ceil(ny / stride);
+  const cellCount = empty ? 0 : sx * sy;
 
   const utmBounds: [number, number, number, number] = [snapMinE, snapMinN, snapMaxE, snapMaxN];
   if (empty || cellCount > maxCells) {
@@ -224,9 +245,16 @@ export function buildS2Grid(bounds: LngLatBounds, opts: BuildOptions = {}): Buil
 
   // Precompute the (nx+1)×(ny+1) corner lattice once, then assemble cells by
   // sharing corners: a quarter of the projection work of doing it per cell.
+  //
+  // Only worth it when the cells TOUCH. A strided grid shares no corners, and
+  // the lattice would project every pixel of the extent to keep one in `stride`
+  // squared of them: 139,104 cells' worth of projection for a 2,500 cell sample,
+  // which is the whole cost the sample exists to avoid. Those project their own
+  // four corners instead.
+  const shareCorners = stride === 1;
   const lng2d: number[][] = [];
   const lat2d: number[][] = [];
-  for (let j = 0; j <= ny; j++) {
+  for (let j = 0; shareCorners && j <= ny; j++) {
     const y = snapMinN + j * res;
     const lngRow: number[] = new Array(nx + 1);
     const latRow: number[] = new Array(nx + 1);
@@ -242,18 +270,16 @@ export function buildS2Grid(bounds: LngLatBounds, opts: BuildOptions = {}): Buil
 
   const cells: S2Cell[] = new Array(cellCount);
   let k = 0;
-  for (let j = 0; j < ny; j++) {
+  for (let j = 0; j < ny; j += stride) {
     const north = snapMinN + j * res;
-    for (let i = 0; i < nx; i++) {
+    for (let i = 0; i < nx; i += stride) {
       const east = snapMinE + i * res;
       // Ring lower-left → lower-right → upper-right → upper-left → close.
-      const ring: LngLat[] = [
-        [lng2d[j][i], lat2d[j][i]],
-        [lng2d[j][i + 1], lat2d[j][i + 1]],
-        [lng2d[j + 1][i + 1], lat2d[j + 1][i + 1]],
-        [lng2d[j + 1][i], lat2d[j + 1][i]],
-        [lng2d[j][i], lat2d[j][i]],
-      ];
+      const corner = (ci: number, cj: number): LngLat => (shareCorners
+        ? [lng2d[cj][ci], lat2d[cj][ci]]
+        : toWgs.forward([snapMinE + ci * res, snapMinN + cj * res]) as LngLat);
+      const ll = corner(i, j), lr = corner(i + 1, j), ur = corner(i + 1, j + 1), ul = corner(i, j + 1);
+      const ring: LngLat[] = [ll, lr, ur, ul, ll];
       cells[k++] = {
         col: Math.round(east / res),
         row: Math.round(north / res),
@@ -273,6 +299,7 @@ export function buildS2Grid(bounds: LngLatBounds, opts: BuildOptions = {}): Buil
       // anchored to a product would be true of it.
       tile: usable ? anchor!.tile : undefined,
       anchored: !!usable,
+      stride,
     },
     cellCount,
     capped: false,

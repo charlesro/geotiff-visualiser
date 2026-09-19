@@ -44,7 +44,7 @@ function PcaStepBody(p: StepProps) {
   /** Which of the two placements is the one currently on the map. */
   const onMap: 0 | 1 = p.compareFrom === null ? 0 : 1;
   const aligned = Math.min(angle, 90 - angle) < 0.05;
-  const { pcaBusy, pcaView, pcaSubsampled, setSelectedPixels, sweep, sweepBusy } = p.pca;
+  const { pcaBusy, pcaView, pcaSubsampled, pcaGrid, setSelectedPixels, sweep, sweepBusy } = p.pca;
   const { pcaRetuneOpen, setPcaRetuneOpen, compareAligned, setCompareAligned, pcaColorBy, setPcaColorBy, pcaShapeBy, setPcaShapeBy } = p;
   const { sweepAligned } = p.pca;
   // The big chart's simulation, for the thumbnail of the size it was computed at.
@@ -160,7 +160,7 @@ function PcaStepBody(p: StepProps) {
               onSelect={setSelectedPixels} busy={pcaBusy} />
             {pcaSubsampled && (
               <p className="text-[11px] leading-snug text-neutral-500">
-                Computed on a representative {fmt(pcaView.sim.total)}-pixel central subsample, as the field is too fine to draw in full.
+                Computed on every {fmt(pcaGrid?.stride ?? 1)}th pixel across the whole field, {fmt(pcaView.sim.total)} in all, as it is too fine to draw every one.
               </p>
             )}
 

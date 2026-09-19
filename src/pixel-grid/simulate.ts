@@ -2478,6 +2478,52 @@ export function simulateField(grid: S2Grid, patternOrigin: [number, number], lay
   };
 }
 
+/**
+ * Every `stride`-th pixel of a simulation, on both axes, in the order
+ * buildS2Grid's `stride` option produces its cells.
+ *
+ * simulateField answers for a whole rectangle, because that is what the PSF
+ * needs to sweep; a strided grid keeps one pixel in `stride` squared of it.
+ * The two orders have to be derived from one statement of the rule or the
+ * chart reads a neighbour's season for every point, so this is that statement,
+ * and the grid builder's loop is written to match it.
+ *
+ * Purity is recomputed over the sample rather than carried across from the
+ * whole: it is the sample's own figure, and the panel says it is a sample.
+ */
+export function strideFieldSim(
+  sim: FieldSim, nx: number, ny: number, stride: number, layout: SimLayout,
+): FieldSim {
+  const step = Math.max(1, Math.floor(stride));
+  if (step === 1) return sim;
+  const keep: number[] = [];
+  for (let j = 0; j < ny; j += step) for (let i = 0; i < nx; i += step) keep.push(j * nx + i);
+  const n = keep.length, nSp = sim.nSpecies;
+  const proportionA = Float32Array.from(keep, k => sim.proportionA[k]);
+  const proportionBare = Float32Array.from(keep, k => sim.proportionBare[k]);
+  const mixed = Uint8Array.from(keep, k => sim.mixed[k]);
+  const offTrial = sim.proportionOffTrial ? Float32Array.from(keep, k => sim.proportionOffTrial![k]) : null;
+  let bySpecies: Float32Array | null = null;
+  if (sim.proportionBySpecies) {
+    bySpecies = new Float32Array(n * nSp);
+    for (let j = 0; j < n; j++) for (let sIdx = 0; sIdx < nSp; sIdx++) bySpecies[j * nSp + sIdx] = sim.proportionBySpecies[keep[j] * nSp + sIdx];
+  }
+  const { coverSpecies } = speciesChannel(layout);
+  const st = coverStats({ mixed, coverSpecies, nSpecies: nSp, offTrial });
+  let sumP = 0;
+  for (let k = 0; k < n; k++) sumP += proportionA[k];
+  return {
+    proportionA, proportionBare, mixed,
+    purePct: st.purePct, pureBare: st.pureBare, total: st.total,
+    meanPropA: n ? sumP / n : 0.5,
+    nSpecies: nSp, pureBySpecies: st.pureBySpecies,
+    meanBySpecies: meanPerSpecies(bySpecies, nSp, n, offTrial),
+    proportionBySpecies: bySpecies,
+    proportionOffTrial: offTrial,
+    pureA: st.pureBySpecies[0], pureB: st.pureBySpecies[1],
+  };
+}
+
 export interface SweepPoint { gsd: number; purePct: number; }
 
 /** Culture (0/1) at a UTM point, for rendering the crisp ground-truth pattern. */

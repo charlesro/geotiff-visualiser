@@ -249,5 +249,44 @@ console.log('\nU4. a ladder panel reports its OWN rung, never the chart it borro
 }
 
 
+console.log('\nU5. a number field is typed into, not fought with');
+{
+  const src = read('src/pixel-grid/steps/controls.tsx');
+  const fn = src.slice(src.indexOf('function NumField'), src.indexOf('function NumField') + 3000);
+  const input = fn.slice(fn.indexOf('<input type="number"'), fn.indexOf('className={FIELD}'));
+
+  // The box shows the DRAFT while one is being typed. Rendering the committed
+  // number straight back is what made the field impossible to empty: clearing
+  // it parses to NaN, nothing is reported, and React puts the old number back.
+  ok('the box renders the draft, falling back to the number the page holds',
+    /value=\{draft \?\? String\(value\)\}/.test(input));
+
+  // Typing must not commit. It used to call onChange on every keystroke, so
+  // "23.5" re-ran the simulation four times, and a design takes several fields.
+  const onChange = input.slice(input.indexOf('onChange='), input.indexOf('onBlur='));
+  ok('typing sets the draft and never calls onChange straight through',
+    /setDraft\(raw\)/.test(onChange) && !/onChange\(/.test(onChange), 'onChange handler');
+
+  // Clamping belongs on commit. Applied per keystroke it rewrote half-typed
+  // numbers: a field with a minimum of 5 turned a leading "2" into "5".
+  const commit = fn.slice(fn.indexOf('const commit ='), fn.indexOf('return ('));
+  ok('the clamp lives in commit, not in the keystroke handler',
+    /Math\.max\(min, Math\.min\(max, v\)\)/.test(commit) && !/Math\.min\(max/.test(onChange));
+  ok('an unparseable or empty draft commits nothing and falls back',
+    /if \(!Number\.isFinite\(v\)\) return;/.test(commit));
+
+  // The three ways an edit finishes, and the one that abandons it.
+  ok('blur commits', /onBlur=\{e => commit\(e\.target\.value\)\}/.test(input));
+  ok('Enter commits', /'Enter'[\s\S]{0,80}commit\(/.test(input));
+  ok('Escape drops the draft without committing',
+    /'Escape'[\s\S]{0,80}setDraft\(null\)/.test(input) &&
+    !/'Escape'[\s\S]{0,80}commit\(/.test(input));
+  ok('a pause commits too, so the spinner arrows act without being tabbed out of',
+    /setTimeout\(\(\) => commit\(raw\), NUM_COMMIT_DELAY\)/.test(onChange));
+  ok('and the pending timer is dropped when the panel goes away',
+    /useEffect\(\(\) => stop, \[\]\)/.test(fn));
+}
+
+
 console.log(bad ? `\n${bad} UI-CONTRACT CHECK(S) FAILED` : '\nALL UI-CONTRACT CHECKS PASSED');
 process.exit(bad ? 1 : 0);

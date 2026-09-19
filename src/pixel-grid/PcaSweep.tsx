@@ -104,7 +104,7 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
    * would show one resolution's cloud and purity as another's.
    */
   activeSim?: (CoverSource & { purePct: number }) | null;
-  /** The big scatter ran on a central subsample of the field, not all of it. */
+  /** The big scatter ran on a sample spread over the field, not all of it. */
   /**
    * Label panels with pure pixel COUNTS instead of percentages. Two placements
    * of one trial cover the same area but not the same number of edge pixels, so
@@ -151,7 +151,7 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
        *
        * The big chart is lent to the panel at the displayed size so the picture
        * cannot change when a thumbnail is picked, but it is a different
-       * measurement: the whole field, sometimes a central subsample, where the
+       * measurement: the whole field, sometimes a spread sample of it, where the
        * rung is the trial's own extent under LADDER_MAX_CELLS. Reading its
        * percentage made a panel worth 49% show 50% for exactly as long as it was
        * the size being displayed, so clicking along the ladder moved the numbers

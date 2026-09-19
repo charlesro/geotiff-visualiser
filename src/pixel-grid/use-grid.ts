@@ -184,7 +184,7 @@ export function useFieldGrid({ aoi, fieldRing }: {
    * simulation overlay and the PCA. `renderGrid` IS `grid` whenever the whole
    * grid fits, which is exactly when the count exists, so those three share
    * this pass; the PCA reuses it when its grid is this same object (it can be a
-   * central subsample instead) and does its own pass otherwise.
+   * sampled grid instead) and does its own pass otherwise.
    * Null when there is no grid or no field: every cell is in.
    */
   const inField = useMemo(() => {

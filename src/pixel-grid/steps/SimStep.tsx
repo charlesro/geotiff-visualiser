@@ -32,7 +32,7 @@ function SimStepBody(p: StepProps) {
    * exists only while step 3 is open, and usePcaSim clears its run the moment
    * the active step is not 'pca'. The value was null on every render but the one
    * between the click and that effect. Past the cap the PCA is not field-wide
-   * either, since its grid is then a central subsample. So the card shows
+   * either, since its grid is then a sample of the field. So the card shows
    * geometry, states no percentage, and the line below says why.
    */
   const fieldSim = p.gridApi.grid ? p.sim.sim : null;

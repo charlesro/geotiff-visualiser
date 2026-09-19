@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { CropControl, Explain, InfoDot } from '../ui';
 import { PATTERNS, cropById, type BlockDesign, type FieldParams, type PatternType } from '../simulate';
 import type { ImportedPlan } from '../imported-types';
@@ -43,11 +43,52 @@ export function LayoutSelect({ pattern, setPattern, selectClass }: {
 }
 
 /** One labelled number input. The block design needs eight of them. */
+/** How long a number field waits after the last keystroke before it commits. */
+const NUM_COMMIT_DELAY = 450;
+
+/**
+ * A number the page acts on, typed rather than fought with.
+ *
+ * It used to render the committed number straight into a controlled input and
+ * clamp on every keystroke, which broke typing in two ways that had nothing to
+ * do with each other.
+ *
+ * The box could not be emptied. Clearing it made `e.target.value` '', which
+ * parses to NaN, so no change was reported and React re-rendered the old number
+ * back into it: select-all-and-type was impossible, and you had to edit digits
+ * in place. Worse, clamping applied to each half-typed value, so a field whose
+ * minimum is 5 rewrote a leading "2" to "5" and the next keystroke landed on
+ * "55". Decimals were the same story: "0.5" passed through "0", which clamped.
+ *
+ * And every keystroke was a commit. "23.5" re-ran the simulation for 2, 23, 23
+ * and 23.5, and a trial's geometry takes several fields, so setting up a design
+ * meant a dozen full recomputes of which one mattered.
+ *
+ * So the field owns the TEXT while it is being edited and the page owns the
+ * number. Anything can be typed, including nothing; the value is parsed and
+ * clamped once, when the typing stops, on blur, or on Enter. Escape puts the
+ * committed number back. The draft is dropped once it lands, so a preset or a
+ * Reset moves the field immediately rather than being swallowed.
+ */
 function NumField({ label, value, onChange, min, max, step = 1, unit, hint, action }: {
   label: string; value: number; onChange: (v: number) => void;
   min: number; max: number; step?: number; unit?: string;
   hint?: React.ReactNode; action?: React.ReactNode;
 }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const timer = useRef<number | null>(null);
+  const stop = () => { if (timer.current !== null) { clearTimeout(timer.current); timer.current = null; } };
+  useEffect(() => stop, []);
+  const commit = (raw: string) => {
+    stop();
+    setDraft(null);
+    const v = step < 1 ? parseFloat(raw) : parseInt(raw, 10);
+    // Unparseable or empty: the field goes back to the number the page still
+    // holds, which is what `draft: null` already shows.
+    if (!Number.isFinite(v)) return;
+    const c = Math.max(min, Math.min(max, v));
+    if (c !== value) onChange(c);
+  };
   return (
     <div>
       <label className={LABEL}>
@@ -56,10 +97,19 @@ function NumField({ label, value, onChange, min, max, step = 1, unit, hint, acti
         {action}
       </label>
       <div className="flex items-center gap-1">
-        <input type="number" min={min} max={max} step={step} value={value}
+        <input type="number" min={min} max={max} step={step} value={draft ?? String(value)}
           onChange={e => {
-            const v = step < 1 ? parseFloat(e.target.value) : parseInt(e.target.value);
-            if (Number.isFinite(v)) onChange(Math.max(min, Math.min(max, v)));
+            const raw = e.target.value;
+            setDraft(raw);
+            // A pause counts as finishing, so the spinner arrows and a pasted
+            // number still act on their own without waiting to be tabbed out of.
+            stop();
+            timer.current = window.setTimeout(() => commit(raw), NUM_COMMIT_DELAY);
+          }}
+          onBlur={e => commit(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter') { commit((e.target as HTMLInputElement).value); (e.target as HTMLInputElement).blur(); }
+            else if (e.key === 'Escape') { stop(); setDraft(null); (e.target as HTMLInputElement).blur(); }
           }}
           className={FIELD} />
         {unit && <span className={UNIT}>{unit}</span>}

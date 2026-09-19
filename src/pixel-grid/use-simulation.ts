@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import proj4 from 'proj4';
 import { crsToProj4Def } from '../lib/geo';
 import {
-  BARE, CROP_COLORS, CROP_PRESETS, PATTERNS, TRUTH_TYPES, bestPhaseOffset, cropById, makeBetaSchedule, simulateField,
+  BARE, CROP_COLORS, strideFieldSim, CROP_PRESETS, PATTERNS, TRUTH_TYPES, bestPhaseOffset, cropById, makeBetaSchedule, simulateField,
   truthAt, utmEnvelope, TMAX, coverStats, speciesChannel, meanPerSpecies,
   blockPlacement, buildBlockPlan, layoutKey,
   type BlockDesign, type FieldParams, type FieldSim, type PatternType, type SensorParams, type SimLayout,
@@ -622,23 +622,29 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
           importedAngle, importedFileAngle, importedBasePlan } = exp;
   const [selectedPixels, setSelectedPixels] = useState<number[]>([]); // pixels picked in the PCA → highlight on map
 
-  // The PCA always runs on the field itself: the full grid when it fits, else a
-  // central subsample of ~PCA_SAMPLE cells, so it works even when the grid is
-  // too fine to render on the map.
+  /**
+   * The PCA runs on the field itself: every pixel when the grid fits, else about
+   * PCA_SAMPLE of them SPREAD over the whole field.
+   *
+   * It used to clip to a central square of that many cells, and called it a
+   * representative subsample. A contiguous window is the least representative
+   * sample a plot trial can be given: at 0.5 m the square is 25 m across, and a
+   * trial of 25 m plots fits one or two of them inside it. The chart then showed
+   * the two species that happened to be in the middle of the field, its purity
+   * was theirs, and lassoing every point on it highlighted one small blob on the
+   * map, which is what gave the game away.
+   *
+   * Striding asks the question a sample is for: what is this field like. Every
+   * kth pixel on both axes lands in every block and every plot, at the cost of
+   * the same number of cells.
+   */
   const pcaGrid = useMemo(() => {
     if (grid) return grid;
-    if (!aoi || !buildOpts || !build?.utmBounds) return null;
-    const [mnE, mnN, mxE, mxN] = build.utmBounds;
-    const half = (build.res * Math.sqrt(PCA_SAMPLE)) / 2; // central square ≈ PCA_SAMPLE cells
-    const cx = (mnE + mxE) / 2, cy = (mnN + mxN) / 2;
-    const sMinE = Math.max(mnE, cx - half), sMaxE = Math.min(mxE, cx + half);
-    const sMinN = Math.max(mnN, cy - half), sMaxN = Math.min(mxN, cy + half);
-    const inv = proj4(crsToProj4Def(`EPSG:${build.epsg}`), 'EPSG:4326');
-    let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
-    for (const [E, N] of [[sMinE, sMinN], [sMaxE, sMinN], [sMaxE, sMaxN], [sMinE, sMaxN]] as [number, number][]) {
-      const [lng, lat] = inv.forward([E, N]); w = Math.min(w, lng); e = Math.max(e, lng); s = Math.min(s, lat); n = Math.max(n, lat);
-    }
-    return buildS2Grid(aoi, { ...buildOpts, clip: [w, s, e, n], maxCells: PCA_SAMPLE * 4 }).grid;
+    if (!aoi || !buildOpts || !build) return null;
+    // Cells the whole field would have, and the step that leaves about
+    // PCA_SAMPLE of them. Ceil, so the count lands under the target, never over.
+    const stride = Math.max(1, Math.ceil(Math.sqrt(build.cellCount / PCA_SAMPLE)));
+    return buildS2Grid(aoi, { ...buildOpts, stride, maxCells: PCA_SAMPLE * 4 }).grid;
   }, [grid, aoi, buildOpts, build]);
 
   /**
@@ -671,7 +677,18 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
       // design would be invisible to the PCA while the map drew it.
       const layoutL: SimLayout = layout;
       const sensorL: SensorParams = { sigmaX, sigmaY, mixThreshold: threshold / 100, offX: psfOffX, offY: psfOffY };
-      const sim = sharedSim ?? simulateField(pcaGrid, patternOrigin.origin, layoutL, sensorL);
+      /**
+       * simulateField answers for the whole rectangle, because the PSF has to
+       * sweep it; a sampled grid then keeps every stride-th pixel of that
+       * answer, in the order buildS2Grid produced its cells (strideFieldSim).
+       * Simulating only the kept pixels is not the same thing: each one's value
+       * comes from the ground around it, which is exactly what would be missing.
+       */
+      const step = pcaGrid.stride ?? 1;
+      const whole = sharedSim ?? simulateField(pcaGrid, patternOrigin.origin, layoutL, sensorL);
+      const [wE0, wN0, wE1, wN1] = pcaGrid.utmBounds;
+      const wNx = Math.round((wE1 - wE0) / pcaGrid.res), wNy = Math.round((wN1 - wN0) / pcaGrid.res);
+      const sim = sharedSim ? whole : strideFieldSim(whole, wNx, wNy, step, layoutL);
       setPcaRun({ grid: pcaGrid, sim, subsampled: pcaGrid !== grid });
       setPcaBusy(false);
     }, 30);
@@ -696,7 +713,7 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
     const keep: number[] = [];
     // The mask use-grid already built, when the PCA ran on that same grid. It
     // does not when the field is too fine to render whole: `pcaGrid` is then a
-    // central subsample of its own, and this walks it once.
+    // sampled grid of its own, and this walks it once.
     const mask = inField && inField.grid === runGrid ? inField.mask : null;
     const test = mask ? null : cellInFieldTest(fieldRing, runGrid.epsg, runGrid.res)!;
     for (let k = 0; k < cells.length; k++) if (mask ? mask[k] : test!(cells[k])) keep.push(k);
@@ -1039,7 +1056,7 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
     };
   }, [activeStep, runSweep]);
 
-  // The chart on screen ran on a central subsample, not the whole field.
+  // The chart on screen ran on a sample spread over the field, not every pixel.
   const pcaSubsampled = !!pcaView?.subsampled;
   const pcaSim = pcaRun?.sim ?? null;
 

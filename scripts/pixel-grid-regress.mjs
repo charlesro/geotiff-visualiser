@@ -62,7 +62,7 @@ const {
 } = await import(path.join(BUILD, 'src/pixel-grid/s2-grid.mjs'));
 const {
   makeTruth, makeBetaSchedule, cultureForCell, aggregate, simulate,
-  simulateField, simulatePatch, bestPhaseOffset, cultureAt, utmEnvelope,
+  simulateField, simulatePatch, bestPhaseOffset, cultureAt, utmEnvelope, strideFieldSim,
   resolutionSweep, truthAt, strideFor, patternCultureUV, coverStats, buildCropMap, speciesChannel, importedCoverAt,
   buildBlockPlan, blockPermutation, blockCoverUV, blockPlots, minFeatureM, layoutKey, blockPlacement,
   importedPixelCovers, aggregateImported,
@@ -2889,6 +2889,59 @@ console.log('\nH13b. a ladder rung is measured in its own placement, not the ado
     purePixels(a1.plan, 2, sensorB, importedTrialExtent(a1.plan, 2, sensorB, UNCLIPPED)) ===
     purePixels(a2.plan, 2, sensorB, importedTrialExtent(a2.plan, 2, sensorB, UNCLIPPED)),
     `shift ${a1.shift.join()}`);
+}
+
+console.log('\nH15. the PCA samples the WHOLE field, in the order its cells come in');
+{
+  // The PCA used to clip to a central square of about 2,500 cells and call it
+  // representative. On a 25 m plot trial at 0.5 m that square is 25 m across:
+  // one or two plots, so the chart showed whichever species sat in the middle.
+  // It strides the whole field instead. Two things have to hold: the sample
+  // reaches everywhere, and its order is the order buildS2Grid emits cells in,
+  // or every point on the chart carries a neighbour's season.
+  const AOI15 = [4.7000, 50.6000, 4.7030, 50.6014];
+  const whole = buildS2Grid(AOI15, { res: 1, zone: 31, south: false, maxCells: 1e7 });
+  const strided = buildS2Grid(AOI15, { res: 1, zone: 31, south: false, stride: 6, maxCells: 1e7 });
+  ok('a strided grid covers the same ground as the whole one',
+    strided.utmBounds.join() === whole.utmBounds.join(), strided.utmBounds.join());
+  ok('... with about 1 cell in stride squared', 
+    Math.abs(strided.grid.cells.length - whole.cellCount / 36) / (whole.cellCount / 36) < 0.25,
+    `${strided.grid.cells.length} of ${whole.cellCount}`);
+  ok('... and it reaches the far corners, which a central window never does',
+    (() => {
+      const c = strided.grid.cells, w = whole.grid.cells;
+      const ext = a => [Math.min(...a.map(x => x.east)), Math.min(...a.map(x => x.north)),
+                        Math.max(...a.map(x => x.east)), Math.max(...a.map(x => x.north))];
+      const [e0, n0, e1, n1] = ext(c), [E0w, N0w, E1w, N1w] = ext(w);
+      // within one stride of the whole grid's own extent on every side
+      return e0 - E0w < 6 && n0 - N0w < 6 && E1w - e1 < 6 && N1w - n1 < 6;
+    })());
+  ok('the cells stay on the real lattice, so a sampled pixel is a true pixel',
+    strided.grid.cells.every(c => c.col === Math.round(c.east / 1) && c.row === Math.round(c.north / 1)));
+  ok('and the grid says how it was sampled', strided.grid.stride === 6 && (whole.grid.stride ?? 1) === 1);
+
+  // The ORDER. strideFieldSim keeps pixels of a whole-rectangle simulation, and
+  // the cells must line up with it one for one: this is the assertion that
+  // fails if either loop is ever rewritten on its own.
+  const design15 = { nSpecies: 4, nBlocks: 4, plotLength: 8, plotWidth: 2, plotAlley: 0.5, blockAlley: 1.5, blocksPerRow: 2, seed: 1 };
+  const base15 = aoiUtmOrigin(AOI15, 32631);
+  const plan15 = buildBlockPlan(design15, blockPlacement(whole.utmBounds, base15, 0, 1, true));
+  const layout15 = { pattern: 'block', width: 2, spacing: 0, rotationDeg: 0, block: plan15 };
+  const sensor15 = { sigmaX: 0.62, sigmaY: 0.62, mixThreshold: 0.9 };
+  const simWhole = simulateField(whole.grid, base15, layout15, sensor15);
+  const [bE0, bN0, bE1, bN1] = whole.utmBounds;
+  const nx15 = Math.round((bE1 - bE0) / 1), ny15 = Math.round((bN1 - bN0) / 1);
+  const sampled = strideFieldSim(simWhole, nx15, ny15, 6, layout15);
+  ok('the sample has one value per cell of the strided grid',
+    sampled.mixed.length === strided.grid.cells.length,
+    `${sampled.mixed.length} values, ${strided.grid.cells.length} cells`);
+  ok('and value k really is the pixel cell k stands on',
+    strided.grid.cells.every((cell, k) => {
+      const i = Math.round((cell.east - bE0) / 1), j = Math.round((cell.north - bN0) / 1);
+      return simWhole.mixed[j * nx15 + i] === sampled.mixed[k];
+    }));
+  ok('a stride of 1 is the simulation itself, untouched',
+    strideFieldSim(simWhole, nx15, ny15, 1, layout15) === simWhole);
 }
 
 console.log('\nH14. the two rules the resolution ladder is built on');
