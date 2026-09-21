@@ -25,10 +25,17 @@ const AXIS_ABBR: Partial<Record<DrMethod, string>> = { pca: 'PC', whitened: 'PC'
 
 const selectClass = 'rounded-md border border-white/10 bg-neutral-900 px-2 py-1 text-xs text-neutral-200 focus:border-sky-500 focus:outline-none';
 
-function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, onSelect, busy, colorBy, setColorBy, shapeBy, setShapeBy }: {
+function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, planted, onSelect, busy, colorBy, setColorBy, shapeBy, setShapeBy }: {
   sim: FieldSim;
   /** % of a pixel one cover must make up to count as pure (step 3's slider), for the purity tab's caption. */
   threshold: number;
+  /**
+   * The crop this design plants, in whole pixels: the denominator the page's
+   * headline purity is taken over (resolving.ts). Passed in so this tab can
+   * RECONCILE its own breakdown with that headline instead of contradicting it.
+   * Null when the layout has no planted area of its own (a periodic pattern).
+   */
+  planted?: number | null;
   /** Colour and shape encodings, owned by the step so the resolution ladder uses the same ones. */
   colorBy: ColorBy; setColorBy: (c: ColorBy) => void;
   shapeBy: ShapeBy; setShapeBy: (s: ShapeBy) => void;
@@ -287,9 +294,25 @@ function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, onSel
                   {purityRow('bare', 'pure bare soil', BARE.color, purity.pureBare, true)}
                   {purityRow('mixed', 'mixed', '#64748b', purity.mixed, true)}
                 </div>
+                {/* TWO denominators appear on this page and they must be
+                    reconciled here, not left to contradict each other.
+
+                    The rows above are a BREAKDOWN of trial pixels: species,
+                    alley and mixed have to add up to the ground measured, so
+                    their shares are over that total. The page's headline share
+                    is over the crop the design PLANTS, because that is a
+                    constant and so moves with the pure count (resolving.ts).
+                    The same 1,096 pixels were reading 62% on the ladder and 47%
+                    here, with nothing on screen to say why. The headline number
+                    leads, and the breakdown's own total follows it. */}
                 <p className="mt-2 text-[11px] text-neutral-500">
-                  <span className="text-neutral-300">{fmt(purity.pureCrop)}</span> of {fmt(purity.total)} trial pixels are one pure species ({pctOf(purity.pureCrop)}).
-                  Pure: at least {threshold}% one cover.
+                  <span className="text-neutral-300">{fmt(purity.pureCrop)}</span>
+                  {planted != null && planted >= 1
+                    ? <> of the {fmt(Math.round(planted))} pixels of crop this design plants are one pure species
+                        (<span className="text-neutral-300">{((100 * purity.pureCrop) / planted).toFixed(0)}%</span>),
+                        which is {pctOf(purity.pureCrop)} of the {fmt(purity.total)} trial pixels once alley and edge are counted.</>
+                    : <> of {fmt(purity.total)} trial pixels are one pure species ({pctOf(purity.pureCrop)}).</>}
+                  {' '}Pure: at least {threshold}% one cover.
                 </p>
               </>
             ) : (

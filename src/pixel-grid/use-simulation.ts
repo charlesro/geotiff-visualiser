@@ -1166,8 +1166,16 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
 
   // The chart on screen ran on a sample spread over the field, not every pixel.
   const pcaSubsampled = !!pcaView?.subsampled;
+  /**
+   * The crop this design plants at the PCA chart's OWN pixel size, so the purity
+   * tab can state the headline share rather than a second, unexplained
+   * percentage of the same pure pixels (they read 62% and 47% side by side).
+   */
+  const pcaPlanted = useMemo(
+    () => (pcaView ? plantedAreaPx(layout, pcaView.res) : null),
+    [pcaView, layoutSig]); // eslint-disable-line react-hooks/exhaustive-deps
   const pcaSim = pcaRun?.sim ?? null;
 
-  return { pcaGrid, pcaSim, pcaBusy, pcaView, pcaSubsampled, selectedPixels, setSelectedPixels,
+  return { pcaGrid, pcaSim, pcaBusy, pcaView, pcaSubsampled, pcaPlanted, selectedPixels, setSelectedPixels,
            selectionGeojson, sweep, sweepAligned, sweepBusy };
 }

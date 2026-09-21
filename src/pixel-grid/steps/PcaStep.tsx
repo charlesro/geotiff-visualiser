@@ -180,7 +180,11 @@ function PcaStepBody(p: StepProps) {
           <p className="text-xs text-neutral-400">Draw an experiment area in step&nbsp;1 first.</p>
         ) : pcaView ? (
           <div className="space-y-3">
+            {/* The planted area this chart's own grid implies, so the purity
+                tab reconciles with the headline instead of quoting a second,
+                unexplained percentage of the same pure pixels. */}
             <PcaSimVisual sim={pcaView.sim} species={speciesD} colors={colors} names={names} magnitude={magnitude} threshold={threshold}
+              planted={p.pca.pcaPlanted}
               colorBy={pcaColorBy} setColorBy={setPcaColorBy} shapeBy={pcaShapeBy} setShapeBy={setPcaShapeBy}
               onSelect={setSelectedPixels} busy={pcaBusy} />
             {pcaSubsampled && (
