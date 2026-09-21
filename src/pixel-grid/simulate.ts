@@ -2718,11 +2718,31 @@ export function shiftSamples(radiusM: number, res: number, n = 4): [number, numb
  * What the design's purity does across those offsets: the best case, the middle
  * and the worst.
  *
- * A geolocation shift is the same measurement as moving the PSF centre by the
- * same distance the other way, so it costs no new geometry: each sample is the
- * ordinary simulation with `offX`/`offY` displaced. Checked against physically
- * moving the trial, the two agree to about 0.2 points, which is the fine grid's
- * own rounding and the floor on anything read from this.
+ * Each sample MOVES THE TRIAL under a fixed lattice, which is the same relative
+ * displacement as the imagery landing somewhere else and keeps the measured
+ * window exactly where it was.
+ *
+ * It used to displace the PSF centre instead, and this comment claimed that was
+ * the same measurement, "to about 0.2 points". That held for the one design it
+ * was checked on and does not hold in general. Moving the kernel REWEIGHTS
+ * whole neighbouring pixels; moving the trial moves the plot edges across the
+ * pixel boundaries, and no reweighting can express that. Measured on a 20 x 40 m
+ * plot design at 3 m over a FIXED window, the two agree exactly at WHOLE
+ * pixels, a whole-pixel shift being a relabelling of the same configuration,
+ * and differ by up to 100 pure pixels in 1,100 in between. That is precisely
+ * the sub-pixel range a geolocation error lives in, and checking only round
+ * offsets is what made the two methods look interchangeable.
+ *
+ * Moving the grid's bounds instead is a third thing and a worse one: it slides
+ * the measurement window over the field as well, so the pixel count changes for
+ * a reason that has nothing to do with the phase. An imported trial carries
+ * absolute coordinates rather than an origin, so for that one the bounds are
+ * what must move, and the window shift is sub-pixel against a whole field.
+ *
+ * Scored with the SAME share the page's headline uses, pure pixels over the
+ * crop the design plants, not over trial pixels. A range in one currency
+ * printed directly beneath a headline in another is how the purity tab came to
+ * read 47% under a ladder reading 62% for the same pure pixels.
  *
  * `spread` is the number worth reading. A design whose purity swings ten points
  * on where the imagery happens to land is a fragile design, however good its
@@ -2736,15 +2756,33 @@ export function geolocationSpread(
   const shifts = shiftSamples(radiusM, grid.res, n);
   if (shifts.length < 2) return null;
   const { coverSpecies, nSpecies } = speciesChannel(layout);
+  const [gw, gs, ge, gn] = grid.utmBounds;
+  /**
+   * The design's own planted area does not move when the lattice does, so every
+   * sample is a share of the same thing. Null for a periodic pattern, which has
+   * no trial distinct from the ground it covers; the crop the simulation can
+   * see is summed instead.
+   */
+  const planted = plantedAreaPx(layout, grid.res);
   const vals: number[] = [];
+  const imported = layout.pattern === 'imported';
   for (const [dx, dy] of shifts) {
-    const shifted: SensorParams = {
-      ...sensor,
-      offX: (sensor.offX ?? 0) + dx / grid.res,
-      offY: (sensor.offY ?? 0) + dy / grid.res,
-    };
-    const sim = simulateField(grid, patternOrigin, layout, shifted);
-    vals.push(coverStats({ mixed: sim.mixed, coverSpecies, nSpecies, offTrial: sim.proportionOffTrial }).purePct);
+    // The trial moves by -d under a fixed lattice, which is the lattice moving
+    // by +d. An imported plan has no origin to move, so there the grid does.
+    const movedGrid = imported
+      ? { ...grid, utmBounds: [gw + dx, gs + dy, ge + dx, gn + dy] as [number, number, number, number] }
+      : grid;
+    const movedOrigin: [number, number] = imported
+      ? patternOrigin
+      : [patternOrigin[0] - dx, patternOrigin[1] - dy];
+    const sim = simulateField(movedGrid, movedOrigin, layout, sensor);
+    const st = coverStats({ mixed: sim.mixed, coverSpecies, nSpecies, offTrial: sim.proportionOffTrial });
+    let denom = planted ?? 0;
+    if (!(denom >= 1) && sim.proportionBySpecies) {
+      denom = 0;
+      for (let k = 0; k < sim.mixed.length; k++) for (let x = 0; x < sim.nSpecies; x++) denom += sim.proportionBySpecies[k * sim.nSpecies + x];
+    }
+    vals.push(denom >= 1 ? Math.max(0, Math.min(100, (100 * st.pureCrop) / denom)) : 0);
   }
   vals.sort((a, b) => a - b);
   const worst = vals[0], best = vals[vals.length - 1];

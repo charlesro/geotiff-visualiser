@@ -2986,11 +2986,17 @@ console.log('\nH16. what the purity is worth when the imagery is not where it sa
   ok('a real design has a purity RANGE, not a figure',
     g && g.worst < g.median && g.median < g.best && g.spread > 1,
     g && `${g.worst.toFixed(1)}% to ${g.best.toFixed(1)}%, spread ${g.spread.toFixed(1)} pts over ${g.samples} offsets`);
+  // In the SAME currency as the range, which is the page's headline share:
+  // pure pixels over the crop the design plants. Compared against purePct, over
+  // trial pixels, this read a nominal outside its own range for no reason but
+  // the units, which is the mistake the purity tab shipped.
   ok('the nominal purity is inside its own range',
     (() => {
       const sim = simulateField(grid, [E16, N16], layout, sensor16);
-      const nominal = coverStats({ mixed: sim.mixed, coverSpecies: speciesChannel(layout).coverSpecies,
-                                   nSpecies: sim.nSpecies, offTrial: sim.proportionOffTrial }).purePct;
+      const st = coverStats({ mixed: sim.mixed, coverSpecies: speciesChannel(layout).coverSpecies,
+                             nSpecies: sim.nSpecies, offTrial: sim.proportionOffTrial });
+      const planted = plantedAreaPx(layout, grid.res);
+      const nominal = (100 * st.pureCrop) / planted;
       return nominal >= g.worst - 1e-9 && nominal <= g.best + 1e-9;
     })());
   ok('past half a pixel it says so, because a bigger number changes nothing',
@@ -3003,9 +3009,12 @@ console.log('\nH16. what the purity is worth when the imagery is not where it sa
   ok('a tighter uncertainty cannot report a WIDER range than a looser one',
     geolocationSpread(grid, [E16, N16], layout, sensor16, 0.3, 4).spread <= g.spread + 1e-9);
 
-  // The method itself: offsetting the PSF centre is the same measurement as
-  // moving the trial the other way. It is what lets a geolocation error be
-  // simulated at all, and it holds to the fine grid's own rounding.
+  // The method itself. Each sample MOVES THE TRIAL under a fixed lattice, which
+  // is the same relative displacement as the imagery landing elsewhere. The two
+  // checks below are a pair: the first pins that this design is one where
+  // offsetting the PSF instead happens to agree, which is why the old
+  // implementation survived; the second pins a design where it does NOT, which
+  // is why it had to go.
   const noSnap = (r) => {
     const box = [E16, N16, E16 + W16, N16 + W16];
     const plan = buildBlockPlan(design16, blockPlacement(box, [E16, N16], 0, r, false));
@@ -3020,8 +3029,41 @@ console.log('\nH16. what the purity is worth when the imagery is not where it sa
   };
   let worstGap = 0;
   for (const m of [0, 0.5, 1, 1.5, 2, 3]) worstGap = Math.max(worstGap, Math.abs(purity16(2, m, 0) - purity16(2, 0, -m)));
-  ok('moving the blur centre IS moving the trial the other way, to the fine grid\'s rounding',
+  ok('on THIS design the blur centre and the trial happen to agree',
     worstGap < 0.5, `worst disagreement ${worstGap.toFixed(3)} points`);
+
+  /**
+   * And on one where they do not, which is the whole reason the sampler moves
+   * the trial rather than the kernel. Same window, same plan, no snapping: only
+   * the sub-pixel phase differs, and the two methods part company by a tenth of
+   * the pure pixels. WHOLE pixels are excluded because the two agree exactly
+   * there, a whole-pixel shift being a relabelling of the same configuration,
+   * and that is what made the disagreement easy to miss: check it only on round
+   * offsets and the methods look interchangeable.
+   */
+  {
+    const res = 3, D = { nSpecies: 5, nBlocks: 4, plotLength: 20, plotWidth: 40, plotAlley: 5, blockAlley: 5, blocksPerRow: 4, seed: 3 };
+    const [q0, r0, q1, r1] = utmEnvelope([1.960737705230713, 48.2027531931173, 1.9634413719177248, 48.20795866241308], 32631);
+    const org = aoiUtmOrigin([1.960737705230713, 48.2027531931173, 1.9634413719177248, 48.20795866241308], 32631);
+    const box = [Math.floor(q0 / res) * res, Math.floor(r0 / res) * res, Math.ceil(q1 / res) * res, Math.ceil(r1 / res) * res];
+    const plan = buildBlockPlan(D, blockPlacement(box, org, 0, res, false));
+    const L = { pattern: 'block', width: 2, spacing: 0, rotationDeg: 0, block: plan };
+    const sen = off => ({ sigmaX: 0.62, sigmaY: 0.62, mixThreshold: 0.9, offX: off, offY: 0 });
+    const pureAt = (off, shift) => {
+      const sim = simulateField({ res, utmBounds: box }, [org[0] + shift, org[1]], L, sen(off));
+      return coverStats({ mixed: sim.mixed, coverSpecies: speciesChannel(L).coverSpecies,
+                          nSpecies: sim.nSpecies, offTrial: sim.proportionOffTrial }).pureCrop;
+    };
+    let gap = 0, ref = 0;
+    for (const px of [0.1, 0.25, 0.75]) {
+      gap = Math.max(gap, Math.abs(pureAt(px, 0) - pureAt(0, -px * res)));
+      ref = Math.max(ref, pureAt(0, -px * res));
+    }
+    ok('but on another they part company by about a tenth of the pure pixels',
+      gap > 0.05 * ref, `${gap} pure pixels of about ${ref}`);
+    ok('while agreeing exactly at WHOLE pixels, which is what hid it',
+      [0, 1, 2].every(px => pureAt(px, 0) === pureAt(0, -px * res)));
+  }
 }
 
 console.log('\nH14. the two rules the resolution ladder is built on');
