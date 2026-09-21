@@ -44,7 +44,7 @@ const REVEAL = {
 };
 
 fs.rmSync(BUILD, { recursive: true, force: true });
-for (const rel of ['src/lib/geo.ts', 'src/lib/projections.ts', 'src/pixel-grid/s2-grid.ts', 'src/pixel-grid/geometry.ts', 'src/pixel-grid/simulate.ts', 'src/pixel-grid/shapefile.ts', 'src/pixel-grid/util.ts', 'src/pixel-grid/pca-field.ts', 'src/pixel-grid/ladder.ts', 'src/pixel-grid/ladder-rung.ts', 'src/pixel-grid/sensors.ts', 'src/pixel-grid/design-import.ts', 'src/pixel-grid/imported-plan.ts', 'src/pixel-grid/imported-rotate.ts', 'src/pixel-grid/field-membership.ts']) {
+for (const rel of ['src/lib/geo.ts', 'src/lib/projections.ts', 'src/pixel-grid/s2-grid.ts', 'src/pixel-grid/geometry.ts', 'src/pixel-grid/simulate.ts', 'src/pixel-grid/resolving.ts', 'src/pixel-grid/shapefile.ts', 'src/pixel-grid/util.ts', 'src/pixel-grid/pca-field.ts', 'src/pixel-grid/ladder.ts', 'src/pixel-grid/ladder-rung.ts', 'src/pixel-grid/sensors.ts', 'src/pixel-grid/design-import.ts', 'src/pixel-grid/imported-plan.ts', 'src/pixel-grid/imported-rotate.ts', 'src/pixel-grid/field-membership.ts']) {
   let ts = fs.readFileSync(path.join(ROOT, rel), 'utf8');
   for (const decl of REVEAL[rel] ?? []) ts = reveal(ts, decl);
   // esbuild only strips types; relative specifiers still need an extension to
@@ -62,9 +62,9 @@ const {
 } = await import(path.join(BUILD, 'src/pixel-grid/s2-grid.mjs'));
 const {
   makeTruth, makeBetaSchedule, cultureForCell, aggregate, simulate,
-  simulateField, simulatePatch, bestPhaseOffset, cultureAt, utmEnvelope, strideFieldSim,
+  simulateField, simulatePatch, bestPhaseOffset, cultureAt, utmEnvelope, strideFieldSim, geolocationSpread, shiftSamples,
   resolutionSweep, truthAt, strideFor, patternCultureUV, coverStats, buildCropMap, speciesChannel, importedCoverAt,
-  buildBlockPlan, blockPermutation, blockCoverUV, blockPlots, minFeatureM, layoutKey, blockPlacement,
+  buildBlockPlan, blockPermutation, blockCoverUV, blockPlots, minFeatureM, layoutKey, blockPlacement, stakeBlockPlan, plantedAreaPx,
   importedPixelCovers, aggregateImported,
   TMAX, DEFAULT_PARS, BARE, OFF_TRIAL, MIXED, MAX_COVER, MAX_PLOTS, PATTERNS, CROP_COLORS, cropById, parsOf,
 } = await import(path.join(BUILD, 'src/pixel-grid/simulate.mjs'));
@@ -79,6 +79,7 @@ const { resolveImportedPlan, varietyKeyOf, convexHull, hullWidth, narrowestFeatu
 const { purePixels, stakeOnGrid, rotateImportedPlan } = await import(path.join(BUILD, 'src/pixel-grid/imported-rotate.mjs'));
 const { varietiesOf: readerVarietiesOf, varietyKeyOf: readerVarietyKeyOf } = await import(path.join(BUILD, 'src/pixel-grid/design-import.mjs'));
 const { pointInPoly, fieldOverlapTest, viewShowsField } = await import(path.join(BUILD, 'src/pixel-grid/geometry.mjs'));
+const { contrastInfo, pureEfficiency, plantedPixels } = await import(path.join(BUILD, 'src/pixel-grid/resolving.mjs'));
 const { cellInFieldTest } = await import(path.join(BUILD, 'src/pixel-grid/field-membership.mjs'));
 const { gridToShapefileZip } = await import(path.join(BUILD, 'src/pixel-grid/shapefile.mjs'));
 
@@ -2944,6 +2945,85 @@ console.log('\nH15. the PCA samples the WHOLE field, in the order its cells come
     strideFieldSim(simWhole, nx15, ny15, 1, layout15) === simWhole);
 }
 
+console.log('\nH16. what the purity is worth when the imagery is not where it says');
+{
+  // Every other number here assumes a perfectly georeferenced product. Real
+  // ones are off by a few metres, which at these pixel sizes is a large part of
+  // one pixel, and the design cannot be moved to compensate because nobody
+  // knows the offset when the trial is planted.
+  const E16 = 600000, N16 = 5600000, W16 = 200;
+  const design16 = { nSpecies: 4, nBlocks: 4, plotLength: 20, plotWidth: 12, plotAlley: 1.5, blockAlley: 1.5, blocksPerRow: 2, seed: 3 };
+  const sensor16 = { sigmaX: 0.62, sigmaY: 0.62, mixThreshold: 0.9 };
+  const at = (r) => {
+    const box = [E16, N16, E16 + W16, N16 + W16];
+    const plan = buildBlockPlan(design16, blockPlacement(box, [E16, N16], 0, r, true));
+    return { grid: { res: r, utmBounds: box }, layout: { pattern: 'block', width: 3, spacing: 0, rotationDeg: 0, block: plan } };
+  };
+
+  // The offsets sampled. Purity is periodic in the offset with the pixel size,
+  // so half a pixel already reaches every distinct case and a bigger figure
+  // must not cost more samples or claim a different answer.
+  ok('no uncertainty means no sweep', shiftSamples(0, 10, 4).length === 1);
+  ok('the window is clamped at half a pixel, since past that the phases repeat',
+    shiftSamples(50, 10, 4).length === shiftSamples(5, 10, 4).length &&
+    Math.max(...shiftSamples(50, 10, 4).map(([x]) => Math.abs(x))) <= 5 + 1e-9);
+  ok('at half a pixel or more the whole unit cell is sampled, corners included',
+    shiftSamples(5, 10, 4).length === 17 && shiftSamples(50, 10, 4).length === 17);
+  // Zero belongs in the set: the imagery MAY land where it says, and without it
+  // an even grid never samples its own centre, so the range could exclude the
+  // nominal purity printed right above it (seen on a real trial: "50%" over
+  // "52% to 57%").
+  ok('and zero is always among the offsets, exactly once',
+    [0.4, 1.5, 5, 50].every(d => shiftSamples(d, 10, 4).filter(([x, y]) => x === 0 && y === 0).length === 1));
+  // Below half a pixel the reachable offsets are a DISC. Sampling the square
+  // around it would report a spread from offsets that cannot occur.
+  ok('below it, every sample sits inside the uncertainty it was asked for',
+    shiftSamples(1.5, 10, 4).every(([x, y]) => Math.hypot(x, y) <= 1.5 + 1e-9) &&
+    shiftSamples(1.5, 10, 4).length < 17);
+
+  const { grid, layout } = at(2);
+  const g = geolocationSpread(grid, [E16, N16], layout, sensor16, 5, 4);
+  ok('a real design has a purity RANGE, not a figure',
+    g && g.worst < g.median && g.median < g.best && g.spread > 1,
+    g && `${g.worst.toFixed(1)}% to ${g.best.toFixed(1)}%, spread ${g.spread.toFixed(1)} pts over ${g.samples} offsets`);
+  ok('the nominal purity is inside its own range',
+    (() => {
+      const sim = simulateField(grid, [E16, N16], layout, sensor16);
+      const nominal = coverStats({ mixed: sim.mixed, coverSpecies: speciesChannel(layout).coverSpecies,
+                                   nSpecies: sim.nSpecies, offTrial: sim.proportionOffTrial }).purePct;
+      return nominal >= g.worst - 1e-9 && nominal <= g.best + 1e-9;
+    })());
+  ok('past half a pixel it says so, because a bigger number changes nothing',
+    geolocationSpread(grid, [E16, N16], layout, sensor16, 5, 4).anyPhase === true &&
+    geolocationSpread(grid, [E16, N16], layout, sensor16, 0.2, 4).anyPhase === false);
+  const wide = geolocationSpread(grid, [E16, N16], layout, sensor16, 50, 4);
+  ok('and 50 m of uncertainty reports the same range as 5 m, at 2 m pixels',
+    Math.abs(wide.best - g.best) < 1e-9 && Math.abs(wide.worst - g.worst) < 1e-9,
+    `${wide.worst.toFixed(1)}-${wide.best.toFixed(1)} vs ${g.worst.toFixed(1)}-${g.best.toFixed(1)}`);
+  ok('a tighter uncertainty cannot report a WIDER range than a looser one',
+    geolocationSpread(grid, [E16, N16], layout, sensor16, 0.3, 4).spread <= g.spread + 1e-9);
+
+  // The method itself: offsetting the PSF centre is the same measurement as
+  // moving the trial the other way. It is what lets a geolocation error be
+  // simulated at all, and it holds to the fine grid's own rounding.
+  const noSnap = (r) => {
+    const box = [E16, N16, E16 + W16, N16 + W16];
+    const plan = buildBlockPlan(design16, blockPlacement(box, [E16, N16], 0, r, false));
+    return { box, layout: { pattern: 'block', width: 3, spacing: 0, rotationDeg: 0, block: plan } };
+  };
+  const purity16 = (r, off, originShift) => {
+    const { box, layout: L } = noSnap(r);
+    const sim = simulateField({ res: r, utmBounds: box }, [E16 + originShift, N16], L,
+      { ...sensor16, offX: off / r, offY: 0 });
+    return coverStats({ mixed: sim.mixed, coverSpecies: speciesChannel(L).coverSpecies,
+                        nSpecies: sim.nSpecies, offTrial: sim.proportionOffTrial }).purePct;
+  };
+  let worstGap = 0;
+  for (const m of [0, 0.5, 1, 1.5, 2, 3]) worstGap = Math.max(worstGap, Math.abs(purity16(2, m, 0) - purity16(2, 0, -m)));
+  ok('moving the blur centre IS moving the trial the other way, to the fine grid\'s rounding',
+    worstGap < 0.5, `worst disagreement ${worstGap.toFixed(3)} points`);
+}
+
 console.log('\nH14. the two rules the resolution ladder is built on');
 {
   // ladderKey and rungCellOrigin (ladder-rung.ts) were both inside a React hook,
@@ -2984,6 +3064,200 @@ console.log('\nH14. the two rules the resolution ladder is built on');
   ok('it is the formula the rest of the ladder reads pixel identities with',
     Array.from({ length: nx * 3 }, (_, k) => String(rungCellOrigin(k, nx, 100, 200, r)))
       .every((v, k) => v === `${100 + (k % nx) * r},${200 + Math.floor(k / nx) * r}`));
+}
+
+
+console.log('\nH18. an aligned block trial is STAKED on its best phase, not corner-snapped');
+{
+  /**
+   * blockPlacement's corner snap is one arbitrary phase. It is a good one only
+   * where plot and alley are whole pixels, and where they are not it landed at
+   * the 13th percentile of the available phases, which made "turned onto the
+   * pixel grid" report WORSE than the same trial left at an angle. stakeBlockPlan
+   * searches instead. The corner snap is one of its candidates, so it can never
+   * do worse than the thing it replaced.
+   */
+  const AOI18 = [1.960737705230713, 48.2027531931173, 1.9634413719177248, 48.20795866241308];
+  const base18 = aoiUtmOrigin(AOI18, 32631);
+  const [q0, r0, q1, r1] = utmEnvelope(AOI18, 32631);
+  const D18 = { nSpecies: 5, nBlocks: 4, plotLength: 40, plotWidth: 40, plotAlley: 5, blockAlley: 5, blocksPerRow: 4, seed: 3 };
+  const SEN18 = { sigmaX: 0.62, sigmaY: 0.62, mixThreshold: 0.95, offX: 0, offY: 0 };
+  const pureAt = (rot, staked, res) => {
+    const w = [Math.floor(q0 / res) * res, Math.floor(r0 / res) * res, Math.ceil(q1 / res) * res, Math.ceil(r1 / res) * res];
+    const place = blockPlacement(w, base18, rot, res, true);
+    const plan = staked ? stakeBlockPlan(D18, place, base18, rot, res, SEN18, w).plan : buildBlockPlan(D18, place);
+    return simulateField({ res, utmBounds: w }, base18,
+      { pattern: 'block', width: 2, spacing: 0, rotationDeg: rot, block: plan }, SEN18).pureCrop;
+  };
+  const LAD18 = [2, 3, 4, 5, 6, 8, 10];
+
+  // (1) Never worse than the corner snap it replaced, at any size.
+  const snapped = LAD18.map(r => pureAt(0, false, r));
+  const staked = LAD18.map(r => pureAt(0, true, r));
+  ok('staking is never worse than the corner snap',
+    staked.every((v, i) => v >= snapped[i]),
+    LAD18.map((r, i) => `${r}m:${snapped[i]}->${staked[i]}`).join(' '));
+  ok('and is strictly better where plot and alley are NOT whole pixels',
+    staked[LAD18.indexOf(6)] > snapped[LAD18.indexOf(6)] && staked[LAD18.indexOf(8)] > snapped[LAD18.indexOf(8)],
+    `6 m ${snapped[LAD18.indexOf(6)]}->${staked[LAD18.indexOf(6)]}, 8 m ${snapped[LAD18.indexOf(8)]}->${staked[LAD18.indexOf(8)]}`);
+
+  // (2) The defect this fixes: aligning onto the pixel grid must never report
+  // worse than leaving the trial at an angle. That is the contradiction the
+  // user saw, and it is the invariant worth pinning.
+  const own = LAD18.map(r => pureAt(10, false, r));
+  ok('aligned beat by the same trial left at 10 degrees: BEFORE the fix',
+    snapped.some((v, i) => v < own[i]),
+    LAD18.map((r, i) => `${r}m ${snapped[i]} vs ${own[i]}`).filter((_, i) => snapped[i] < own[i]).join(', '));
+  ok('and never after it',
+    staked.every((v, i) => v >= own[i]),
+    LAD18.map((r, i) => `${r}m:${staked[i]}/${own[i]}`).join(' '));
+
+  // (3) There is no phase to choose at an angle where plot edges cannot be
+  // parallel to pixel edges, and the search must say so rather than pretend.
+  {
+    const res = 6, w = [Math.floor(q0 / res) * res, Math.floor(r0 / res) * res, Math.ceil(q1 / res) * res, Math.ceil(r1 / res) * res];
+    const at10 = stakeBlockPlan(D18, blockPlacement(w, base18, 10, res, true), base18, 10, res, SEN18, w);
+    ok('a rotated trial is not staked, and is returned untouched',
+      at10.staked === false && at10.offset[0] === 0 && at10.offset[1] === 0);
+  }
+}
+
+console.log('\nH17. the purity pair: pure pixels, over the crop area actually planted');
+{
+  const AOI17 = [1.960737705230713, 48.2027531931173, 1.9634413719177248, 48.20795866241308];
+  const base17 = aoiUtmOrigin(AOI17, 32631);
+  const [a0, b0, a1, b1] = utmEnvelope(AOI17, 32631);
+  const SEN17 = { sigmaX: 0.62, sigmaY: 0.62, mixThreshold: 0.9, offX: 0, offY: 0 };
+  const boxOf = res => [Math.floor(a0 / res) * res, Math.floor(b0 / res) * res, Math.ceil(a1 / res) * res, Math.ceil(b1 / res) * res];
+  const run = (D, res, rot, stake) => {
+    const w = boxOf(res), place = blockPlacement(w, base17, rot, res, true);
+    const plan = stake ? stakeBlockPlan(D, place, base17, rot, res, SEN17, w).plan : buildBlockPlan(D, place);
+    const layout = { pattern: 'block', width: 2, spacing: 0, rotationDeg: rot, block: plan };
+    const sim = simulateField({ res, utmBounds: w }, base17, layout, SEN17);
+    const st = coverStats({ mixed: sim.mixed, coverSpecies: speciesChannel(layout).coverSpecies, nSpecies: sim.nSpecies, offTrial: sim.proportionOffTrial });
+    return { e: pureEfficiency(sim, plantedAreaPx(layout, res)), plantCount: st.pureCrop + st.mixedCount, sim, layout };
+  };
+  const WIDE = { nSpecies: 5, nBlocks: 4, plotLength: 40, plotWidth: 40, plotAlley: 5, blockAlley: 5, blocksPerRow: 4, seed: 3 };
+  const BAD = { nSpecies: 5, nBlocks: 4, plotLength: 30, plotWidth: 30, plotAlley: 10, blockAlley: 10, blocksPerRow: 4, seed: 3 };
+
+  // (1) THE DENOMINATOR IS PLANTED AREA, not the count of pixels that happen to
+  // have crop in them. That count moves whenever the trial moves, so it absorbs
+  // exactly the improvement the reader is looking for. This is what fails if
+  // anyone swaps it back.
+  {
+    const own = run(WIDE, 4, 10, false), ali = run(WIDE, 4, 0, true);
+    const gain = ali.e.pure / own.e.pure - 1;
+    ok('a better placement really does win pure pixels here', gain > 0.02, `+${(100 * gain).toFixed(1)}%`);
+    ok('the planted denominator is IDENTICAL for the two placements',
+      ali.e.planted === own.e.planted,
+      `${own.e.planted.toFixed(1)} vs ${ali.e.planted.toFixed(1)}`);
+    ok('while the plant-pixel COUNT moves an order of magnitude more',
+      Math.abs(ali.plantCount / own.plantCount - 1) > 3 * Math.abs(ali.e.planted / own.e.planted - 1),
+      `planted ${(100 * Math.abs(ali.e.planted / own.e.planted - 1)).toFixed(2)}% vs plant count ${(100 * Math.abs(ali.plantCount / own.plantCount - 1)).toFixed(2)}%`);
+    const shareGain = ali.e.pct / own.e.pct - 1;
+    // The point of the whole exercise: the gain the reader can count on the
+    // panel is the gain the percentage reports.
+    ok('so a gain in pure pixels IS the gain in the share, exactly',
+      Math.abs(shareGain - gain) < 1e-12, `pure +${(100 * gain).toFixed(1)}%, share +${(100 * shareGain).toFixed(1)}%`);
+    const oldShareGain = (ali.e.pure / ali.plantCount) / (own.e.pure / own.plantCount) - 1;
+    ok('where counting plant PIXELS instead would have swallowed most of it',
+      oldShareGain < 0.6 * gain, `it would have shown +${(100 * oldShareGain).toFixed(1)}%`);
+    // The other near-miss: summing crop but skipping half-off-trial pixels. A
+    // turned trial has more of those, so more of its crop was dropped.
+    const skipped = (sim) => {
+      let p = 0; const F = sim.proportionBySpecies, S = sim.nSpecies, off = sim.proportionOffTrial;
+      for (let k = 0; k < sim.mixed.length; k++) { if (off && off[k] > 0.5) continue; for (let x = 0; x < S; x++) p += F[k * S + x]; }
+      return p;
+    };
+    const skewGain = (ali.e.pure / skipped(ali.sim)) / (own.e.pure / skipped(own.sim)) - 1;
+    ok('and skipping half-off-trial pixels would have swallowed a third of it',
+      skewGain < 0.85 * gain, `it would have shown +${(100 * skewGain).toFixed(1)}%`);
+    // Against a constant denominator the better placement simply reads higher,
+    // and a trial that spills outside its field is charged for the crop it loses
+    // rather than having that loss divided out of its own denominator.
+    ok('the better placement simply reads higher',
+      own.e.pct < ali.e.pct, `${own.e.pct.toFixed(1)}% vs ${ali.e.pct.toFixed(1)}%`);
+  }
+
+  // (2) planted pixels ARE the crop area: they must match the plot geometry, up
+  // to the part of the trial the field clips off.
+  {
+    const r = run(WIDE, 4, 0, false);
+    const geom = (WIDE.nSpecies * WIDE.nBlocks * WIDE.plotLength * WIDE.plotWidth) / 16;
+    ok('planted pixels ARE the plot geometry the user typed',
+      r.e.planted === geom, `${r.e.planted.toFixed(1)} vs ${geom.toFixed(1)} from the plot sizes`);
+    ok('and a periodic pattern, which has no trial of its own, falls back to the mixture',
+      plantedAreaPx({ pattern: 'strip-row-2', width: 20, spacing: 0, rotationDeg: 0 }, 4) === null);
+  }
+
+  // (3) The count IS coverStats' pure-crop count, so the card and the Purity tab
+  // can never describe different pixels.
+  for (const [D, res] of [[BAD, 10], [WIDE, 4]]) {
+    const r = run(D, res, 0, false);
+    ok(`the count at ${res} m is the engine's own pure-crop count`, r.e.pure === r.sim.pureCrop, `${r.e.pure}`);
+  }
+
+  // (4) KNOWN AND ACCEPTED, pinned so nobody is surprised and nobody "fixes" it:
+  // purity genuinely is not monotone in pixel size, so the share is not either.
+  // The COUNT beside it is what does not mislead, which is why both are printed.
+  {
+    // At a 95% threshold, which is where this design's inversion lives.
+    const strict = { ...SEN17, mixThreshold: 0.95 };
+    const at = res => {
+      const w = boxOf(res), plan = buildBlockPlan(BAD, blockPlacement(w, base17, 0, res, true));
+      const layout = { pattern: 'block', width: 2, spacing: 0, rotationDeg: 0, block: plan };
+      return pureEfficiency(simulateField({ res, utmBounds: w }, base17, layout, strict), plantedAreaPx(layout, res));
+    };
+    const p8 = at(8), p10 = at(10);
+    ok('the share can rank a finer sensor below a coarser one (documented, not a bug)',
+      p8.pct < p10.pct, `8 m ${p8.pct.toFixed(1)}%, 10 m ${p10.pct.toFixed(1)}%`);
+    ok('while the count does not invert there', p8.pure >= p10.pure, `${p8.pure} then ${p10.pure}`);
+  }
+
+  // (5) A design that plants nothing measurable is n/a, never 0%.
+  {
+    const TINY = { nSpecies: 5, nBlocks: 4, plotLength: 4, plotWidth: 4, plotAlley: 2, blockAlley: 2, blocksPerRow: 4, seed: 3 };
+    const e = run(TINY, 60, 0, false).e;
+    ok('less than one pixel of planted crop reports n/a, not 0%',
+      e.planted < 1 && e.pct === null, `planted ${e.planted.toFixed(3)} px, pct ${e.pct}`);
+  }
+
+  // (6) contrastInfo, the tooltip's threshold-free reading, and the only thing
+  // here that can see two varieties being impossible to tell apart.
+  const conf = alpha => {
+    const S = 3, n = 40, N = 3 * n, sp = new Float32Array(N * S);
+    for (let i = 0; i < n; i++) { sp[i * S] = 1 - alpha; sp[i * S + 1] = alpha; }
+    for (let i = n; i < 2 * n; i++) { sp[i * S] = alpha; sp[i * S + 1] = 1 - alpha; }
+    for (let i = 2 * n; i < N; i++) sp[i * S + 2] = 1;
+    return contrastInfo({ species: sp, bare: new Float32Array(N), offTrial: null, nSpecies: S, count: N });
+  };
+  const sweep17 = [0, 0.2, 0.4, 0.49].map(conf);
+  ok('confounding two varieties drives it down, never up',
+    sweep17.every((v, i) => i === 0 || v.nEff < sweep17[i - 1].nEff), sweep17.map(v => v.nEff.toFixed(3)).join(' > '));
+  ok('and an unestimable comparison is reported dead, not as a number',
+    conf(0.5).dead === true && conf(0.5).nEff === 0);
+
+  // (7) Guards. A plot narrower than a pixel leaves nothing to measure, and that
+  // is exactly the regime where the answer matters, so none of these may throw.
+  const z = new Float32Array(0);
+  for (const [name, args] of [
+    ['no species channel', { species: null, bare: new Float32Array(4), offTrial: null, nSpecies: 5, count: 4 }],
+    ['one variety', { species: new Float32Array(4), bare: new Float32Array(4), offTrial: null, nSpecies: 1, count: 4 }],
+    ['no pixels', { species: z, bare: z, offTrial: null, nSpecies: 5, count: 0 }],
+    ['every pixel off-trial', { species: new Float32Array(10), bare: new Float32Array(2), offTrial: Float32Array.from([1, 1]), nSpecies: 5, count: 2 }],
+  ]) {
+    let out = null, threw = false;
+    try { out = contrastInfo(args); } catch { threw = true; }
+    ok(`${name}: a labelled zero, never a throw`, !threw && out.nEff === 0 && out.dead === true);
+  }
+  ok('plantedPixels with no species channel is 0, never a throw',
+    plantedPixels({ species: null, offTrial: null, nSpecies: 5, count: 4 }) === 0);
+  {
+    const S = 2, N = 40, sp = new Float32Array(N * S);
+    for (let i = 0; i < N; i++) sp[i * S + (i % 2)] = 1;
+    const out = contrastInfo({ species: sp, bare: new Float32Array(N), offTrial: null, nSpecies: S, count: N });
+    ok('an all-zero soil column does not make a no-alley trial unidentifiable', !out.dead && out.nEff > 0, out.nEff.toFixed(2));
+  }
 }
 
 console.log('\n' + (bad ? `${bad} FAILURE(S)` : 'ALL PIXEL-GRID CHECKS PASSED'));

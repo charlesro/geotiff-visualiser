@@ -23,6 +23,14 @@ import type { StepProps } from './props';
  */
 const TIE_POINTS = 2;
 
+/** "every 2nd pixel", "every 3rd", "every 11th": the ordinal English wants. */
+function sampleWord(stride: number): string {
+  if (stride <= 1) return 'every pixel';
+  const t = stride % 10, h = stride % 100;
+  const suffix = t === 1 && h !== 11 ? 'st' : t === 2 && h !== 12 ? 'nd' : t === 3 && h !== 13 ? 'rd' : 'th';
+  return `every ${stride}${suffix} pixel`;
+}
+
 /**
  * Step 4: the PCA over the field, and the same PCA across resolutions.
  *
@@ -51,6 +59,15 @@ function PcaStepBody(p: StepProps) {
   // Right after a click the grid is already the new size while the chart still
   // shows the old one; until the new one lands that thumbnail draws its own rung.
   const activeSim = pcaView && build && Math.abs(pcaView.res - build.res) < 1e-9 ? pcaView.sim : null;
+  /**
+   * What the sample covers, said accurately. The grid is clipped to the trial
+   * whenever the trial is not the whole field, and a field is mostly not the
+   * trial: saying "across the whole field" there is both wrong and the opposite
+   * of reassuring, since spending the sample on the field is exactly the bug
+   * this clipping fixed.
+   */
+  const sampledArea = pcaGrid && build && pcaGrid.utmBounds.join() !== build.utmBounds.join()
+    ? 'the trial' : 'the whole field';
   /**
    * The big chart is only lent to the left-hand ladder while that ladder IS the
    * placement on the map.
@@ -87,8 +104,16 @@ function PcaStepBody(p: StepProps) {
     const rows = sweepAligned.flatMap(al => {
       const own = sweep.find(s => Math.abs(s.res - al.res) < 1e-9);
       if (!own || own.current || own.partial || al.partial) return [];
-      if (!Number.isFinite(own.purePct) || !Number.isFinite(al.purePct) || (own.purePct === 0 && al.purePct === 0)) return [];
-      return [{ res: al.res, drawn: own.purePct, aligned: al.purePct,
+      // Ranked on the SAME quantity the panels print: resolving efficiency.
+      // Ranking on purity was a second defect on top of the mismatch. Purity is
+      // zero for every rung of a plot-scale trial at a 100% threshold, and a
+      // pair of zeroes was read here as "no measurement", so the verdict could
+      // never render and the panel sat on "Comparing the two ladders" forever.
+      // Resolving efficiency is a real number wherever the design is
+      // estimable, and `null` says outright that it is not.
+      if (own.resolvingPct == null || al.resolvingPct == null) return [];
+      if (!Number.isFinite(own.resolvingPct) || !Number.isFinite(al.resolvingPct)) return [];
+      return [{ res: al.res, drawn: own.resolvingPct, aligned: al.resolvingPct,
                 drawnTotal: own.trialCount ?? NaN, alignedTotal: al.trialCount ?? NaN }];
     });
     if (!rows.length) return null;
@@ -160,7 +185,7 @@ function PcaStepBody(p: StepProps) {
               onSelect={setSelectedPixels} busy={pcaBusy} />
             {pcaSubsampled && (
               <p className="text-[11px] leading-snug text-neutral-500">
-                Computed on every {fmt(pcaGrid?.stride ?? 1)}th pixel across the whole field, {fmt(pcaView.sim.total)} in all, as it is too fine to draw every one.
+                Computed on {sampleWord(pcaGrid?.stride ?? 1)} across {sampledArea}, {fmt(pcaView.sim.total)} trial pixels in all, as it is too fine to draw every one.
               </p>
             )}
 
@@ -190,7 +215,7 @@ function PcaStepBody(p: StepProps) {
                       onPick={pickOwn} onPickPair={pickAligned} />
                     {comparison ? (
                       <p className="text-[11px] leading-snug text-neutral-500">
-                        Pure pixels at {comparison.first.res} m: <span className="font-mono text-sky-300">{comparison.first.drawn.toFixed(0)}%</span> at {angleLabel}°
+                        Resolving power at {comparison.first.res} m: <span className="font-mono text-sky-300">{comparison.first.drawn.toFixed(0)}%</span> at {angleLabel}°
                         vs <span className="font-mono text-neutral-300">{comparison.first.aligned.toFixed(0)}%</span> along the pixel rows.
                         {/* The two shares are taken over each placement's own trial pixels, and the
                             placements catch different numbers of edge pixels. Printed only when both
@@ -204,7 +229,7 @@ function PcaStepBody(p: StepProps) {
                             the sizes it was checked over are the ones measured whole. */}
                         {comparison.worse.length === 0
                           ? ` Along the rows is never more than ${TIE_POINTS} points behind, over the ${comparison.sizes} ${comparison.sizes === 1 ? 'size' : 'sizes'} measured whole.`
-                          : ` Along the rows is less pure at ${comparison.worse.join(', ')} m.`}
+                          : ` Along the rows resolves less at ${comparison.worse.join(', ')} m.`}
                       </p>
                     ) : (
                       <p className="text-[11px] leading-snug text-neutral-500">Comparing the two ladders…</p>

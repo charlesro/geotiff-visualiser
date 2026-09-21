@@ -2,11 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import proj4 from 'proj4';
 import { crsToProj4Def } from '../lib/geo';
 import {
-  BARE, CROP_COLORS, strideFieldSim, CROP_PRESETS, PATTERNS, TRUTH_TYPES, bestPhaseOffset, cropById, makeBetaSchedule, simulateField,
+  BARE, CROP_COLORS, strideFieldSim, geolocationSpread, CROP_PRESETS, PATTERNS, TRUTH_TYPES, bestPhaseOffset, cropById, makeBetaSchedule, simulateField,
   truthAt, utmEnvelope, TMAX, coverStats, speciesChannel, meanPerSpecies,
-  blockPlacement, buildBlockPlan, layoutKey,
+  blockPlacement, layoutKey, plantedAreaPx, stakeBlockPlan,
   type BlockDesign, type FieldParams, type FieldSim, type PatternType, type SensorParams, type SimLayout,
 } from './simulate';
+import { contrastInfo, plantedPixels, pureEfficiency } from './resolving';
 import { aoiUtmOrigin, buildS2Grid, type LngLatBounds, type S2Grid } from './s2-grid';
 import { fieldOverlapTest, type Poly } from './geometry';
 import { cellInFieldTest } from './field-membership';
@@ -259,8 +260,17 @@ export function useExperiment({ sigmaX, sigmaY, psfOffX, psfOffY, fieldBounds, f
     if (pattern !== 'block' || !fieldBounds || !fieldOrigin) return undefined;
     // The conversion into the engine's (u,v) frame lives in simulate.ts, not
     // here: a copy inlined in this hook is one the regression suite cannot run.
-    return buildBlockPlan(blockDesign, blockPlacement(fieldBounds, fieldOrigin, rotation, pixelSize, OPTIMIZE_PLACEMENT));
+    // An ALIGNED trial is staked on the sub-pixel offset that actually yields
+    // the most pure pixels, not merely corner-snapped: the snap is one arbitrary
+    // phase and is only a good one where plot and alley are whole pixels (see
+    // stakeBlockPlan). At any other angle there is no phase to choose and this
+    // returns the same plan the snap would have. The sensor is part of it
+    // because the answer depends on the blur, so it is in the deps too.
+    const place = blockPlacement(fieldBounds, fieldOrigin, rotation, pixelSize, OPTIMIZE_PLACEMENT);
+    const sen: SensorParams = { sigmaX, sigmaY, mixThreshold: threshold / 100, offX: psfOffX, offY: psfOffY };
+    return stakeBlockPlan(blockDesign, place, fieldOrigin, rotation, pixelSize, sen, fieldBounds).plan;
   }, [pattern, fieldBounds?.join(','), fieldOrigin?.[0], fieldOrigin?.[1], rotation, pixelSize,
+      sigmaX, sigmaY, psfOffX, psfOffY, threshold,
       blockDesign.nSpecies, blockDesign.nBlocks, blockDesign.plotLength, blockDesign.plotWidth,
       blockDesign.plotAlley, blockDesign.blockAlley, blockDesign.blocksPerRow, blockDesign.seed]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -449,7 +459,7 @@ export function useSimulation({ aoi, gridApi, exp, simOn, fieldOrigin }: {
   /** The field corner, computed once in the shell and shared with useExperiment. */
   fieldOrigin: [number, number] | null;
 }) {
-  const { renderGrid, build, inField } = gridApi;
+  const { renderGrid, build, inField, geoErrM } = gridApi;
   const { pattern, stripWidth, spacing, rotation, threshold, layout, layoutSig, sensor,
           sensorSig, magnitude, alpha, beta, speciesD, colors, cropSig } = exp;
 
@@ -473,6 +483,43 @@ export function useSimulation({ aoi, gridApi, exp, simOn, fieldOrigin }: {
     () => (simOn && renderGrid && patternOrigin ? simulateField(renderGrid, patternOrigin.origin, layout, sensor) : null),
     [simOn, renderGrid, patternOrigin, pattern, stripWidth, spacing, rotation, sensorSig],
   );
+
+  /**
+   * The card's headline pair: pure pixels, and that count as a share of the
+   * pixels that have any crop in them (see resolving.ts). Free: it is read off
+   * the simulation the card already ran, with no second pass.
+   */
+  const resolving = useMemo(
+    () => (sim && renderGrid ? pureEfficiency(sim, plantedAreaPx(layout, renderGrid.res)) : null),
+    [sim, renderGrid, layoutSig]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /**
+   * What the purity would be if the imagery is not exactly where it says it is.
+   *
+   * Every other number on this page assumes the product's pixels land on their
+   * nominal lattice. Real ones are offset by a few metres, which at these pixel
+   * sizes is a large part of one pixel, and the design cannot be moved to
+   * compensate because the offset is not known when the trial is planted. So
+   * the useful answer is a range rather than a figure: a design whose purity
+   * swings ten points on where the imagery happens to fall is fragile, however
+   * good the number it reports.
+   *
+   * On an IDLE pass, never in the render: it is one full simulation per sample,
+   * 200 ms to 800 ms for sixteen of them, and it qualifies a number rather than
+   * producing one. Until it lands the card shows the nominal purity alone.
+   */
+  const [geoSpread, setGeoSpread] = useState<ReturnType<typeof geolocationSpread>>(null);
+  useEffect(() => {
+    if (!simOn || !renderGrid || !patternOrigin || !(geoErrM > 0)) { setGeoSpread(null); return; }
+    let cancelled = false;
+    const run = () => {
+      if (cancelled) return;
+      setGeoSpread(geolocationSpread(renderGrid, patternOrigin.origin, layout, sensor, geoErrM, 4));
+    };
+    const w = window as Window & { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number };
+    const id = w.requestIdleCallback ? w.requestIdleCallback(run, { timeout: 2000 }) : window.setTimeout(run, 400);
+    return () => { cancelled = true; if (!w.requestIdleCallback) clearTimeout(id); };
+  }, [simOn, renderGrid, patternOrigin, layoutSig, sensorSig, geoErrM]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
    * The season every species records, plus what one mixed pixel records.
@@ -589,7 +636,7 @@ export function useSimulation({ aoi, gridApi, exp, simOn, fieldOrigin }: {
       ? `${bd.nSpecies} species × ${bd.nBlocks} blocks · ${bd.plotLength} × ${bd.plotWidth} m plots`
       : `${speciesD[0]?.name} × ${speciesD[1]?.name} · ${stripWidth} m ${PATTERNS.find(p => p.id === pattern)?.label.toLowerCase() ?? ''}`;
 
-  return { patternOrigin, sim, ndviSeries, simStyle, fieldOutlineStyle, simGeojson, simSummary };
+  return { patternOrigin, sim, resolving, geoSpread, ndviSeries, simStyle, fieldOutlineStyle, simGeojson, simSummary };
 }
 
 /** The PCA, always over the FIELD and never the viewport, plus the resolution sweep. */
@@ -640,12 +687,46 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
    */
   const pcaGrid = useMemo(() => {
     if (grid) return grid;
-    if (!aoi || !buildOpts || !build) return null;
-    // Cells the whole field would have, and the step that leaves about
-    // PCA_SAMPLE of them. Ceil, so the count lands under the target, never over.
-    const stride = Math.max(1, Math.ceil(Math.sqrt(build.cellCount / PCA_SAMPLE)));
-    return buildS2Grid(aoi, { ...buildOpts, stride, maxCells: PCA_SAMPLE * 4 }).grid;
-  }, [grid, aoi, buildOpts, build]);
+    if (!aoi || !buildOpts || !build?.utmBounds || !build.epsg) return null;
+    const res = build.res;
+    /**
+     * Sampled over the TRIAL, not over the field, whenever the two differ.
+     *
+     * A field is mostly not the trial. Spreading the sample across the field
+     * puts the trial's share of it on the trial, and that share can be tiny: a
+     * 20-plot variety trial of 403 m2 on a 6.2 ha field is 0.65% of it, so a
+     * 2,000 pixel sample of the field landed 12 pixels on the trial and the
+     * chart was fitted on twelve points. Clipping to the trial first spends
+     * every sample where the question is.
+     *
+     * This is the extent a ladder rung already uses, from the same functions,
+     * so the big chart and the rung at that size describe the same ground. A
+     * periodic layout has no trial to clip to: it fills the field, and the
+     * field extent is already the right one.
+     */
+    const sensorL: SensorParams = { sigmaX, sigmaY, mixThreshold: threshold / 100, offX: psfOffX, offY: psfOffY };
+    let box: [number, number, number, number] = build.utmBounds;
+    if (layout.pattern === 'imported' && layout.imported) {
+      box = importedTrialExtent(layout.imported, res, sensorL, box);
+    } else if (layout.pattern === 'block' && layout.block && patternOrigin) {
+      box = trialExtent(layout.block, patternOrigin.origin, layout.rotationDeg, res, sensorL, box);
+    }
+    const nx = Math.max(1, Math.round((box[2] - box[0]) / res));
+    const ny = Math.max(1, Math.round((box[3] - box[1]) / res));
+    // The step that leaves about PCA_SAMPLE cells of THAT box. Ceil, so the
+    // count lands under the target rather than over it.
+    const stride = Math.max(1, Math.ceil(Math.sqrt((nx * ny) / PCA_SAMPLE)));
+    const sameAsField = box === build.utmBounds;
+    if (sameAsField) return buildS2Grid(aoi, { ...buildOpts, stride, maxCells: PCA_SAMPLE * 4 }).grid;
+    // buildS2Grid clips in WGS84, so the trial's box goes back through the CRS.
+    const inv = proj4(crsToProj4Def(`EPSG:${build.epsg}`), 'EPSG:4326');
+    let w = Infinity, so = Infinity, e = -Infinity, n = -Infinity;
+    for (const [E, N] of [[box[0], box[1]], [box[2], box[1]], [box[2], box[3]], [box[0], box[3]]] as [number, number][]) {
+      const [lng, lat] = inv.forward([E, N]);
+      w = Math.min(w, lng); e = Math.max(e, lng); so = Math.min(so, lat); n = Math.max(n, lat);
+    }
+    return buildS2Grid(aoi, { ...buildOpts, clip: [w, so, e, n], stride, maxCells: PCA_SAMPLE * 4 }).grid;
+  }, [grid, aoi, buildOpts, build, layoutSig, sensorSig, patternOrigin]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
    * The PCA's simulation TOGETHER with the grid it describes.
@@ -744,7 +825,7 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
     const sim: FieldSim & { pixelIds: Float64Array } = {
       pixelIds: idsOf(keep),
       proportionA: pA, proportionBare: pBare, mixed,
-      purePct: st.purePct, pureBare: st.pureBare, total: st.total, meanPropA: n ? sumP / n : 0.5,
+      purePct: st.purePct, pureCrop: st.pureCrop, pureBare: st.pureBare, total: st.total, meanPropA: n ? sumP / n : 0.5,
       nSpecies: nSp, pureBySpecies: st.pureBySpecies,
       meanBySpecies: meanPerSpecies(sp, nSp, n, off),
       proportionBySpecies: sp,
@@ -888,7 +969,13 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
        * instead, so borrowing it made each thumbnail describe a trial that
        * picking it would not show.
        */
-      const plan = buildBlockPlan(blockDesign, blockPlacement([e0, n0, e1, n1], base, rotationDeg, r, OPTIMIZE_PLACEMENT));
+      // Staked on THIS rung's lattice, the best the trial could be at this size,
+      // which is what the aligned ladder claims to show. Corner-snapping alone
+      // put it at the 13th percentile of the available phases at 6 m and made
+      // "turned onto the pixel grid" report worse than the same trial left at
+      // 10 degrees. No phase to choose at any other angle, where it is a no-op.
+      const plan = stakeBlockPlan(blockDesign, blockPlacement([e0, n0, e1, n1], base, rotationDeg, r, OPTIMIZE_PLACEMENT),
+        [ox, oy], rotationDeg, r, sensorL, [e0, n0, e1, n1]).plan;
       layoutL = { ...layoutL, block: plan };
       // Only the pixels that see the trial, which a rung reproduces exactly
       // (see trialExtent); the rest of the field was most of a rung's cost.
@@ -934,10 +1021,31 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
       pixelIds[j] = pixelId(Math.round(cE / r), Math.round(cN / r));
     });
     const st = coverStats({ mixed, coverSpecies: speciesChannel(layoutL).coverSpecies, nSpecies: nSp, offTrial: proportionOffTrial });
+    /**
+     * The rung's headline pair: its own pure pixels, over its own PLANTED AREA
+     * in pixels. Read off the mixture this rung already computed, with no second
+     * simulation. Counting the pixels that merely HAVE crop in them instead
+     * moves the denominator whenever the trial moves, which hid a 10.2% gain in
+     * pure pixels behind a one-point change in the share. See resolving.ts.
+     */
+    // The design's own planted area, a constant for this design and pixel size,
+    // so a rung that wins pure pixels reports exactly that gain in its share.
+    // A rung measured on a CENTRAL SAMPLE (`partial`) holds only a fraction of
+    // the trial, so it is divided by the crop in the sample instead: the whole
+    // design's area under a sample's pure count made the 0.5 m rung read 12%
+    // beneath a 2 m rung reading 77%. The same rule as pureEfficiency's.
+    const measured = plantedPixels({ species: proportionBySpecies, offTrial: proportionOffTrial, nSpecies: nSp, count: n });
+    const geo = plantedAreaPx(layoutL, r);
+    const planted = geo != null && geo > 0 && measured >= 0.8 * geo ? geo : measured;
+    const resolvingPct = planted >= 1 ? Math.max(0, Math.min(100, (100 * st.pureCrop) / planted)) : null;
+    // Threshold-free, for the tooltip: what the mixed pixels are worth unmixed,
+    // and whether two varieties can be told apart at all, which no count sees.
+    const under = contrastInfo({ species: proportionBySpecies, bare: proportionBare, offTrial: proportionOffTrial, nSpecies: nSp, count: n });
     // `mixed` travels with the rung, not just its tally: the thumbnail colours
     // each dot pure or mixed off these same bytes, so it cannot paint a pixel
     // green that the purity printed under it counted as mixed.
     return { res: r, proportionA, proportionBare, mixed, purePct: st.purePct, pureCount: st.pureCrop, trialCount: st.total,
+             resolvingPct, nEff: under.nEff, contrastDead: under.dead, plantCount: Math.round(planted),
              proportionBySpecies, nSpecies: nSp, proportionOffTrial, pixelIds, partial };
     // ladderSig covers the whole design, block parameters included; blockDesign's
     // fields are all in it.

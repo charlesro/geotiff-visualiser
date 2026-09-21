@@ -66,6 +66,19 @@ export function useFieldGrid({ aoi, fieldRing }: {
   // fractions a pixel sees, so it belongs in the simulation, not just the drawing.
   const [psfOffX, setPsfOffX] = usePersistentState('psfOffX', 0, inRange(-2, 2));
   const [psfOffY, setPsfOffY] = usePersistentState('psfOffY', 0, inRange(-2, 2));
+  /**
+   * How far the product's pixels may sit from where their coordinates say, in
+   * metres. A property of the IMAGERY, not of the optics, which is why it is
+   * here beside the source rather than with the design.
+   *
+   * Sentinel-2 is specified to about 12.5 m and, since the reference-image
+   * refinement, is usually a few metres; Landsat is comparable. At the pixel
+   * sizes this page is used at, that is a large part of one pixel, and it is
+   * not knowable when the trial is planted. The default is the order of a
+   * refined Sentinel-2 product rather than zero, because zero is the assumption
+   * every other number here already makes silently.
+   */
+  const [geoErrM, setGeoErrM] = usePersistentState('geoErrM', 5, inRange(0, 50));
 
   const source = SOURCES.find(s => s.id === sourceId)!;
 
@@ -331,7 +344,7 @@ export function useFieldGrid({ aoi, fieldRing }: {
 
   return { sourceId, setSourceId, source, gsd, setGsd, customAnchor, setCustomAnchor,
            sigmaX, setSigmaX, sigmaY, setSigmaY,
-           psfOffX, setPsfOffX, psfOffY, setPsfOffY, psfOffXM, psfOffYM,
+           psfOffX, setPsfOffX, psfOffY, setPsfOffY, psfOffXM, psfOffYM, geoErrM, setGeoErrM,
            grids, gridState, selectedGridKey, setSelectedGridKey, selectedGrid,
            buildOpts, build, grid, renderGrid, clippedView, geojson, fieldGeojson, inField, lineBox,
            viewBounds, setViewBounds, pxSize, psfSigmaM, psfFwhmM, psfCenter,

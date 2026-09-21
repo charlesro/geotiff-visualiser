@@ -199,7 +199,7 @@ console.log('\nU3. the aligned-vs-drawn verdict reads the number it prints');
   // counts while the paragraph printed percentages, and on its first fix, where
   // it read counts and printed counts but the reader had asked for percentages.
   // The rule is not WHICH quantity, it is that they are the same quantity.
-  const para = src.slice(src.indexOf('Pure pixels at {'));
+  const para = src.slice(src.indexOf('Resolving power at {'));
   const sentence = para.slice(0, para.indexOf('</p>'));
   const ranked = [...new Set([...pred.matchAll(/x\.(\w+)/g)].map(m => m[1]))];
   const shown = new Set([...sentence.matchAll(/comparison\.first\.(\w+)/g)].map(m => m[1]));
@@ -219,8 +219,17 @@ console.log('\nU3. the aligned-vs-drawn verdict reads the number it prints');
   ok('both trial totals reach the sentence, and only together',
     shown.has('drawnTotal') && shown.has('alignedTotal') &&
     /Number\.isFinite\(comparison\.first\.drawnTotal\) && Number\.isFinite\(comparison\.first\.alignedTotal\)/.test(sentence));
+  const sweepSrc = fs.readFileSync(path.join(ROOT, 'src/pixel-grid/PcaSweep.tsx'), 'utf8');
   ok('and the ladder panels are labelled with the same quantity, a percentage',
-    /c\.purePct\.toFixed\(0\)\}%/.test(fs.readFileSync(path.join(ROOT, 'src/pixel-grid/PcaSweep.tsx'), 'utf8')));
+    /c\.resolvingPct\.toFixed\(0\)\}%/.test(sweepSrc));
+  // The share is knowingly not monotone in pixel size (the same pure count over
+  // a shrinking plant count reads 4% then 7%), so the COUNT beside it is what
+  // does not mislead. It is not optional decoration.
+  ok('and the pure-pixel count is printed beside it, never the share alone',
+    /fmt\(c\.pureCount\)\}px/.test(sweepSrc));
+  // A variety pair that cannot be told apart at all is not a small percentage.
+  ok('and a collapsed contrast is named, not rounded to 0%',
+    /resolvingPct === null \? 'n\/a'/.test(sweepSrc));
 }
 
 

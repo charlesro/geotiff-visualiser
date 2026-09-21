@@ -986,6 +986,134 @@ export function buildBlockPlan(
 }
 
 /**
+ * The crop area a design PLANTS, in whole pixels. Null when the layout has no
+ * separate notion of planted area from the ground it sits on.
+ *
+ * This is the denominator the purity share is taken over, and it is deliberately
+ * the geometry the user typed rather than anything measured off the simulation.
+ * A measured denominator moves when the trial moves, and then a placement that
+ * wins 10.2% more pure pixels reports a 4.5% better share, because part of the
+ * gain was "more of the trial fits inside the field" and the denominator
+ * quietly absorbed it. Against a constant, the share is exactly proportional to
+ * the pure count, so what the reader can count on the panel is what the
+ * percentage says, and a trial hanging out of its field is charged for it
+ * instead of being excused.
+ *
+ * A periodic pattern has no trial distinct from the field it covers, so it has
+ * no answer here and the caller falls back to summing the crop it can see.
+ */
+export function plantedAreaPx(layout: SimLayout, res: number): number | null {
+  if (!(res > 0)) return null;
+  const px = res * res;
+  const block = layout.pattern === 'block' ? layout.block : null;
+  if (block) return (block.nPlots * block.design.plotLength * block.design.plotWidth) / px;
+  const imported = layout.pattern === 'imported' ? layout.imported : null;
+  if (imported) {
+    // Shoelace over every ring of every plot. Holes and outer rings wind
+    // opposite ways in both shapefiles and GeoJSON, so they subtract, and the
+    // absolute value is taken per PLOT rather than per ring.
+    let area = 0;
+    for (const plot of imported.plots) {
+      let a = 0;
+      for (const ring of plot.rings) {
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) a += (ring[j][0] + ring[i][0]) * (ring[j][1] - ring[i][1]);
+      }
+      area += Math.abs(a / 2);
+    }
+    return area / px;
+  }
+  return null;
+}
+
+/**
+ * Pixel-simulations the phase search may spend, and the largest window a
+ * candidate is scored over.
+ *
+ * The window is the rung's OWN extent, not a small representative patch. Scored
+ * on a couple of block pitches instead, the search picked a phase that was best
+ * in the patch and WORSE over the trial: at 8 m it returned 108 pure pixels
+ * where the plain corner snap gave 119. A search must optimise the number that
+ * will be reported, or it can lose to doing nothing.
+ *
+ * The budget is where it is by measurement, not by feel. At 60,000 the search
+ * collapses to 2 x 2 on a large fine-pixel trial and finds nothing; at 130,000
+ * every rung of the measured ladder improves on the corner snap; at 260,000 the
+ * answers are identical and it costs 40% more. Worst case is bounded by
+ * PHASE_MAX_CELLS and PHASE_MAX_N together, about 130 ms.
+ */
+const PHASE_BUDGET = 130_000;
+const PHASE_MAX_CELLS = 8_000;
+const PHASE_MAX_N = 6;
+
+/**
+ * Put an ALIGNED block trial on the sub-pixel offset that actually yields the
+ * most pure pixels, rather than assuming its corner belongs on a pixel corner.
+ *
+ * buildBlockPlan's corner snap used to be described as "the whole phase
+ * optimisation for a block design". It is not an optimisation, it is one
+ * arbitrary phase, and it is only a good one when the plot and alley happen to
+ * be whole pixels. Measured on a 40 m plot / 5 m alley design:
+ *
+ *   5 m pixels  plot 8 px, alley 1 px      snap lands at the 94th percentile
+ *   6 m pixels  plot 6.67 px, alley 0.83   snap lands at the 13th percentile
+ *
+ * At 6 m that cost the aligned ladder 29.9% where the best phase gives 38.1%,
+ * so "turned onto the pixel grid" reported WORSE than the same trial left at
+ * 10 degrees (33.6%), and the comparison contradicted itself. An imported trial
+ * never had this problem because stakeOnGrid already searches; this is the same
+ * treatment for a generated one.
+ *
+ * Only for an aligned trial: `place.snap` is 0 at any other angle (plot edges
+ * cannot be parallel to pixel edges), and there is then no phase to choose.
+ * Scored on the pure-pixel COUNT, the quantity the page reports. The corner
+ * snap is itself one of the candidates, so this can never return less than it.
+ */
+export function stakeBlockPlan(
+  design: BlockDesign,
+  place: { centerU: number; centerV: number; snap?: number; phaseU?: number; phaseV?: number },
+  origin: [number, number],
+  rotationDeg: number,
+  res: number,
+  sensor: SensorParams,
+  extent: [number, number, number, number],
+): { plan: BlockPlan; offset: [number, number]; staked: boolean } {
+  const base = buildBlockPlan(design, place);
+  const snap = place.snap && place.snap > 0 ? place.snap : 0;
+  if (!(snap > 0) || !(res > 0)) return { plan: base, offset: [0, 0], staked: false };
+
+  // The rung's own extent, centred and capped only if it is very large.
+  const [e0, n0, e1, n1] = extent;
+  let nx = Math.max(1, Math.round((e1 - e0) / res)), ny = Math.max(1, Math.round((n1 - n0) / res));
+  if (!Number.isFinite(nx) || !Number.isFinite(ny)) return { plan: base, offset: [0, 0], staked: false };
+  if (nx * ny > PHASE_MAX_CELLS) {
+    const k = Math.sqrt(PHASE_MAX_CELLS / (nx * ny));
+    nx = Math.max(1, Math.floor(nx * k)); ny = Math.max(1, Math.floor(ny * k));
+  }
+  const cx = (e0 + e1) / 2, cy = (n0 + n1) / 2;
+  const w0 = Math.floor((cx - (nx * res) / 2) / res) * res;
+  const v0 = Math.floor((cy - (ny * res) / 2) / res) * res;
+  const box = { res, utmBounds: [w0, v0, w0 + nx * res, v0 + ny * res] } as unknown as S2Grid;
+
+  // Candidates per axis, from the same budget rule stakeOnGrid uses: the work is
+  // the window, so the grid is as fine as the budget allows and no finer.
+  const n = Math.max(1, Math.min(PHASE_MAX_N, Math.floor(Math.sqrt(PHASE_BUDGET / Math.max(1, nx * ny)))));
+  if (n < 2) return { plan: base, offset: [0, 0], staked: false };
+
+  let best = base, bestScore = -1, bestOff: [number, number] = [0, 0];
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      const du = (i * snap) / n, dv = (j * snap) / n;
+      // Shifting u0/v0 IS the phase: the plan's geometry is unchanged and only
+      // where it sits against the lattice moves, so no plan is rebuilt.
+      const cand: BlockPlan = { ...base, u0: base.u0 + du, v0: base.v0 + dv };
+      const sim = simulateField(box, origin, { pattern: 'block', width: 2, spacing: 0, rotationDeg, block: cand }, sensor);
+      if (sim.pureCrop > bestScore) { bestScore = sim.pureCrop; best = cand; bestOff = [du, dv]; }
+    }
+  }
+  return { plan: best, offset: bestOff, staked: true };
+}
+
+/**
  * What covers a point: a PLOT id, bare alley, or ground outside the trial.
  * O(1) and allocation-free, because buildCropMap calls it once per fine cell,
  * millions of times. It must never loop over plots.
@@ -2316,6 +2444,8 @@ export interface FieldSim {
   proportionBare: Float32Array; // fraction of bare-soil gap in the pixel
   mixed: Uint8Array;            // MIXED, a sentinel, else the dominant cover id
   purePct: number;              // % of TRIAL pixels that are a pure single crop
+  /** The count behind purePct: pure single-crop pixels. */
+  pureCrop: number;
   pureBare: number;
   total: number;
   meanPropA: number;
@@ -2468,7 +2598,7 @@ export function simulateField(grid: S2Grid, patternOrigin: [number, number], lay
   const st = coverStats({ mixed, coverSpecies, nSpecies, offTrial: agg.cropMapProportionOffTrial });
   return {
     proportionA, proportionBare, mixed,
-    purePct: st.purePct, pureBare: st.pureBare,
+    purePct: st.purePct, pureCrop: st.pureCrop, pureBare: st.pureBare,
     total: st.total, meanPropA: mixed.length ? sumP / mixed.length : 0.5,
     nSpecies, pureBySpecies: st.pureBySpecies,
     meanBySpecies: meanPerSpecies(agg.cropMapSpecies, nSpecies, mixed.length, agg.cropMapProportionOffTrial),
@@ -2514,7 +2644,7 @@ export function strideFieldSim(
   for (let k = 0; k < n; k++) sumP += proportionA[k];
   return {
     proportionA, proportionBare, mixed,
-    purePct: st.purePct, pureBare: st.pureBare, total: st.total,
+    purePct: st.purePct, pureCrop: st.pureCrop, pureBare: st.pureBare, total: st.total,
     meanPropA: n ? sumP / n : 0.5,
     nSpecies: nSp, pureBySpecies: st.pureBySpecies,
     meanBySpecies: meanPerSpecies(bySpecies, nSp, n, offTrial),
@@ -2522,6 +2652,105 @@ export function strideFieldSim(
     proportionOffTrial: offTrial,
     pureA: st.pureBySpecies[0], pureB: st.pureBySpecies[1],
   };
+}
+
+/**
+ * Where a geolocation error can put the imagery, as sub-pixel offsets to measure
+ * the design at.
+ *
+ * A product's pixels are not exactly where its coordinates say: Sentinel-2 is
+ * good to a few metres, which at these pixel sizes is a large part of one pixel.
+ * The design cannot be moved to compensate, because nobody knows the offset when
+ * the trial is planted, so the honest question is not "how pure is this" but
+ * "how pure is this whatever the offset turns out to be".
+ *
+ * Purity is PERIODIC in the offset with the pixel size: shifting the ground by
+ * exactly one pixel reproduces the same geometry against the lattice. So one
+ * unit cell holds every distinct case, and an error of half a pixel or more can
+ * already land anywhere in it. That is why the window is clamped to res/2: past
+ * that the samples would repeat themselves and cost time saying nothing new.
+ */
+export interface GeoSpreadInfo {
+  best: number; median: number; worst: number;
+  /** best minus worst, in percentage points: how much of the purity is luck. */
+  spread: number;
+  samples: number;
+  /** The uncertainty it was measured over, so a caller cannot mislabel it. */
+  radiusM: number;
+  /**
+   * True when the uncertainty reaches half a pixel or more, so the offset can
+   * put the design anywhere against the lattice and the range is simply the
+   * full one. Past that point a bigger number changes nothing, and saying
+   * "up to 10 m off" would imply it did.
+   */
+  anyPhase: boolean;
+}
+
+export function shiftSamples(radiusM: number, res: number, n = 4): [number, number][] {
+  const r = Math.min(Math.max(0, radiusM), res / 2);
+  if (!(r > 0) || n < 1) return [[0, 0]];
+  // At or past half a pixel the offset reaches every phase, so the sample is
+  // the whole unit cell, corners included. Below it, the offset is genuinely
+  // bounded and the reachable set is a DISC, not the square around it: keeping
+  // the corners there would report a spread from offsets that cannot happen.
+  const anyPhase = radiusM >= res / 2;
+  /**
+   * Zero is always one of the samples, because it is always a possible outcome:
+   * the imagery may land exactly where it says. Without it the range could
+   * exclude the very number printed beside it, and an even grid never contains
+   * its own centre, so the card read "50%" above "52% to 57%".
+   */
+  const out: [number, number][] = [[0, 0]];
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      // Cell CENTRES of an n x n grid over [-r, r]^2, so no sample sits on the
+      // edge and the set is symmetric about zero.
+      const dx = -r + (2 * r * (i + 0.5)) / n;
+      const dy = -r + (2 * r * (j + 0.5)) / n;
+      if (Math.hypot(dx, dy) < 1e-9) continue;   // the centre is already in
+      if (anyPhase || Math.hypot(dx, dy) <= radiusM + 1e-9) out.push([dx, dy]);
+    }
+  }
+  return out.length ? out : [[0, 0]];
+}
+
+/**
+ * What the design's purity does across those offsets: the best case, the middle
+ * and the worst.
+ *
+ * A geolocation shift is the same measurement as moving the PSF centre by the
+ * same distance the other way, so it costs no new geometry: each sample is the
+ * ordinary simulation with `offX`/`offY` displaced. Checked against physically
+ * moving the trial, the two agree to about 0.2 points, which is the fine grid's
+ * own rounding and the floor on anything read from this.
+ *
+ * `spread` is the number worth reading. A design whose purity swings ten points
+ * on where the imagery happens to land is a fragile design, however good its
+ * best case looks, and the best case is what every other figure on the page
+ * reports.
+ */
+export function geolocationSpread(
+  grid: S2Grid, patternOrigin: [number, number], layout: SimLayout, sensor: SensorParams,
+  radiusM: number, n = 4,
+): GeoSpreadInfo | null {
+  const shifts = shiftSamples(radiusM, grid.res, n);
+  if (shifts.length < 2) return null;
+  const { coverSpecies, nSpecies } = speciesChannel(layout);
+  const vals: number[] = [];
+  for (const [dx, dy] of shifts) {
+    const shifted: SensorParams = {
+      ...sensor,
+      offX: (sensor.offX ?? 0) + dx / grid.res,
+      offY: (sensor.offY ?? 0) + dy / grid.res,
+    };
+    const sim = simulateField(grid, patternOrigin, layout, shifted);
+    vals.push(coverStats({ mixed: sim.mixed, coverSpecies, nSpecies, offTrial: sim.proportionOffTrial }).purePct);
+  }
+  vals.sort((a, b) => a - b);
+  const worst = vals[0], best = vals[vals.length - 1];
+  const mid = vals.length % 2 ? vals[(vals.length - 1) / 2] : (vals[vals.length / 2 - 1] + vals[vals.length / 2]) / 2;
+  return { best, median: mid, worst, spread: best - worst, samples: vals.length, radiusM,
+           anyPhase: radiusM >= grid.res / 2 };
 }
 
 export interface SweepPoint { gsd: number; purePct: number; }

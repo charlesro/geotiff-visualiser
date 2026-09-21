@@ -26,6 +26,17 @@ const LADDER_POINTS = 500;
 export interface SweepStep extends CoverSource {
   res: number;
   purePct: number;
+  /**
+   * Pure pixels as a share of this rung's PLANTED AREA in pixels. Undefined on a
+   * placeholder rung, `null` when the design plants nothing measurable here.
+   */
+  resolvingPct?: number | null;
+  /** Tooltip only: what the mixed pixels are worth unmixed (see resolving.ts). */
+  nEff?: number;
+  /** Tooltip only: two varieties cannot be told apart at all at this size. */
+  contrastDead?: boolean;
+  /** The share's denominator: the planted crop area, in whole pixels. */
+  plantCount?: number;
   /** Pure pixels, and the trial pixels they are counted over (NaN on a placeholder). */
   pureCount?: number;
   trialCount?: number;
@@ -161,6 +172,8 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
        * the panel shows no number rather than the big chart's.
        */
       return { res: s.res, purePct: s.purePct,
+               resolvingPct: s.current ? undefined : s.resolvingPct, nEff: s.current ? undefined : s.nEff,
+               plantCount: s.plantCount, contrastDead: s.contrastDead,
                pureCount: s.current ? NaN : (s.pureCount ?? NaN), trialCount: s.trialCount ?? NaN,
                partial: !!s.partial, pts, tooFew: fit.tooFew, waiting: false };
     });
@@ -187,14 +200,32 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
       >
         <div className="flex items-baseline justify-between px-0.5 text-[10px]">
           <span className="font-mono text-neutral-300">{c.res} m{active ? ' ·' : ''}{c.partial ? ' ◦' : ''}</span>
-          {/* The share of this rung's own trial pixels that come out pure. The
-              count behind it is in the tooltip: it is what the share is taken
-              over, and the two placements of a pair do not catch the same number
-              of edge pixels, so the denominators are worth being able to read. */}
-          {Number.isFinite(c.purePct) && (
-            <span className={pc(c.purePct)}
-              title={Number.isFinite(c.pureCount) ? `${fmt(c.pureCount)} pure of ${fmt(c.trialCount ?? NaN)} trial pixels` : undefined}>
-              {c.purePct.toFixed(0)}%
+          {/* TWO numbers, never one. The SHARE is how many of the pixels that
+              are ON THE CROP come out clean; a pixel of nothing but alley soil
+              is not counted against it. The COUNT beside it is not decoration:
+              the share is knowingly not monotone in pixel size, and the count
+              is what does not mislead there. The denominator is the design's
+              own PLANTED AREA, a constant for a design and a pixel size, which
+              is what makes the share exactly proportional to the count. Any
+              measured denominator moves when the trial does and hid a 10.2%
+              gain in pure pixels behind a 4.5% change. */}
+          {c.resolvingPct !== undefined && (
+            <span className="flex items-baseline gap-1"
+              title={[
+                c.resolvingPct === null
+                  ? 'This design plants less than one pixel of crop at this size'
+                  : `${fmt(c.pureCount)} pure of the ${fmt(c.plantCount ?? NaN)} pixels of crop this design plants`,
+                Number.isFinite(c.trialCount) ? `${fmt(c.trialCount ?? NaN)} trial pixels in all` : null,
+                c.contrastDead
+                  ? 'Two varieties cannot be told apart at this pixel size'
+                  : c.nEff ? `the mixed ones are worth ${c.nEff.toFixed(1)} more clean pixels per variety if you unmix them` : null,
+              ].filter(Boolean).join(' · ')}>
+              <span className={c.resolvingPct === null ? 'text-rose-400' : pc(c.resolvingPct)}>
+                {c.resolvingPct === null ? 'n/a' : `${c.resolvingPct.toFixed(0)}%`}
+              </span>
+              {Number.isFinite(c.pureCount) && (
+                <span className="font-mono text-[9px] text-neutral-500">{fmt(c.pureCount)}px</span>
+              )}
             </span>
           )}
         </div>

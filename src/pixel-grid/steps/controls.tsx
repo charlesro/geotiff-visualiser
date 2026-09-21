@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { CropControl, Explain, InfoDot } from '../ui';
-import { PATTERNS, cropById, type BlockDesign, type FieldParams, type PatternType } from '../simulate';
+import { PATTERNS, cropById, type BlockDesign, type FieldParams, type GeoSpreadInfo, type PatternType } from '../simulate';
 import type { ImportedPlan } from '../imported-types';
 import { fmt } from '../util';
 
@@ -70,6 +70,35 @@ const NUM_COMMIT_DELAY = 450;
  * committed number back. The draft is dropped once it lands, so a preset or a
  * Reset moves the field immediately rather than being swallowed.
  */
+/**
+ * What the purity above is worth, given that the imagery is not exactly where
+ * it says it is.
+ *
+ * The figure beside it assumes a perfectly georeferenced product. Real ones are
+ * offset by a few metres, the design cannot be moved to compensate because the
+ * offset is unknown when the trial is planted, and at these pixel sizes that is
+ * a large part of one pixel. So the honest reading is the range: a design that
+ * swings ten points on where the imagery lands is fragile whatever its best
+ * case says, and the best case is what every other number here reports.
+ *
+ * Silent when the spread is not worth a sentence, or while the idle pass that
+ * computes it has not finished, rather than showing a half-answer.
+ */
+function GeoSpread({ geo }: { geo?: GeoSpreadInfo | null }) {
+  if (!geo || !(geo.radiusM > 0) || geo.spread < 0.5) return null;
+  return (
+    <div className="mt-1 text-neutral-400">
+      <span className="font-mono text-neutral-300">{geo.worst.toFixed(0)}% to {geo.best.toFixed(0)}%</span>
+      {/* Past half a pixel the offset can land anywhere against the lattice, so
+          a larger figure buys nothing and naming it would imply otherwise. */}
+      {geo.anyPhase
+        ? <> wherever the imagery actually lands, median {geo.median.toFixed(0)}%.</>
+        : <> if the imagery is up to {geo.radiusM} m off, median {geo.median.toFixed(0)}%.</>}
+      {geo.spread >= 8 && <span className="text-amber-300/90"> That is {geo.spread.toFixed(0)} points on luck alone.</span>}
+    </div>
+  );
+}
+
 function NumField({ label, value, onChange, min, max, step = 1, unit, hint, action }: {
   label: string; value: number; onChange: (v: number) => void;
   min: number; max: number; step?: number; unit?: string;
@@ -215,7 +244,46 @@ export function LayoutFields({ pattern, stripWidth, setStripWidth, spacing, setS
  * notes explain that number; they never stand in for it, and when the grid is
  * too fine to render there is no measurement and the card stays silent.
  */
-export function BlockSummary({ design, plan, res, threshold, purePct }: {
+/**
+ * The headline pair: pure pixels, and that count as a share of the PLANTED AREA
+ * (the crop the design puts on the ground, in whole pixels). "Of the crop you
+ * planted, this much comes back as a clean pixel."
+ *
+ * The denominator is deliberately not the count of pixels with crop in them.
+ * That count moves with the placement and so absorbs the improvement the reader
+ * is looking for: staking a trial onto the pixel grid won 126 more pure pixels
+ * (+10.2%) while the plant count rose 6.7%, and the share moved one point.
+ * Planted area is fixed by the design and the pixel size, so the share tracks
+ * the count. See resolving.ts.
+ *
+ * The count is still printed beside it and never dropped: the share is not
+ * monotone in pixel size, because purity genuinely is not.
+ */
+function Resolving({ r, threshold }: {
+  r?: { pct: number | null; pure: number; planted: number; total: number; nEff: number; dead: boolean } | null;
+  threshold: number;
+}) {
+  if (!r) return null;
+  const tone = r.pct === null ? 'text-rose-400' : r.pct >= 70 ? 'text-emerald-300' : r.pct >= 40 ? 'text-amber-300' : 'text-rose-300';
+  return (
+    <div className="mt-1">
+      <span className={`font-mono ${tone}`}>{r.pct === null ? 'n/a' : `${r.pct.toFixed(0)}%`}</span>
+      <span className="text-neutral-500">
+        {r.pct === null ? <> this design plants less than one pixel of crop at this size</> : <> of the crop you planted comes back pure</>}
+      </span>
+      <Explain text={r.dead
+        ? <>Two varieties cannot be told apart at this pixel size at all, however the pixels are analysed.</>
+        : <>Counted against the {fmt(Math.round(r.planted))} pixels' worth of crop your plot sizes actually plant, which does not change when the trial moves. Measured denominators do, and then a placement winning 10% more pure pixels reads as 4% better. The mixed pixels are worth about {r.nEff.toFixed(0)} more clean pixels per variety on top, if you unmix them rather than averaging clean pixels per plot.</>}><InfoDot /></Explain>
+      <div className="text-neutral-400">
+        <span className="font-mono text-neutral-100">{fmt(r.pure)}</span> pure
+        {' '}of <span className="font-mono text-neutral-200">{fmt(Math.round(r.planted))}</span> planted pixels
+        <span className="text-neutral-500"> at {threshold}% purity</span>
+      </div>
+    </div>
+  );
+}
+
+export function BlockSummary({ design, plan, res, threshold, purePct, resolving, geo }: {
   design: BlockDesign;
   plan?: { totalU: number; totalV: number; nPlots: number };
   /** Pixel size in metres; absent until a grid is built. */
@@ -223,6 +291,10 @@ export function BlockSummary({ design, plan, res, threshold, purePct }: {
   threshold: number;
   /** Measured pure-pixel share, absent when the grid was too fine to render. */
   purePct?: number;
+  /** The headline pair; see Resolving. */
+  resolving?: { pct: number | null; pure: number; planted: number; total: number; nEff: number; dead: boolean } | null;
+  /** How much of that purity is luck: see GeoSpread. */
+  geo?: GeoSpreadInfo | null;
 }) {
   const nPlots = plan?.nPlots ?? design.nSpecies * design.nBlocks;
   const plotArea = design.plotLength * design.plotWidth;
@@ -247,12 +319,8 @@ export function BlockSummary({ design, plan, res, threshold, purePct }: {
           <span>plot is <span className="font-mono text-neutral-100">{alongPx.toFixed(1)} × {acrossPx.toFixed(1)}</span> px</span>
         )}
       </div>
-      {purePct != null && (
-        <div className="mt-1">
-          Pure plot pixels <span className={`font-mono ${purePct > 0 ? 'text-sky-300' : 'text-amber-400'}`}>{purePct.toFixed(0)}%</span>
-          <span className="text-neutral-500"> at {threshold}% purity</span>
-        </div>
-      )}
+      <Resolving r={resolving} threshold={threshold} />
+      <GeoSpread geo={geo} />
       {note && <div className="mt-1 text-neutral-400">{note}</div>}
     </div>
   );
@@ -263,13 +331,17 @@ export function BlockSummary({ design, plan, res, threshold, purePct }: {
  * job as BlockSummary, for plots that came from a file. Sizes are measured off
  * the resolved plan (the grid's metres), never off the file's degrees.
  */
-export function ImportedSummary({ plan, angle, res, threshold, purePct }: {
+export function ImportedSummary({ plan, angle, res, threshold, purePct, resolving, geo }: {
   plan: ImportedPlan;
   /** The trial's angle to the pixel rows, so its size is measured along its OWN sides. */
   angle: number;
   res?: number;
   threshold: number;
   purePct?: number;
+  /** The headline pair; see Resolving. */
+  resolving?: { pct: number | null; pure: number; planted: number; total: number; nEff: number; dead: boolean } | null;
+  /** How much of that purity is luck: see GeoSpread. */
+  geo?: GeoSpreadInfo | null;
 }) {
   // Plot area by the shoelace sum over all of a plot's rings: holes and outer
   // rings wind opposite ways in both shapefiles and GeoJSON, so they subtract.
@@ -305,12 +377,8 @@ export function ImportedSummary({ plan, angle, res, threshold, purePct }: {
         <span><span className="font-mono text-neutral-100">{fmt(plan.plots.length)}</span> plots of about <span className="font-mono text-neutral-100">{median.toFixed(0)} m²</span></span>
         {sidePx != null && <span>about <span className="font-mono text-neutral-100">{sidePx.toFixed(1)}</span> px across</span>}
       </div>
-      {purePct != null && (
-        <div className="mt-1">
-          Pure plot pixels <span className={`font-mono ${purePct > 0 ? 'text-sky-300' : 'text-amber-400'}`}>{purePct.toFixed(0)}%</span>
-          <span className="text-neutral-500"> at {threshold}% purity</span>
-        </div>
-      )}
+      <Resolving r={resolving} threshold={threshold} />
+      <GeoSpread geo={geo} />
       {!plan.plotIds && (
         <div className="mt-1 text-neutral-400">
           More plots than the simulation can tell apart one by one: a pixel spanning two plots of the same variety counts as pure.

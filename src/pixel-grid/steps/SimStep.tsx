@@ -103,11 +103,11 @@ function SimStepBody(p: StepProps) {
 
             {pattern === 'block' && (
               <BlockSummary design={blockDesign} plan={blockPlan} res={build?.res}
-                threshold={threshold} purePct={fieldSim?.purePct} />
+                threshold={threshold} purePct={fieldSim?.purePct} resolving={p.sim.resolving} geo={p.sim.geoSpread} />
             )}
 
             {pattern === 'imported' && importedPlan && (
-              <ImportedSummary plan={importedPlan} angle={importedAngle} res={build?.res} threshold={threshold} purePct={fieldSim?.purePct} />
+              <ImportedSummary plan={importedPlan} angle={importedAngle} res={build?.res} threshold={threshold} purePct={fieldSim?.purePct} resolving={p.sim.resolving} geo={p.sim.geoSpread} />
             )}
 
             {/* Said out loud, because a card that simply drops its purity row
