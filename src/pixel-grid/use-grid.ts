@@ -73,11 +73,13 @@ export function useFieldGrid({ aoi, fieldRing }: {
    * Sentinel-2 is specified to about 12.5 m and, since the reference-image
    * refinement, is usually a few metres; Landsat is comparable. At the pixel
    * sizes this page is used at, that is a large part of one pixel, and it is
-   * not knowable when the trial is planted. The default is the order of a
-   * refined Sentinel-2 product rather than zero, because zero is the assumption
-   * every other number here already makes silently.
+   * not knowable when the trial is planted.
+   *
+   * Off by default: the page opens assuming the imagery lands where it says,
+   * and the range appears once a value is entered. Only the default changed; a
+   * value already saved in a browser is kept, as every persisted setting is.
    */
-  const [geoErrM, setGeoErrM] = usePersistentState('geoErrM', 5, inRange(0, 50));
+  const [geoErrM, setGeoErrM] = usePersistentState('geoErrM', 0, inRange(0, 50));
 
   const source = SOURCES.find(s => s.id === sourceId)!;
 
