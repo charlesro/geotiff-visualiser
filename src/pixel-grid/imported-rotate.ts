@@ -77,10 +77,24 @@ export function nearestTurn(from: number, to: number): number {
 }
 
 /** True when a trial at `angle` degrees runs along the pixel rows. */
-export const isAligned = (angle: number): boolean => {
+/**
+ * Is `angle` within `tol` degrees of a pixel axis?
+ *
+ * A grid of plots repeats every 90 degrees, and the angle may be NEGATIVE: a
+ * field whose rows run a few degrees anticlockwise of the pixel rows is entered
+ * as such. So the angle is folded into [0, 90) FIRST. Written out by hand as
+ * `Math.min(angle, 90 - angle) < tol` it reads -3.6 degrees as -3.6, which is
+ * below any tolerance, so a trial at -3.6 degrees called itself already aligned
+ * and switched the whole "vs aligned" comparison off. Three copies of that
+ * expression were live, in two steps and in the ladder.
+ */
+export const alignedWithin = (angle: number, tol: number): boolean => {
   const a = ((angle % 90) + 90) % 90;
-  return Math.min(a, 90 - a) < 1e-6;
+  return Math.min(a, 90 - a) < tol;
 };
+
+/** Exactly on a pixel axis, to floating-point slack. */
+export const isAligned = (angle: number): boolean => alignedWithin(angle, 1e-6);
 
 /** `plan` moved by (dx, dy) metres. */
 export function shiftImportedPlan(plan: ImportedPlan, dx: number, dy: number): ImportedPlan {

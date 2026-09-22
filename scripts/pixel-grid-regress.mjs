@@ -76,7 +76,7 @@ const { ladderKey, rungCellOrigin } = await import(path.join(BUILD, 'src/pixel-g
 // The real ladder, so a size added to the page is a size these checks cover.
 const { RES_LADDER } = await import(path.join(BUILD, 'src/pixel-grid/sensors.mjs'));
 const { resolveImportedPlan, varietyKeyOf, convexHull, hullWidth, narrowestFeature, foldRing } = await import(path.join(BUILD, 'src/pixel-grid/imported-plan.mjs'));
-const { purePixels, stakeOnGrid, rotateImportedPlan } = await import(path.join(BUILD, 'src/pixel-grid/imported-rotate.mjs'));
+const { purePixels, stakeOnGrid, rotateImportedPlan, alignedWithin } = await import(path.join(BUILD, 'src/pixel-grid/imported-rotate.mjs'));
 const { varietiesOf: readerVarietiesOf, varietyKeyOf: readerVarietyKeyOf } = await import(path.join(BUILD, 'src/pixel-grid/design-import.mjs'));
 const { pointInPoly, fieldOverlapTest, viewShowsField } = await import(path.join(BUILD, 'src/pixel-grid/geometry.mjs'));
 const { contrastInfo, pureEfficiency, plantedPixels, plantedShare } = await import(path.join(BUILD, 'src/pixel-grid/resolving.mjs'));
@@ -3282,6 +3282,30 @@ console.log('\nH20. the ladder geolocation range, in the units of the share it q
   const s1 = rangeOf('strip', 2, 1, 2);
   ok('an aligned strip trial\'s best case halves within a metre of error',
     s1.hi > 60 && s1.lo < 0.6 * s1.hi, `${s1.lo.toFixed(0)}-${s1.hi.toFixed(0)}%`);
+}
+
+console.log('\nH21. a trial angle may be negative, and negative is not aligned');
+{
+  // A grid of plots repeats every 90 degrees and the angle can run either side
+  // of the pixel rows. Written out by hand as Math.min(angle, 90 - angle) < tol,
+  // the test reads -3.6 as -3.6, below any tolerance, so a trial 3.6 degrees
+  // anticlockwise called itself already aligned and switched the "vs aligned"
+  // comparison off. Three copies of that expression were live.
+  const oldForm = (a, tol) => Math.min(a, 90 - a) < tol;
+  ok('a negative angle is NOT aligned', alignedWithin(-3.6, 0.05) === false);
+  ok('and the hand-written form said it was, which is the bug', oldForm(-3.6, 0.05) === true);
+  ok('while the two agree on every positive angle',
+    [0, 0.01, 3.6, 45, 86.4, 89.99, 90].every(a => alignedWithin(a, 0.05) === oldForm(a, 0.05)));
+
+  // The axes themselves, from either side and past a full turn.
+  for (const a of [0, 90, -90, 180, -180, 270]) ok(`${a} degrees is on a pixel axis`, alignedWithin(a, 0.05) === true);
+  for (const a of [-3.6, 3.6, -45, 45, -86.4, 86.4, 93.6]) ok(`${a} degrees is not`, alignedWithin(a, 0.05) === false);
+
+  // The engine's own snap test must agree: a negative angle is snappable only
+  // on an axis, or an off-axis trial would be staked as if it were aligned.
+  const snapOf = rot => blockPlacement([0, 0, 100, 100], [0, 0], rot, 10, true).snap;
+  ok('blockPlacement snaps on a negative axis angle', snapOf(-90) === 10 && snapOf(0) === 10);
+  ok('and refuses to snap a negative off-axis angle', snapOf(-3.6) === 0 && snapOf(3.6) === 0);
 }
 
 console.log('\nH17. the purity pair: pure pixels, over the crop area actually planted');

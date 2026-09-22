@@ -5,6 +5,7 @@ import { ImportPanel } from './ImportPanel';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { BARE } from '../simulate';
 import type { StepProps } from './props';
+import { alignedWithin } from '../imported-rotate';
 
 /**
  * Step 3: lay out the planting pattern and see the season a mixed pixel records.
@@ -21,7 +22,7 @@ function SimStepBody(p: StepProps) {
   // The angle the controls show and edit: the trial's own for an imported one.
   const imported = pattern === 'imported';
   const angle = imported ? importedAngle : rotation;
-  const aligned = Math.min(angle, 90 - angle) < 0.05;
+  const aligned = alignedWithin(angle, 0.05);
   const { ndviSeries } = p.sim;
   /**
    * One line per distinct growth CURVE, not per species. An imported trial can

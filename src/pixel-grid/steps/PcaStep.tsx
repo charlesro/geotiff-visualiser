@@ -8,6 +8,7 @@ import { FIXED, RES_LADDER, SOURCES, TASK } from '../sensors';
 import PcaSimVisual from '../PcaSimVisual';
 import PcaSweep from '../PcaSweep';
 import type { StepProps } from './props';
+import { alignedWithin } from '../imported-rotate';
 
 /**
  * How far apart two purities have to be, in percentage POINTS, before the panel
@@ -51,7 +52,7 @@ function PcaStepBody(p: StepProps) {
   const angleLabel = Math.round(angle * 10) / 10;
   /** Which of the two placements is the one currently on the map. */
   const onMap: 0 | 1 = p.compareFrom === null ? 0 : 1;
-  const aligned = Math.min(angle, 90 - angle) < 0.05;
+  const aligned = alignedWithin(angle, 0.05);
   const { pcaBusy, pcaView, pcaSubsampled, pcaGrid, setSelectedPixels, sweep, sweepBusy } = p.pca;
   const { pcaRetuneOpen, setPcaRetuneOpen, compareAligned, setCompareAligned, pcaColorBy, setPcaColorBy, pcaShapeBy, setPcaShapeBy } = p;
   const { sweepAligned } = p.pca;

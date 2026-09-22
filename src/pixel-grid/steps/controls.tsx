@@ -144,7 +144,7 @@ export function LayoutFields({ pattern, stripWidth, setStripWidth, spacing, setS
   setBlockDesign?: (v: BlockDesign | ((p: BlockDesign) => BlockDesign)) => void;
 }) {
   const rotationField = (
-    <NumField label={rotationLabel} value={rotation} onChange={setRotation} min={0} max={90} unit="°"
+    <NumField label={rotationLabel} value={rotation} onChange={setRotation} min={-90} max={90} unit="°"
       hint={rotationHint} action={rotationAction} />
   );
 

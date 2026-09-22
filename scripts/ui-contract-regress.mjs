@@ -202,6 +202,20 @@ console.log('\nU2b. one sampling-position control, not two, and its effect is wh
   check('and step 3 no longer carries a second range', !/GeoSpread/.test(read('src/pixel-grid/steps/controls.tsx')) && !/geoSpread/.test(useSim2));
 }
 
+console.log('\nU2c. the trial angle accepts negative values, and nothing hand-rolls the axis test');
+{
+  const useSim3 = read('src/pixel-grid/use-simulation.ts');
+  const controls3 = read('src/pixel-grid/steps/controls.tsx');
+  check('the saved angle admits the anticlockwise half', /usePersistentState\('rotation', 0, inRange\(-90, 90\)\)/.test(useSim3));
+  check('and so does the control', /min=\{-90\} max=\{90\}/.test(controls3));
+  // One mod-90 helper, not a copy per file: the hand-written form reads -3.6 as
+  // aligned, which switched the whole comparison off for a trial that was not.
+  for (const f of ['src/pixel-grid/steps/PcaStep.tsx', 'src/pixel-grid/steps/SimStep.tsx', 'src/pixel-grid/use-simulation.ts']) {
+    check(`${f.split('/').pop()} asks the shared helper instead of hand-rolling it`,
+      /alignedWithin\(/.test(read(f)) && !/Math\.min\(angle, 90 - angle\)/.test(read(f)));
+  }
+}
+
 console.log('\nU3. the aligned-vs-drawn verdict reads the number it prints, both ways');
 {
   const src = fs.readFileSync(path.join(ROOT, 'src/pixel-grid/steps/PcaStep.tsx'), 'utf8');

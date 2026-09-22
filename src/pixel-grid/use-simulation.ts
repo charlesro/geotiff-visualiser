@@ -21,7 +21,7 @@ import type { useFieldGrid } from './use-grid';
 import { arrayOf, inRange, isLngLat, isNum, oneOf, readSaved, shape, usePersistentState } from './persist';
 import { MAX_IMPORT_PLOTS, tooManyVarieties, varietiesOf } from './design-import';
 import { resolveImportedPlan } from './imported-plan';
-import { isAligned, nearestTurn, rotateImportedPlan, shiftImportedPlan, stakeOnGrid, trialAngle } from './imported-rotate';
+import { alignedWithin, isAligned, nearestTurn, rotateImportedPlan, shiftImportedPlan, stakeOnGrid, trialAngle } from './imported-rotate';
 import type { ImportedDesign, ImportedPlan } from './imported-types';
 
 /**
@@ -163,7 +163,13 @@ export function useExperiment({ sigmaX, sigmaY, fieldBounds, fieldOrigin, pixelS
   const [pattern, setPattern] = usePersistentState<PatternType>('pattern', 'row', oneOf(...PATTERNS.map(p => p.id)));
   const [stripWidth, setStripWidth] = usePersistentState('stripWidth', 3, inRange(0.01, 1000));
   const [spacing, setSpacing] = usePersistentState('spacing', 0, inRange(0, 1000));
-  const [rotation, setRotation] = usePersistentState('rotation', 0, inRange(0, 90));
+  /**
+   * The trial's angle to the pixel rows. NEGATIVE angles are allowed, because a
+   * field's rows can run either side of them: the parcel this page was measured
+   * on runs 3.6 degrees anticlockwise, and entering its mirror image is only
+   * equivalent by accident of the design being a symmetric grid.
+   */
+  const [rotation, setRotation] = usePersistentState('rotation', 0, inRange(-90, 90));
   /**
    * The species under test, 2 to 8 of them. Stored as ONE array under new keys
    * rather than cropA/cropB, which could only ever describe two.
@@ -1121,7 +1127,7 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
     const angle = compareFrom ?? own;
     // The same tolerance the "vs aligned" button uses, so it never builds a
     // comparison the button says there is no point in.
-    const wantAligned = compareAligned && Math.min(angle, 90 - angle) >= 0.05;
+    const wantAligned = compareAligned && !alignedWithin(angle, 0.05);
     const jobs: [number, number, 0 | 1][] = [
       ...RES_LADDER.map(r => [angle, r, 0] as [number, number, 0]),
       ...(wantAligned ? RES_LADDER.map(r => [0, r, 1] as [number, number, 1]) : []),
