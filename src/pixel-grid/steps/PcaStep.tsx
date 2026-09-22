@@ -256,7 +256,7 @@ function PcaStepBody(p: StepProps) {
                     {comparison ? (
                       <p className="text-[11px] leading-snug text-neutral-500">
                         Pure crop at {comparison.lead.res} m{comparison.lead.sampled ? ' ◦' : ''}
-                        {worstCase && <>, counting on the worst case within {geoErrM} m</>}:{' '}
+                        {worstCase && <>, counting on the worst case {geoErrM >= comparison.lead.res / 2 ? 'wherever the imagery lands' : `within ${geoErrM} m`}</>}:{' '}
                         <span className="font-mono text-sky-300">{comparison.lead.drawn.toFixed(0)}%</span> at {angleLabel}°
                         vs <span className="font-mono text-neutral-300">{comparison.lead.aligned.toFixed(0)}%</span> along the pixel rows
                         {/* The counts, in the units the reader can check on the panels,
@@ -278,7 +278,7 @@ function PcaStepBody(p: StepProps) {
                             : comparison.worse.length > 0
                               ? ` ${worstCase ? 'In the worst case, along' : 'Along'} the rows gives less at ${comparison.worse.join(', ')} m.`
                               : worstCase
-                                ? ` Once the imagery may be ${geoErrM} m off, the two placements are within ${TIE_POINTS} points at every one of the ${comparison.sizes} ${comparison.sizes === 1 ? 'size' : 'sizes'}: staking onto the grid buys nothing you can count on.`
+                                ? ` Once the imagery may be ${geoErrM >= comparison.lead.res / 2 ? 'anywhere against the pixel grid' : `${geoErrM} m off`}, the two placements are within ${TIE_POINTS} points at every one of the ${comparison.sizes} ${comparison.sizes === 1 ? 'size' : 'sizes'}: staking onto the grid buys nothing you can count on.`
                                 : ` The two placements are within ${TIE_POINTS} points at every one of the ${comparison.sizes} ${comparison.sizes === 1 ? 'size' : 'sizes'}.`}
                       </p>
                     ) : (

@@ -245,15 +245,28 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
         {/* The share's range over where the imagery may actually land, the one
             place the geolocation error shows. Said as "no change" rather than
             dropped when it does not move the share, so a reader who set it can
-            see that it was applied. */}
-        {geoErrM > 0 && c.geoLo !== undefined && c.geoHi !== undefined && (
-          <div className="px-0.5 font-mono text-[9px] leading-tight text-neutral-500"
-            title={`If the imagery is up to ${geoErrM} m from where it says, this share lands anywhere from ${c.geoLo.toFixed(0)}% to ${c.geoHi.toFixed(0)}%`}>
-            {Math.round(c.geoHi) - Math.round(c.geoLo) >= 1
-              ? `${c.geoLo.toFixed(0)}-${c.geoHi.toFixed(0)}% within ${geoErrM} m`
-              : `no change within ${geoErrM} m`}
-          </div>
-        )}
+            see that it was applied.
+
+            PAST HALF A PIXEL it says "wherever it lands" instead of naming the
+            figure. Only the phase matters and half a pixel already reaches
+            every phase, so 5 m, 12.5 m and 50 m give one identical range at
+            10 m pixels. Labelled "within 50 m" that reads as the setting being
+            ignored, which is what it looked like to the first person who typed
+            a big number into it. */}
+        {geoErrM > 0 && c.geoLo !== undefined && c.geoHi !== undefined && (() => {
+          const anyPhase = geoErrM >= c.res / 2;
+          const where = anyPhase ? 'wherever it lands' : `within ${geoErrM} m`;
+          const moves = Math.round(c.geoHi) - Math.round(c.geoLo) >= 1;
+          return (
+            <div className="px-0.5 font-mono text-[9px] leading-tight text-neutral-500"
+              title={[
+                `If the imagery is ${anyPhase ? `off by half a ${c.res} m pixel or more` : `up to ${geoErrM} m from where it says`}, this share lands anywhere from ${c.geoLo.toFixed(0)}% to ${c.geoHi.toFixed(0)}%`,
+                anyPhase ? `Past half a pixel every sub-pixel position is reachable, so a larger figure than ${c.res / 2} m changes nothing here` : null,
+              ].filter(Boolean).join('. ')}>
+              {moves ? `${c.geoLo.toFixed(0)}-${c.geoHi.toFixed(0)}% ${where}` : `no change ${where}`}
+            </div>
+          );
+        })()}
         <div className="pointer-events-none">
           {c.waiting
             ? <div className="flex items-center justify-center text-[9px] text-neutral-600" style={{ height: 92 }}>…</div>

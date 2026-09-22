@@ -197,7 +197,13 @@ console.log('\nU2b. one sampling-position control, not two, and its effect is wh
   check('every sample goes through the SAME share rule as the rung it qualifies',
     (useSim2.match(/plantedShare\(/g) || []).length >= 2 && !/0\.8 \* geo/.test(useSim2));
   check('each panel prints the range, and says so when it does not move',
-    /c\.geoLo\.toFixed\(0\)\}-\$\{c\.geoHi\.toFixed\(0\)\}% within/.test(sweepSrc) && /no change within/.test(sweepSrc));
+    /c\.geoLo\.toFixed\(0\)\}-\$\{c\.geoHi\.toFixed\(0\)\}% \$\{where\}/.test(sweepSrc) && /no change \$\{where\}/.test(sweepSrc));
+  // Past half a pixel every sub-pixel position is reachable, so 5, 12.5 and 50 m
+  // give one identical range at 10 m pixels. Naming the figure there reads as
+  // the setting being ignored, which is what it looked like to the first person
+  // who typed a big number in.
+  check('and stops naming a figure once any phase is reachable',
+    /const anyPhase = geoErrM >= c\.res \/ 2;/.test(sweepSrc) && /wherever it lands/.test(sweepSrc));
   check('and step 4 hands the panels the error to label it with', (pcaStep.match(/geoErrM=\{geoErrM\}/g) || []).length >= 2);
   check('and step 3 no longer carries a second range', !/GeoSpread/.test(read('src/pixel-grid/steps/controls.tsx')) && !/geoSpread/.test(useSim2));
 }
@@ -288,7 +294,7 @@ console.log('\nU3. the aligned-vs-drawn verdict reads the number it prints, both
   ok('a rung whose range is missing is left out, never judged on its nominal among worst cases',
     /if \(own\.geoLo == null \|\| al\.geoLo == null\) return \[\];/.test(src));
   ok('the sentence says which basis it compared on, and shows the best case beside it',
-    /counting on the worst case within \{geoErrM\} m/.test(sentence) && /at best \{comparison\.lead\.drawnBest/.test(sentence));
+    /counting on the worst case \{geoErrM >= comparison\.lead\.res \/ 2/.test(sentence) && /at best \{comparison\.lead\.drawnBest/.test(sentence));
   ok('and when staking wins nothing it can count on, it says so',
     /staking onto the grid buys nothing you can count on/.test(sentence));
 
