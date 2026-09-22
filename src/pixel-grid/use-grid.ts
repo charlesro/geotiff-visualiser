@@ -20,7 +20,7 @@ import { polyAreaHa, type Poly } from './geometry';
 import { cellInFieldTest } from './field-membership';
 import { fmt } from './util';
 import { SOURCES } from './sensors';
-import { inRange, oneOf, usePersistentState } from './persist';
+import { inRange, usePersistentState } from './persist';
 
 /**
  * Step 2: which satellite, and therefore exactly where its pixels fall.
@@ -60,11 +60,13 @@ export function useFieldGrid({ aoi, fieldRing }: {
   const [viewBounds, setViewBounds] = useState<LngLatBounds | null>(null);
   const [sigmaX, setSigmaX] = usePersistentState('sigmaX', () => SOURCES.find(s => s.id === 's2-10')!.psf, inRange(0, 5));
   const [sigmaY, setSigmaY] = usePersistentState('sigmaY', () => SOURCES.find(s => s.id === 's2-10')!.psf, inRange(0, 5));
-  // Where the blur actually sits, in PIXELS from the pixel centre. A real sensor's
-  // PSF is not perfectly centred on its own pixel, and the offset moves the crop
-  // fractions a pixel sees, so it belongs in the simulation, not just the drawing.
-  const [psfOffX, setPsfOffX] = usePersistentState('psfOffX', 0, inRange(-2, 2));
-  const [psfOffY, setPsfOffY] = usePersistentState('psfOffY', 0, inRange(-2, 2));
+  // There is no PSF offset control. A KNOWN uniform offset is cancelled by the
+  // placement search, which slides the trial by the same distance (measured:
+  // 101,850 pure pixels with no offset, 102,060 with half a pixel), and the
+  // UNKNOWN part of where the pixels sit is exactly what `geoErrM` below
+  // describes. As a separate control it duplicated that and moved nothing on an
+  // aligned design. Its saved value is no longer read: a stored offset with no
+  // control left to undo it would have kept shifting every simulation unseen.
   /**
    * How far the product's pixels may sit from where their coordinates say, in
    * metres. A property of the IMAGERY, not of the optics, which is why it is
@@ -279,8 +281,6 @@ export function useFieldGrid({ aoi, fieldRing }: {
   const psfRes = build?.res ?? pxSize;
   const psfSigmaXM = sigmaX * psfRes;
   const psfSigmaYM = sigmaY * psfRes;
-  const psfOffXM = psfOffX * psfRes;
-  const psfOffYM = psfOffY * psfRes;
   const psfFwhmXM = 2.3548 * psfSigmaXM;
   const psfFwhmYM = 2.3548 * psfSigmaYM;
   const psfAnisotropic = Math.abs(sigmaX - sigmaY) > 1e-9;
@@ -297,11 +297,9 @@ export function useFieldGrid({ aoi, fieldRing }: {
     const [cE, cN] = fwd.forward([(aoi[0] + aoi[2]) / 2, (aoi[1] + aoi[3]) / 2]);
     const pcE = mnE + (Math.floor((cE - mnE) / r) + 0.5) * r; // pixel centre
     const pcN = mnN + (Math.floor((cN - mnN) / r) + 0.5) * r;
-    // Drawn where the blur actually sits, offset included, so the picture and
-    // the purity numbers can never tell two different stories.
-    const [lng, lat] = inv.forward([pcE + psfOffXM, pcN + psfOffYM]);
+    const [lng, lat] = inv.forward([pcE, pcN]);
     return [lat, lng];
-  }, [aoi, build?.utmBounds, build?.epsg, build?.res, psfOffXM, psfOffYM]);
+  }, [aoi, build?.utmBounds, build?.epsg, build?.res]);
   const dims = grid
     ? {
         nx: Math.round((grid.utmBounds[2] - grid.utmBounds[0]) / grid.res),
@@ -344,7 +342,7 @@ export function useFieldGrid({ aoi, fieldRing }: {
 
   return { sourceId, setSourceId, source, gsd, setGsd,
            sigmaX, setSigmaX, sigmaY, setSigmaY,
-           psfOffX, setPsfOffX, psfOffY, setPsfOffY, psfOffXM, psfOffYM, geoErrM, setGeoErrM,
+           geoErrM, setGeoErrM,
            grids, gridState, selectedGridKey, setSelectedGridKey, selectedGrid,
            buildOpts, build, grid, renderGrid, clippedView, geojson, fieldGeojson, inField, lineBox,
            viewBounds, setViewBounds, pxSize, psfSigmaM, psfFwhmM, psfCenter,

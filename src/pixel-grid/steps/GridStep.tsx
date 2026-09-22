@@ -17,7 +17,7 @@ const clampSigma = (raw: string) => Math.max(0, Math.min(5, parseFloat(raw) || 0
 function GridStepBody(p: StepProps) {
   const { activeStep, toggleStep, gridSummary } = p;
   const { aoi } = p.area;
-  const { sourceId, setSourceId, source, gsd, setGsd, sigmaX, setSigmaX, sigmaY, setSigmaY, psfOffX, setPsfOffX, psfOffY, setPsfOffY, psfOffXM, psfOffYM, geoErrM, setGeoErrM, grids, gridState, selectedGridKey, setSelectedGridKey, selectedGrid, build, grid, pxSize, psfSigmaM, psfSigmaXM, psfSigmaYM, psfFwhmXM, psfFwhmYM, psfAnisotropic, dims, fieldAreaM2, maxAreaHa, fieldCellCount, gridNoun, onDownload } = p.gridApi;
+  const { sourceId, setSourceId, source, gsd, setGsd, sigmaX, setSigmaX, sigmaY, setSigmaY, geoErrM, setGeoErrM, grids, gridState, selectedGridKey, setSelectedGridKey, selectedGrid, build, grid, pxSize, psfSigmaM, psfSigmaXM, psfSigmaYM, psfFwhmXM, psfFwhmYM, psfAnisotropic, dims, fieldAreaM2, maxAreaHa, fieldCellCount, gridNoun, onDownload } = p.gridApi;
 
   const fwhmTxt = psfAnisotropic
     ? `${psfFwhmXM < 10 ? psfFwhmXM.toFixed(1) : Math.round(psfFwhmXM)} × ${psfFwhmYM < 10 ? psfFwhmYM.toFixed(1) : Math.round(psfFwhmYM)}`
@@ -63,21 +63,6 @@ function GridStepBody(p: StepProps) {
                 onChange={e => setSigmaY(clampSigma(e.target.value))} className={NUM} />
               <span className="text-[11px] text-neutral-500">px</span>
             </div>
-            <div className="mt-1.5 flex items-center gap-2">
-              <span className="w-10 shrink-0 text-[11px] text-neutral-500">Offset</span>
-              <input type="number" min="-2" max="2" step="0.05" value={psfOffX}
-                onChange={e => setPsfOffX(Math.max(-2, Math.min(2, parseFloat(e.target.value) || 0)))} className={NUM} />
-              <span className="text-[11px] text-neutral-500">×</span>
-              <input type="number" min="-2" max="2" step="0.05" value={psfOffY}
-                onChange={e => setPsfOffY(Math.max(-2, Math.min(2, parseFloat(e.target.value) || 0)))} className={NUM} />
-              <span className="text-[11px] text-neutral-500">px</span>
-              <Explain align="right" text="Where the blur sits relative to the pixel centre. A sensor is never perfectly centred, and an off-centre blur pulls in crops from one side."><InfoDot /></Explain>
-            </div>
-            {(psfOffX !== 0 || psfOffY !== 0) && (
-              <p className="mt-1 text-[11px] leading-snug text-amber-300/80">
-                Blur centre {psfOffXM.toFixed(1)} m east, {psfOffYM.toFixed(1)} m north of the pixel centre.
-              </p>
-            )}
             {/* A property of the imagery, not of the optics, so it sits with the
                 source. What it changes is not the purity but the confidence in
                 it: see the range on step 3's card. */}
@@ -86,7 +71,7 @@ function GridStepBody(p: StepProps) {
               <input type="number" min="0" max="50" step="0.5" value={geoErrM}
                 onChange={e => setGeoErrM(Math.max(0, Math.min(50, parseFloat(e.target.value) || 0)))} className={NUM} />
               <span className="text-[11px] text-neutral-500">m</span>
-              <Explain align="right" text={<>How far this product's pixels may sit from where their coordinates say. Sentinel-2 is specified to about 12.5 m and is usually a few metres since the reference-image refinement; Landsat is comparable. Nobody knows the offset when the trial is planted, so step 3 reports the purity as a range over it rather than one figure. Set 0 to assume the imagery is exactly where it says.</>}><InfoDot /></Explain>
+              <Explain align="right" text={<>How far this product's pixels may sit from where their coordinates say. Sentinel-2 is specified to about 12.5 m and is usually a few metres since the reference-image refinement; Landsat is comparable. Nobody knows the offset when the trial is planted, so each panel of the step 4 ladder shows the range its purity can land in. 0 assumes the imagery is exactly where it says.</>}><InfoDot /></Explain>
             </div>
             <p className="mt-1 text-[11px] leading-snug text-neutral-500">
               {psfSigmaM > 0 ? (<>

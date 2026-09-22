@@ -172,6 +172,36 @@ check('and no capped-grid line apologises for a purity the card never states',
   !/no trial-wide purity to state here/.test(simStep));
 check('and the hook no longer computes a card-only purity', !/const resolving = useMemo/.test(useSim));
 
+console.log('\nU2b. one sampling-position control, not two, and its effect is where purity lives');
+{
+  const grid = read('src/pixel-grid/use-grid.ts');
+  const gridStep = read('src/pixel-grid/steps/GridStep.tsx');
+  const sweepSrc = read('src/pixel-grid/PcaSweep.tsx');
+  const pcaStep = read('src/pixel-grid/steps/PcaStep.tsx');
+  const useSim2 = read('src/pixel-grid/use-simulation.ts');
+
+  // The PSF offset duplicated the geolocation error and moved nothing: a KNOWN
+  // uniform shift is cancelled by the placement search sliding the trial, and
+  // the UNKNOWN part is exactly what geoErrM describes. Its saved value must not
+  // be read either, or an old offset with no control left keeps shifting every
+  // simulation unseen.
+  check('there is no PSF offset control', !/psfOff/.test(gridStep) && !/>Offset</.test(gridStep));
+  check('and its saved value is no longer read', !/usePersistentState\('psfOff/.test(grid));
+  check('and no simulation is fed a user offset', !/offX: psfOff|offY: psfOff/.test(useSim2));
+
+  // Geolocation error used to show only in the step 3 card, which exists only
+  // for block and imported trials: on a strip design it moved nothing at all.
+  // It now shows on every ladder panel, for every layout.
+  check('the ladder computes a geolocation range for each rung', /geoLo, geoHi/.test(useSim2) && /shiftSamples\(geoErrM, r, GEO_LADDER_N\)/.test(useSim2));
+  check('only when an uncertainty is set, so it costs nothing by default', /if \(geoErrM > 0 && resolvingPct != null\)/.test(useSim2));
+  check('every sample goes through the SAME share rule as the rung it qualifies',
+    (useSim2.match(/plantedShare\(/g) || []).length >= 2 && !/0\.8 \* geo/.test(useSim2));
+  check('each panel prints the range, and says so when it does not move',
+    /c\.geoLo\.toFixed\(0\)\}-\$\{c\.geoHi\.toFixed\(0\)\}% within/.test(sweepSrc) && /no change within/.test(sweepSrc));
+  check('and step 4 hands the panels the error to label it with', (pcaStep.match(/geoErrM=\{geoErrM\}/g) || []).length >= 2);
+  check('and step 3 no longer carries a second range', !/GeoSpread/.test(read('src/pixel-grid/steps/controls.tsx')) && !/geoSpread/.test(useSim2));
+}
+
 console.log('\nU3. the aligned-vs-drawn verdict reads the number it prints, both ways');
 {
   const src = fs.readFileSync(path.join(ROOT, 'src/pixel-grid/steps/PcaStep.tsx'), 'utf8');
@@ -231,6 +261,22 @@ console.log('\nU3. the aligned-vs-drawn verdict reads the number it prints, both
     !/own\.partial \|\| al\.partial\) return \[\]/.test(src) && /sampled: !!\(own\.partial \|\| al\.partial\)/.test(src));
   ok('nor is the rung currently on the map', !/own\.current \|\|/.test(src));
   ok('and a sampled headline pair says it was sampled', /comparison\.lead\.sampled \?/.test(sentence));
+
+  // (8) With a geolocation error set it judges the WORST cases. The nominal is
+  // one draw, and for a staked placement it is the lucky draw by construction:
+  // on a 50 m plot trial at 10 m the verdict called staking better on 182
+  // against 225 pure pixels where the worst cases were 177 against 180.
+  ok('with a geolocation error it ranks the worst cases, not the nominals',
+    /const worstCase = geoErrM > 0;/.test(src) &&
+    /if \(worstCase\) \{[\s\S]{0,200}drawn: own\.geoLo, aligned: al\.geoLo/.test(src));
+  ok('and prints the worst-case pure counts, not the nominal ones',
+    /drawnPure: own\.geoLoPure \?\? NaN, alignedPure: al\.geoLoPure \?\? NaN/.test(src));
+  ok('a rung whose range is missing is left out, never judged on its nominal among worst cases',
+    /if \(own\.geoLo == null \|\| al\.geoLo == null\) return \[\];/.test(src));
+  ok('the sentence says which basis it compared on, and shows the best case beside it',
+    /counting on the worst case within \{geoErrM\} m/.test(sentence) && /at best \{comparison\.lead\.drawnBest/.test(sentence));
+  ok('and when staking wins nothing it can count on, it says so',
+    /staking onto the grid buys nothing you can count on/.test(sentence));
 
   const sweepSrc = fs.readFileSync(path.join(ROOT, 'src/pixel-grid/PcaSweep.tsx'), 'utf8');
   ok('and the ladder panels are labelled with the same quantity, a percentage',

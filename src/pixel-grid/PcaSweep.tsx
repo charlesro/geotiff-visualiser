@@ -37,6 +37,16 @@ export interface SweepStep extends CoverSource {
   contrastDead?: boolean;
   /** The share's denominator: the planted crop area, in whole pixels. */
   plantCount?: number;
+  /**
+   * The share's range if the imagery is up to the step 2 geolocation error off,
+   * measured through this rung's own pipeline so it is in the same units as the
+   * share it qualifies. Undefined when no geolocation error is set.
+   */
+  geoLo?: number;
+  geoHi?: number;
+  /** The pure-pixel counts of the samples that gave geoLo and geoHi. */
+  geoLoPure?: number;
+  geoHiPure?: number;
   /** Pure pixels, and the trial pixels they are counted over (NaN on a placeholder). */
   pureCount?: number;
   trialCount?: number;
@@ -92,7 +102,7 @@ function DotCanvas({ pts, height }: { pts: Dot[]; height: number }) {
   return <canvas ref={ref} style={{ width: '100%', height, display: 'block' }} />;
 }
 
-function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, threshold, colorBy, activeRes, activeSim, onPick, onPickPair }: {
+function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, threshold, colorBy, activeRes, activeSim, onPick, onPickPair, geoErrM = 0 }: {
   steps: SweepStep[];
   /**
    * A second ladder over the same resolutions (e.g. the rows laid along the
@@ -130,6 +140,8 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
    * drawn, which is a third thing that is neither panel.
    */
   onPickPair?: (res: number) => void;
+  /** Step 2's geolocation error in metres, to label each panel's range. 0 = off. */
+  geoErrM?: number;
 }) {
   const speciesSig = species.map(c => `${c.truth}_${c.L1}_${c.k1}_${c.x01}_${c.k2}_${c.x02}_${c.tc}`).join('|');
 
@@ -174,6 +186,7 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
       return { res: s.res, purePct: s.purePct,
                resolvingPct: s.current ? undefined : s.resolvingPct, nEff: s.current ? undefined : s.nEff,
                plantCount: s.plantCount, contrastDead: s.contrastDead,
+               geoLo: s.current ? undefined : s.geoLo, geoHi: s.current ? undefined : s.geoHi,
                pureCount: s.current ? NaN : (s.pureCount ?? NaN), trialCount: s.trialCount ?? NaN,
                partial: !!s.partial, pts, tooFew: fit.tooFew, waiting: false };
     });
@@ -229,6 +242,18 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
             </span>
           )}
         </div>
+        {/* The share's range over where the imagery may actually land, the one
+            place the geolocation error shows. Said as "no change" rather than
+            dropped when it does not move the share, so a reader who set it can
+            see that it was applied. */}
+        {geoErrM > 0 && c.geoLo !== undefined && c.geoHi !== undefined && (
+          <div className="px-0.5 font-mono text-[9px] leading-tight text-neutral-500"
+            title={`If the imagery is up to ${geoErrM} m from where it says, this share lands anywhere from ${c.geoLo.toFixed(0)}% to ${c.geoHi.toFixed(0)}%`}>
+            {Math.round(c.geoHi) - Math.round(c.geoLo) >= 1
+              ? `${c.geoLo.toFixed(0)}-${c.geoHi.toFixed(0)}% within ${geoErrM} m`
+              : `no change within ${geoErrM} m`}
+          </div>
+        )}
         <div className="pointer-events-none">
           {c.waiting
             ? <div className="flex items-center justify-center text-[9px] text-neutral-600" style={{ height: 92 }}>…</div>

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { CropControl, Explain, InfoDot } from '../ui';
-import { PATTERNS, cropById, type BlockDesign, type FieldParams, type GeoSpreadInfo, type PatternType } from '../simulate';
+import { PATTERNS, cropById, type BlockDesign, type FieldParams, type PatternType } from '../simulate';
 import type { ImportedPlan } from '../imported-types';
 import { fmt } from '../util';
 
@@ -70,35 +70,6 @@ const NUM_COMMIT_DELAY = 450;
  * committed number back. The draft is dropped once it lands, so a preset or a
  * Reset moves the field immediately rather than being swallowed.
  */
-/**
- * What the purity above is worth, given that the imagery is not exactly where
- * it says it is.
- *
- * The figure beside it assumes a perfectly georeferenced product. Real ones are
- * offset by a few metres, the design cannot be moved to compensate because the
- * offset is unknown when the trial is planted, and at these pixel sizes that is
- * a large part of one pixel. So the honest reading is the range: a design that
- * swings ten points on where the imagery lands is fragile whatever its best
- * case says, and the best case is what every other number here reports.
- *
- * Silent when the spread is not worth a sentence, or while the idle pass that
- * computes it has not finished, rather than showing a half-answer.
- */
-function GeoSpread({ geo }: { geo?: GeoSpreadInfo | null }) {
-  if (!geo || !(geo.radiusM > 0) || geo.spread < 0.5) return null;
-  return (
-    <div className="mt-1 text-neutral-400">
-      <span className="font-mono text-neutral-300">{geo.worst.toFixed(0)}% to {geo.best.toFixed(0)}%</span>
-      {/* Past half a pixel the offset can land anywhere against the lattice, so
-          a larger figure buys nothing and naming it would imply otherwise. */}
-      {geo.anyPhase
-        ? <> wherever the imagery actually lands, median {geo.median.toFixed(0)}%.</>
-        : <> if the imagery is up to {geo.radiusM} m off, median {geo.median.toFixed(0)}%.</>}
-      {geo.spread >= 8 && <span className="text-amber-300/90"> That is {geo.spread.toFixed(0)} points on luck alone.</span>}
-    </div>
-  );
-}
-
 function NumField({ label, value, onChange, min, max, step = 1, unit, hint, action }: {
   label: string; value: number; onChange: (v: number) => void;
   min: number; max: number; step?: number; unit?: string;
@@ -233,13 +204,11 @@ export function LayoutFields({ pattern, stripWidth, setStripWidth, spacing, setS
  * pixel size with the count beside it; this card deliberately does not repeat
  * it, so there is one place that number lives rather than two to reconcile.
  */
-export function BlockSummary({ design, plan, res, geo }: {
+export function BlockSummary({ design, plan, res }: {
   design: BlockDesign;
   plan?: { totalU: number; totalV: number; nPlots: number };
   /** Pixel size in metres; absent until a grid is built. */
   res?: number;
-  /** How much of that purity is luck: see GeoSpread. */
-  geo?: GeoSpreadInfo | null;
 }) {
   const nPlots = plan?.nPlots ?? design.nSpecies * design.nBlocks;
   const plotArea = design.plotLength * design.plotWidth;
@@ -257,7 +226,6 @@ export function BlockSummary({ design, plan, res, geo }: {
           <span>plot is <span className="font-mono text-neutral-100">{alongPx.toFixed(1)} × {acrossPx.toFixed(1)}</span> px</span>
         )}
       </div>
-      <GeoSpread geo={geo} />
     </div>
   );
 }
@@ -267,13 +235,11 @@ export function BlockSummary({ design, plan, res, geo }: {
  * job as BlockSummary, for plots that came from a file. Sizes are measured off
  * the resolved plan (the grid's metres), never off the file's degrees.
  */
-export function ImportedSummary({ plan, angle, res, geo }: {
+export function ImportedSummary({ plan, angle, res }: {
   plan: ImportedPlan;
   /** The trial's angle to the pixel rows, so its size is measured along its OWN sides. */
   angle: number;
   res?: number;
-  /** How much of that purity is luck: see GeoSpread. */
-  geo?: GeoSpreadInfo | null;
 }) {
   // Plot area by the shoelace sum over all of a plot's rings: holes and outer
   // rings wind opposite ways in both shapefiles and GeoJSON, so they subtract.
@@ -304,7 +270,6 @@ export function ImportedSummary({ plan, angle, res, geo }: {
         <span><span className="font-mono text-neutral-100">{fmt(plan.plots.length)}</span> plots of about <span className="font-mono text-neutral-100">{median.toFixed(0)} m²</span></span>
         {sidePx != null && <span>about <span className="font-mono text-neutral-100">{sidePx.toFixed(1)}</span> px across</span>}
       </div>
-      <GeoSpread geo={geo} />
       {!plan.plotIds && (
         <div className="mt-1 text-neutral-400">
           More plots than the simulation can tell apart one by one: a pixel spanning two plots of the same variety counts as pure.

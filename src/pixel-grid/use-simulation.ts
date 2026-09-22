@@ -2,12 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import proj4 from 'proj4';
 import { crsToProj4Def } from '../lib/geo';
 import {
-  BARE, CROP_COLORS, strideFieldSim, geolocationSpread, CROP_PRESETS, PATTERNS, TRUTH_TYPES, bestPhaseOffset, cropById, makeBetaSchedule, simulateField,
+  BARE, CROP_COLORS, strideFieldSim, shiftSamples, CROP_PRESETS, PATTERNS, TRUTH_TYPES, bestPhaseOffset, cropById, makeBetaSchedule, simulateField,
   truthAt, utmEnvelope, TMAX, coverStats, speciesChannel, meanPerSpecies,
   blockPlacement, layoutKey, plantedAreaPx, stakeBlockPlan,
   type BlockDesign, type FieldParams, type FieldSim, type PatternType, type SensorParams, type SimLayout,
 } from './simulate';
-import { contrastInfo, plantedPixels } from './resolving';
+import { contrastInfo, plantedPixels, plantedShare } from './resolving';
 import { aoiUtmOrigin, buildS2Grid, type LngLatBounds, type S2Grid } from './s2-grid';
 import { fieldOverlapTest, type Poly } from './geometry';
 import { cellInFieldTest } from './field-membership';
@@ -47,6 +47,17 @@ import type { ImportedDesign, ImportedPlan } from './imported-types';
  * the comparison is judged on (TIE_POINTS in PcaStep). A cheaper thumbnail is
  * not worth a verdict that sampling could flip.
  */
+/**
+ * Geolocation samples per rung, per axis (shiftSamples' n): n x n offsets plus
+ * zero, so 5 simulations a rung where step 3 used to spend 17. Measured against
+ * n = 4 on a strip and a block design at 1, 2 and 4 m pixels and at 1 and 5 m
+ * of error, the ranges were identical in all twelve cases, to 0.0 points, at
+ * about a third of the time. Purity moves in steps as edges cross pixel edges,
+ * and the extreme steps are reached at the corners of the unit cell, which
+ * n = 2 already samples.
+ */
+const GEO_LADDER_N = 2;
+
 const LADDER_MAX_CELLS = 20_000;
 
 /**
@@ -129,8 +140,8 @@ type GridApi = ReturnType<typeof useFieldGrid>;
  */
 
 /** Planting design, crop curves and noise. Sigma is owned by step 2 and passed in. */
-export function useExperiment({ sigmaX, sigmaY, psfOffX, psfOffY, fieldBounds, fieldOrigin, pixelSize, epsg }: {
-  sigmaX: number; sigmaY: number; psfOffX: number; psfOffY: number;
+export function useExperiment({ sigmaX, sigmaY, fieldBounds, fieldOrigin, pixelSize, epsg }: {
+  sigmaX: number; sigmaY: number;
   /**
    * The grid's snapped UTM extent and the pattern origin. A block design is a
    * FINITE trial: it has to be anchored on the field, in the frame the ENGINE
@@ -267,10 +278,10 @@ export function useExperiment({ sigmaX, sigmaY, psfOffX, psfOffY, fieldBounds, f
     // returns the same plan the snap would have. The sensor is part of it
     // because the answer depends on the blur, so it is in the deps too.
     const place = blockPlacement(fieldBounds, fieldOrigin, rotation, pixelSize, OPTIMIZE_PLACEMENT);
-    const sen: SensorParams = { sigmaX, sigmaY, mixThreshold: threshold / 100, offX: psfOffX, offY: psfOffY };
+    const sen: SensorParams = { sigmaX, sigmaY, mixThreshold: threshold / 100 };
     return stakeBlockPlan(blockDesign, place, fieldOrigin, rotation, pixelSize, sen, fieldBounds).plan;
   }, [pattern, fieldBounds?.join(','), fieldOrigin?.[0], fieldOrigin?.[1], rotation, pixelSize,
-      sigmaX, sigmaY, psfOffX, psfOffY, threshold,
+      sigmaX, sigmaY, threshold,
       blockDesign.nSpecies, blockDesign.nBlocks, blockDesign.plotLength, blockDesign.plotWidth,
       blockDesign.plotAlley, blockDesign.blockAlley, blockDesign.blocksPerRow, blockDesign.seed]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -325,12 +336,12 @@ export function useExperiment({ sigmaX, sigmaY, psfOffX, psfOffY, fieldBounds, f
    * shows a stale design with no error, no type failure and no failing test.
    */
   const layoutSig = layoutKey(layout);
-  const sensor: SensorParams = { sigmaX, sigmaY, mixThreshold: threshold / 100, offX: psfOffX, offY: psfOffY };
+  const sensor: SensorParams = { sigmaX, sigmaY, mixThreshold: threshold / 100 };
   // Every primitive the sensor depends on: `sensor` itself is a fresh literal each
   // render and is deliberately kept out of dependency arrays, so this string is
   // what tells the memos the PSF changed. Miss the offsets here and the page
   // keeps showing the purity it computed for a centred kernel.
-  const sensorSig = `${sigmaX}_${sigmaY}_${threshold}_${psfOffX}_${psfOffY}`;
+  const sensorSig = `${sigmaX}_${sigmaY}_${threshold}`;
 
   /**
    * The species as everything downstream should DRAW them: one distinct colour
@@ -486,33 +497,6 @@ export function useSimulation({ aoi, gridApi, exp, simOn, fieldOrigin }: {
     [simOn, renderGrid, patternOrigin, pattern, stripWidth, spacing, rotation, sensorSig],
   );
 
-  /**
-   * What the purity would be if the imagery is not exactly where it says it is.
-   *
-   * Every other number on this page assumes the product's pixels land on their
-   * nominal lattice. Real ones are offset by a few metres, which at these pixel
-   * sizes is a large part of one pixel, and the design cannot be moved to
-   * compensate because the offset is not known when the trial is planted. So
-   * the useful answer is a range rather than a figure: a design whose purity
-   * swings ten points on where the imagery happens to fall is fragile, however
-   * good the number it reports.
-   *
-   * On an IDLE pass, never in the render: it is one full simulation per sample,
-   * 200 ms to 800 ms for sixteen of them, and it qualifies a number rather than
-   * producing one. Until it lands the card shows the nominal purity alone.
-   */
-  const [geoSpread, setGeoSpread] = useState<ReturnType<typeof geolocationSpread>>(null);
-  useEffect(() => {
-    if (!simOn || !renderGrid || !patternOrigin || !(geoErrM > 0)) { setGeoSpread(null); return; }
-    let cancelled = false;
-    const run = () => {
-      if (cancelled) return;
-      setGeoSpread(geolocationSpread(renderGrid, patternOrigin.origin, layout, sensor, geoErrM, 4));
-    };
-    const w = window as Window & { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number };
-    const id = w.requestIdleCallback ? w.requestIdleCallback(run, { timeout: 2000 }) : window.setTimeout(run, 400);
-    return () => { cancelled = true; if (!w.requestIdleCallback) clearTimeout(id); };
-  }, [simOn, renderGrid, patternOrigin, layoutSig, sensorSig, geoErrM]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
    * The season every species records, plus what one mixed pixel records.
@@ -629,7 +613,7 @@ export function useSimulation({ aoi, gridApi, exp, simOn, fieldOrigin }: {
       ? `${bd.nSpecies} species × ${bd.nBlocks} blocks · ${bd.plotLength} × ${bd.plotWidth} m plots`
       : `${speciesD[0]?.name} × ${speciesD[1]?.name} · ${stripWidth} m ${PATTERNS.find(p => p.id === pattern)?.label.toLowerCase() ?? ''}`;
 
-  return { patternOrigin, sim, geoSpread, ndviSeries, simStyle, fieldOutlineStyle, simGeojson, simSummary };
+  return { patternOrigin, sim, ndviSeries, simStyle, fieldOutlineStyle, simGeojson, simSummary };
 }
 
 /** The PCA, always over the FIELD and never the viewport, plus the resolution sweep. */
@@ -657,7 +641,7 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
   /** The map's simulation of `renderGrid`, reused when the PCA runs on that same grid. */
   mapSim: FieldSim | null;
 }) {
-  const { grid, renderGrid, build, buildOpts, inField, sigmaX, sigmaY, psfOffX, psfOffY } = gridApi;
+  const { grid, renderGrid, build, buildOpts, inField, sigmaX, sigmaY, geoErrM } = gridApi;
   const { pattern, stripWidth, spacing, rotation, threshold, sensorSig, layout, layoutSig, blockDesign,
           importedAngle, importedFileAngle, importedBasePlan } = exp;
   const [selectedPixels, setSelectedPixels] = useState<number[]>([]); // pixels picked in the PCA → highlight on map
@@ -697,7 +681,7 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
      * periodic layout has no trial to clip to: it fills the field, and the
      * field extent is already the right one.
      */
-    const sensorL: SensorParams = { sigmaX, sigmaY, mixThreshold: threshold / 100, offX: psfOffX, offY: psfOffY };
+    const sensorL: SensorParams = { sigmaX, sigmaY, mixThreshold: threshold / 100 };
     let box: [number, number, number, number] = build.utmBounds;
     if (layout.pattern === 'imported' && layout.imported) {
       box = importedTrialExtent(layout.imported, res, sensorL, box);
@@ -750,7 +734,7 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
       // primitives here would carry no block plan at all, so a randomised block
       // design would be invisible to the PCA while the map drew it.
       const layoutL: SimLayout = layout;
-      const sensorL: SensorParams = { sigmaX, sigmaY, mixThreshold: threshold / 100, offX: psfOffX, offY: psfOffY };
+      const sensorL: SensorParams = { sigmaX, sigmaY, mixThreshold: threshold / 100 };
       /**
        * simulateField answers for the whole rectangle, because the PSF has to
        * sweep it; a sampled grid then keeps every stride-th pixel of that
@@ -866,7 +850,7 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
     // this identical code at 0 degrees. Rebuilding it from primitives would drop
     // the block plan, so a randomised design would be invisible to the ladder.
     let layoutL: SimLayout = { ...layout, rotationDeg };
-    const sensorL: SensorParams = { sigmaX, sigmaY, mixThreshold: threshold / 100, offX: psfOffX, offY: psfOffY };
+    const sensorL: SensorParams = { sigmaX, sigmaY, mixThreshold: threshold / 100 };
     const [minE, minN, maxE, maxN] = utmEnvelope(aoi, epsg);
     const base = aoiUtmOrigin(aoi, epsg);
     const t = (rotationDeg * Math.PI) / 180, cos = Math.cos(t), sin = Math.sin(t);
@@ -1029,20 +1013,73 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
     // beneath a 2 m rung reading 77%. The same rule as pureEfficiency's.
     const measured = plantedPixels({ species: proportionBySpecies, offTrial: proportionOffTrial, nSpecies: nSp, count: n });
     const geo = plantedAreaPx(layoutL, r);
-    const planted = geo != null && geo > 0 && measured >= 0.8 * geo ? geo : measured;
-    const resolvingPct = planted >= 1 ? Math.max(0, Math.min(100, (100 * st.pureCrop) / planted)) : null;
+    const { planted, pct: resolvingPct } = plantedShare(st.pureCrop, measured, geo);
     // Threshold-free, for the tooltip: what the mixed pixels are worth unmixed,
     // and whether two varieties can be told apart at all, which no count sees.
     const under = contrastInfo({ species: proportionBySpecies, bare: proportionBare, offTrial: proportionOffTrial, nSpecies: nSp, count: n });
+
+    /**
+     * Where this rung's share lands if the imagery is up to `geoErrM` off.
+     *
+     * The trial is placed ONCE, as this rung places it, and the imagery lands
+     * anywhere in the uncertainty: each sample moves the trial under the fixed
+     * lattice, the same relative displacement, with the window and the field
+     * mask left exactly where they are (see geolocationSpread for why moving
+     * the PSF or the grid bounds is not the same thing).
+     *
+     * Every sample is scored by `shareAt`, which is this rung's own pipeline:
+     * the same box, the same field mask and the same planted-area rule as the
+     * nominal share above. A range computed any other way is a range in another
+     * currency, and a range in another currency printed beside a number is how
+     * this page came to show 47% under 62% for the same pure pixels.
+     *
+     * Only when an uncertainty is set: it is off by default and costs a few
+     * simulations per rung when on.
+     */
+    let geoLo: number | undefined, geoHi: number | undefined;
+    let geoLoPure: number | undefined, geoHiPure: number | undefined;
+    if (geoErrM > 0 && resolvingPct != null) {
+      const coverSp = speciesChannel(layoutL).coverSpecies;
+      const shareAt = (lay: SimLayout, org: [number, number]): { pct: number | null; pure: number } => {
+        const s2 = simulateField(box, org, lay, sensorL);
+        const mx = new Uint8Array(n);
+        const sp = s2.proportionBySpecies ? new Float32Array(n * nSp) : null;
+        const off = s2.proportionOffTrial ? new Float32Array(n) : null;
+        keep.forEach((k, j) => {
+          mx[j] = s2.mixed[k];
+          if (sp && s2.proportionBySpecies) for (let q = 0; q < nSp; q++) sp[j * nSp + q] = s2.proportionBySpecies[k * nSp + q];
+          if (off && s2.proportionOffTrial) off[j] = s2.proportionOffTrial[k];
+        });
+        const st2 = coverStats({ mixed: mx, coverSpecies: coverSp, nSpecies: nSp, offTrial: off });
+        return { pct: plantedShare(st2.pureCrop, plantedPixels({ species: sp, offTrial: off, nSpecies: nSp, count: n }), geo).pct,
+                 pure: st2.pureCrop };
+      };
+      // The count travels with each share, so the verdict can print the pure
+      // pixels of the WORST case rather than scaling a rounded percentage back.
+      const vals: { pct: number; pure: number }[] = [{ pct: resolvingPct, pure: st.pureCrop }];
+      const importedPlan = layoutL.pattern === 'imported' ? layoutL.imported : undefined;
+      for (const [dx, dy] of shiftSamples(geoErrM, r, GEO_LADDER_N)) {
+        if (dx === 0 && dy === 0) continue; // the nominal, already counted
+        // An imported plan carries absolute coordinates and has no origin, so
+        // the plan itself is what moves; everything else moves by its origin.
+        const v = importedPlan
+          ? shareAt({ ...layoutL, imported: shiftImportedPlan(importedPlan, -dx, -dy) }, [ox, oy])
+          : shareAt(layoutL, [ox - dx, oy - dy]);
+        if (v.pct != null) vals.push({ pct: v.pct, pure: v.pure });
+      }
+      const lo = vals.reduce((a, b) => (b.pct < a.pct ? b : a));
+      const hi = vals.reduce((a, b) => (b.pct > a.pct ? b : a));
+      geoLo = lo.pct; geoHi = hi.pct; geoLoPure = lo.pure; geoHiPure = hi.pure;
+    }
     // `mixed` travels with the rung, not just its tally: the thumbnail colours
     // each dot pure or mixed off these same bytes, so it cannot paint a pixel
     // green that the purity printed under it counted as mixed.
     return { res: r, proportionA, proportionBare, mixed, purePct: st.purePct, pureCount: st.pureCrop, trialCount: st.total,
-             resolvingPct, nEff: under.nEff, contrastDead: under.dead, plantCount: Math.round(planted),
+             resolvingPct, nEff: under.nEff, contrastDead: under.dead, plantCount: Math.round(planted), geoLo, geoHi, geoLoPure, geoHiPure,
              proportionBySpecies, nSpecies: nSp, proportionOffTrial, pixelIds, partial };
     // ladderSig covers the whole design, block parameters included; blockDesign's
     // fields are all in it.
-  }, [aoi, fieldRing, build?.epsg, ladderSig, sigmaX, sigmaY, psfOffX, psfOffY, threshold]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [aoi, fieldRing, build?.epsg, ladderSig, sigmaX, sigmaY, threshold, geoErrM]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Bumped by every new run and every cancellation. A chunk that finds it changed
   // stops without writing, so a stale ladder can never land after a newer one.

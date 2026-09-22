@@ -332,6 +332,27 @@ export interface Resolving {
 const PLANTED_COVERAGE = 0.8;
 
 /**
+ * THE rule for a purity share, in one place: pure pixels over the crop the
+ * design plants.
+ *
+ * `geo` is the planted area from the design's own geometry (plantedAreaPx), a
+ * constant for a design and a pixel size, which is what makes the share exactly
+ * proportional to the pure count. It is used when the measured window actually
+ * holds the trial; a sampled window holds a fraction of it and is divided by
+ * the crop it can see (`measured`) instead. Below one pixel of crop there is
+ * nothing to take a share of, and the answer is null rather than 0%.
+ *
+ * Every share this page prints goes through here: the ladder's rung, each of
+ * its geolocation samples, and pureEfficiency. They used to carry three copies
+ * of this rule, and the geolocation range is only in the same units as the
+ * share it qualifies for as long as they cannot drift apart.
+ */
+export function plantedShare(pure: number, measured: number, geo: number | null): { planted: number; pct: number | null } {
+  const planted = geo != null && geo > 0 && measured >= PLANTED_COVERAGE * geo ? geo : measured;
+  return { planted, pct: planted >= 1 ? Math.max(0, Math.min(100, (100 * pure) / planted)) : null };
+}
+
+/**
  * Pure pixels, as a share of the crop area the design plants.
  *
  * `plantedPx` is that area from the design's own geometry (plantedAreaPx), a
@@ -347,14 +368,12 @@ export function pureEfficiency(sim: FieldSim, plantedPx: number | null): Resolvi
     species: sim.proportionBySpecies, offTrial: sim.proportionOffTrial,
     nSpecies: sim.nSpecies, count: sim.mixed.length,
   });
-  const planted = plantedPx != null && plantedPx > 0 && measured >= PLANTED_COVERAGE * plantedPx
-    ? plantedPx
-    : measured;
+  const { planted } = plantedShare(sim.pureCrop, measured, plantedPx);
   return {
     pure: sim.pureCrop,
     planted,
     total: sim.total,
-    pct: planted >= 1 ? Math.max(0, Math.min(100, (100 * sim.pureCrop) / planted)) : null,
+    pct: plantedShare(sim.pureCrop, measured, plantedPx).pct,
     nEff: info.nEff,
     dead: info.dead,
   };

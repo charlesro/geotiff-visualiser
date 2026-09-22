@@ -40,7 +40,7 @@ function sampleWord(stride: number): string {
 function PcaStepBody(p: StepProps) {
   const { activeStep, toggleStep, } = p;
   const { aoi } = p.area;
-  const { sourceId, setSourceId, build, pickRes } = p.gridApi;
+  const { sourceId, setSourceId, build, pickRes, geoErrM } = p.gridApi;
   const { pattern, setPattern, stripWidth, setStripWidth, spacing, setSpacing, rotation, setRotation, magnitude, threshold, blockDesign, setBlockDesign, speciesD, presetsActive, colors, names, setSpeciesAt, setPresetAt, importedDesign, varieties, importedPlan, importedAngle } = p.exp;
   const imported = pattern === 'imported';
   // The angle the ladder compares: the trial's own for an imported one, or the
@@ -99,6 +99,7 @@ function PcaStepBody(p: StepProps) {
    * through and printed, rather than leaving two bare percentages to imply they
    * were taken over the same thing.
    */
+  const worstCase = geoErrM > 0;
   const comparison = (() => {
     if (!sweep || !sweepAligned) return null;
     const rows = sweepAligned.flatMap(al => {
@@ -117,8 +118,30 @@ function PcaStepBody(p: StepProps) {
       if (!own) return [];
       if (own.resolvingPct == null || al.resolvingPct == null) return [];
       if (!Number.isFinite(own.resolvingPct) || !Number.isFinite(al.resolvingPct)) return [];
+      /**
+       * With a geolocation error set, the pair is judged on its WORST cases.
+       *
+       * The nominal share is one draw: where the imagery happens to land. For a
+       * placement staked onto the grid it is the lucky draw by construction,
+       * so comparing nominals credited staking with luck. On a 50 m plot trial
+       * at 10 m the verdict called staking better on 182 against 225 pure
+       * pixels, where the worst cases were 177 against 180: a 24% gain that was
+       * 2% once the imagery could land anywhere within the error. `drawn` and
+       * `aligned` hold whichever figures are being compared, so the ranking
+       * rule below and the sentence that prints them can never disagree about
+       * what they compare. A rung whose range is not in yet is left out rather
+       * than judged on its nominal alongside worst cases.
+       */
+      if (worstCase) {
+        if (own.geoLo == null || al.geoLo == null) return [];
+        return [{ res: al.res, drawn: own.geoLo, aligned: al.geoLo,
+                  drawnPure: own.geoLoPure ?? NaN, alignedPure: al.geoLoPure ?? NaN,
+                  drawnBest: own.geoHi ?? NaN, alignedBest: al.geoHi ?? NaN,
+                  sampled: !!(own.partial || al.partial) }];
+      }
       return [{ res: al.res, drawn: own.resolvingPct, aligned: al.resolvingPct,
                 drawnPure: own.pureCount ?? NaN, alignedPure: al.pureCount ?? NaN,
+                drawnBest: NaN, alignedBest: NaN,
                 sampled: !!(own.partial || al.partial) }];
     });
     if (!rows.length) return null;
@@ -228,25 +251,34 @@ function PcaStepBody(p: StepProps) {
                       pairLabels={pairLabels}
                       species={speciesD} colors={colors} magnitude={magnitude} threshold={threshold} colorBy={pcaColorBy}
                       activeRes={build?.res} activeSim={lendable}
-                      onPick={pickOwn} onPickPair={pickAligned} />
+                      onPick={pickOwn} onPickPair={pickAligned} geoErrM={geoErrM} />
                     {comparison ? (
                       <p className="text-[11px] leading-snug text-neutral-500">
-                        Pure crop at {comparison.lead.res} m{comparison.lead.sampled ? ' ◦' : ''}: <span className="font-mono text-sky-300">{comparison.lead.drawn.toFixed(0)}%</span> at {angleLabel}°
+                        Pure crop at {comparison.lead.res} m{comparison.lead.sampled ? ' ◦' : ''}
+                        {worstCase && <>, counting on the worst case within {geoErrM} m</>}:{' '}
+                        <span className="font-mono text-sky-300">{comparison.lead.drawn.toFixed(0)}%</span> at {angleLabel}°
                         vs <span className="font-mono text-neutral-300">{comparison.lead.aligned.toFixed(0)}%</span> along the pixel rows
                         {/* The counts, in the units the reader can check on the panels,
                             and never one side alone: half a comparison reads as the other. */}
                         {Number.isFinite(comparison.lead.drawnPure) && Number.isFinite(comparison.lead.alignedPure)
-                          ? <> ({fmt(comparison.lead.drawnPure)} against {fmt(comparison.lead.alignedPure)} pure pixels{comparison.lead.sampled ? ', sampled over the centre of the field' : ''}).</>
+                          ? <> ({fmt(comparison.lead.drawnPure)} against {fmt(comparison.lead.alignedPure)} pure pixels{comparison.lead.sampled ? ', sampled over the centre of the field' : ''})</>
+                          : null}
+                        {/* The best case, so the reader sees what the nominal figures on the
+                            panels were promising and how much of it was the imagery's luck. */}
+                        {worstCase && Number.isFinite(comparison.lead.drawnBest) && Number.isFinite(comparison.lead.alignedBest)
+                          ? <>, and at best {comparison.lead.drawnBest.toFixed(0)}% vs {comparison.lead.alignedBest.toFixed(0)}%.</>
                           : '.'}
                         {/* Said only as far as the numbers show it, in the figure they were
                             ranked on, and in whichever direction they point. */}
                         {comparison.better.length > 0 && comparison.worse.length === 0
-                          ? ` Along the rows gives more pure crop at ${comparison.better.join(', ')} m, and is never more than ${TIE_POINTS} points behind at any of the ${comparison.sizes} ${comparison.sizes === 1 ? 'size' : 'sizes'}.`
+                          ? ` ${worstCase ? 'Even in the worst case, along' : 'Along'} the rows gives more pure crop at ${comparison.better.join(', ')} m, and is never more than ${TIE_POINTS} points behind at any of the ${comparison.sizes} ${comparison.sizes === 1 ? 'size' : 'sizes'}.`
                           : comparison.better.length > 0
-                            ? ` Along the rows gives more at ${comparison.better.join(', ')} m and less at ${comparison.worse.join(', ')} m.`
+                            ? ` ${worstCase ? 'In the worst case, along' : 'Along'} the rows gives more at ${comparison.better.join(', ')} m and less at ${comparison.worse.join(', ')} m.`
                             : comparison.worse.length > 0
-                              ? ` Along the rows gives less at ${comparison.worse.join(', ')} m.`
-                              : ` The two placements are within ${TIE_POINTS} points at every one of the ${comparison.sizes} ${comparison.sizes === 1 ? 'size' : 'sizes'}.`}
+                              ? ` ${worstCase ? 'In the worst case, along' : 'Along'} the rows gives less at ${comparison.worse.join(', ')} m.`
+                              : worstCase
+                                ? ` Once the imagery may be ${geoErrM} m off, the two placements are within ${TIE_POINTS} points at every one of the ${comparison.sizes} ${comparison.sizes === 1 ? 'size' : 'sizes'}: staking onto the grid buys nothing you can count on.`
+                                : ` The two placements are within ${TIE_POINTS} points at every one of the ${comparison.sizes} ${comparison.sizes === 1 ? 'size' : 'sizes'}.`}
                       </p>
                     ) : (
                       <p className="text-[11px] leading-snug text-neutral-500">Comparing the two ladders…</p>
@@ -254,7 +286,7 @@ function PcaStepBody(p: StepProps) {
                   </div>
                 ) : (
                   <PcaSweep steps={sweep} species={speciesD} colors={colors} magnitude={magnitude} threshold={threshold} colorBy={pcaColorBy}
-                    activeRes={build?.res} activeSim={activeSim} onPick={pickRes} />
+                    activeRes={build?.res} activeSim={activeSim} onPick={pickRes} geoErrM={geoErrM} />
                 )
               ) : <p className="text-[11px] leading-snug text-neutral-500">Computing the PCA at {RES_LADDER[0]}–{RES_LADDER[RES_LADDER.length - 1]} m…</p>}
             </div>

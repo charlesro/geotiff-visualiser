@@ -79,7 +79,7 @@ const { resolveImportedPlan, varietyKeyOf, convexHull, hullWidth, narrowestFeatu
 const { purePixels, stakeOnGrid, rotateImportedPlan } = await import(path.join(BUILD, 'src/pixel-grid/imported-rotate.mjs'));
 const { varietiesOf: readerVarietiesOf, varietyKeyOf: readerVarietyKeyOf } = await import(path.join(BUILD, 'src/pixel-grid/design-import.mjs'));
 const { pointInPoly, fieldOverlapTest, viewShowsField } = await import(path.join(BUILD, 'src/pixel-grid/geometry.mjs'));
-const { contrastInfo, pureEfficiency, plantedPixels } = await import(path.join(BUILD, 'src/pixel-grid/resolving.mjs'));
+const { contrastInfo, pureEfficiency, plantedPixels, plantedShare } = await import(path.join(BUILD, 'src/pixel-grid/resolving.mjs'));
 const { cellInFieldTest } = await import(path.join(BUILD, 'src/pixel-grid/field-membership.mjs'));
 const { gridToShapefileZip } = await import(path.join(BUILD, 'src/pixel-grid/shapefile.mjs'));
 
@@ -3228,6 +3228,60 @@ console.log('\nH19. a strip planting is phased for the BLURRED sensor, not a sha
       { sigmaX: 0, sigmaY: 0, mixThreshold: 0.9, offX: 0, offY: 0 });
     ok('no sensor means a sharp sensor at the given threshold', withNone.join() === withSharp.join());
   }
+}
+
+console.log('\nH20. the ladder geolocation range, in the units of the share it qualifies');
+{
+  // (1) The one share rule every printed purity goes through.
+  const a = plantedShare(500, 1900, 2000);   // the window holds the trial: the design's area
+  const b = plantedShare(500, 1000, 2000);   // a sample holds half of it: the crop in view
+  const c = plantedShare(0, 0.4, 0.4);       // less than one pixel of crop at all
+  ok('a window holding the trial is divided by the design\'s planted area', a.planted === 2000 && a.pct === 25);
+  ok('a sampled window is divided by the crop it can see', b.planted === 1000 && b.pct === 50);
+  ok('under one pixel of crop there is no share, not 0%', c.pct === null);
+  ok('and a share cannot pass 100%', plantedShare(3000, 2000, 2000).pct === 100);
+
+  // (2) The range method the ladder uses, on a strip and a block design.
+  const AOI20 = [1.960737705230713, 48.2027531931173, 1.9634413719177248, 48.20795866241308];
+  const base20 = aoiUtmOrigin(AOI20, 32631);
+  const [g0, h0, g1, h1] = utmEnvelope(AOI20, 32631);
+  const S20 = { sigmaX: 0.62, sigmaY: 0.62, mixThreshold: 0.9 };
+  const setup = (kind, res) => {
+    const w = [Math.floor(g0 / res) * res, Math.floor(h0 / res) * res, Math.ceil(g1 / res) * res, Math.ceil(h1 / res) * res];
+    if (kind === 'strip') {
+      const [du, dv] = bestPhaseOffset('strip-row-2', res, 3, 0, 0.9, base20[0], base20[1], S20);
+      return { w, layout: { pattern: 'strip-row-2', width: 3, spacing: 0, rotationDeg: 0 }, org: [base20[0] + du, base20[1] + dv] };
+    }
+    const D = { nSpecies: 5, nBlocks: 4, plotLength: 20, plotWidth: 40, plotAlley: 5, blockAlley: 5, blocksPerRow: 4, seed: 3 };
+    return { w, layout: { pattern: 'block', width: 2, spacing: 0, rotationDeg: 0,
+      block: stakeBlockPlan(D, blockPlacement(w, base20, 0, res, true), base20, 0, res, S20, w).plan }, org: base20 };
+  };
+  const shareOf = (w, lay, org, res) => {
+    const sim = simulateField({ res, utmBounds: w }, org, lay, S20);
+    const st = coverStats({ mixed: sim.mixed, coverSpecies: speciesChannel(lay).coverSpecies, nSpecies: sim.nSpecies, offTrial: sim.proportionOffTrial });
+    return plantedShare(st.pureCrop, plantedPixels({ species: sim.proportionBySpecies, offTrial: sim.proportionOffTrial,
+      nSpecies: sim.nSpecies, count: sim.mixed.length }), plantedAreaPx(lay, res)).pct;
+  };
+  const rangeOf = (kind, res, geoErr, n) => {
+    const { w, layout, org } = setup(kind, res);
+    const v = shiftSamples(geoErr, res, n).map(([dx, dy]) => shareOf(w, layout, [org[0] - dx, org[1] - dy], res));
+    return { lo: Math.min(...v), hi: Math.max(...v), nominal: shareOf(w, layout, org, res) };
+  };
+  for (const kind of ['strip', 'block']) {
+    const r2 = rangeOf(kind, 2, 5, 2), r4 = rangeOf(kind, 2, 5, 4);
+    ok(`${kind}: the printed share sits inside its own range`, r2.nominal >= r2.lo - 1e-9 && r2.nominal <= r2.hi + 1e-9,
+      `${r2.nominal.toFixed(1)}% in ${r2.lo.toFixed(1)}-${r2.hi.toFixed(1)}%`);
+    // The sample count the ladder uses (GEO_LADDER_N = 2) finds the same range as
+    // four times the samples, which is why it can afford to run on every rung.
+    ok(`${kind}: five samples find the range seventeen do`,
+      Math.abs(r2.lo - r4.lo) < 1e-9 && Math.abs(r2.hi - r4.hi) < 1e-9,
+      `${r2.lo.toFixed(1)}-${r2.hi.toFixed(1)} vs ${r4.lo.toFixed(1)}-${r4.hi.toFixed(1)}`);
+  }
+  // (3) It is the fragility the aligned figure hides. The best phase of a
+  // narrow strip design is a knife edge, and a metre of error loses half of it.
+  const s1 = rangeOf('strip', 2, 1, 2);
+  ok('an aligned strip trial\'s best case halves within a metre of error',
+    s1.hi > 60 && s1.lo < 0.6 * s1.hi, `${s1.lo.toFixed(0)}-${s1.hi.toFixed(0)}%`);
 }
 
 console.log('\nH17. the purity pair: pure pixels, over the crop area actually planted');

@@ -83,11 +83,11 @@ function SimStepBody(p: StepProps) {
             )}
 
             {pattern === 'block' && (
-              <BlockSummary design={blockDesign} plan={blockPlan} res={build?.res} geo={p.sim.geoSpread} />
+              <BlockSummary design={blockDesign} plan={blockPlan} res={build?.res} />
             )}
 
             {pattern === 'imported' && importedPlan && (
-              <ImportedSummary plan={importedPlan} angle={importedAngle} res={build?.res} geo={p.sim.geoSpread} />
+              <ImportedSummary plan={importedPlan} angle={importedAngle} res={build?.res} />
             )}
 
             {/* Dozens of varieties would bury the rest of the step, so an imported

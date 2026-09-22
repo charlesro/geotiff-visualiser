@@ -82,7 +82,7 @@ export default function PixelGridApp() {
   // by, while "In field only" hid them. `area.aoiPoly` still means "was a shape
   // traced", which only the wording (field vs drawn) cares about.
   const gridApi = useFieldGrid({ aoi, fieldRing });
-  const { sigmaX, sigmaY, psfOffX, psfOffY, renderGrid, fieldAreaM2, gridSummary } = gridApi;
+  const { sigmaX, sigmaY, renderGrid, fieldAreaM2, gridSummary } = gridApi;
   const [basemap, setBasemap] = usePersistentState<BasemapKey>('basemap', 'satellite', v => typeof v === 'string' && v in BASEMAPS);
   // Render the true planting pattern under the grid. ON by default: the page is
   // about what a sensor makes of a layout, and with this off the map is a grid
@@ -143,7 +143,7 @@ export default function PixelGridApp() {
     (aoi && gridApi.build?.epsg ? aoiUtmOrigin(aoi, gridApi.build.epsg) : null),
     [aoi, gridApi.build?.epsg]);
   const exp = useExperiment({
-    sigmaX, sigmaY, psfOffX, psfOffY,
+    sigmaX, sigmaY,
     fieldBounds: gridApi.build?.utmBounds ?? null, fieldOrigin, pixelSize: gridApi.build?.res ?? 10,
     epsg: gridApi.build?.epsg ?? null,
   });
@@ -294,7 +294,7 @@ export default function PixelGridApp() {
       // field from, so the turn is the whole of it and can land at once.
       if (!base || !build?.epsg) { cancelStake(); setImportedTurn(turn); setImportedShift([0, 0]); return; }
       const epsg = build.epsg, res = build.res, bounds = build.utmBounds;
-      const sensor = { sigmaX, sigmaY, mixThreshold: exp.threshold / 100, offX: psfOffX, offY: psfOffY };
+      const sensor = { sigmaX, sigmaY, mixThreshold: exp.threshold / 100 };
       const aligned = isAligned(exp.importedFileAngle + turn);
       setPendingAngle(deg);
       scheduleStake(() => {
