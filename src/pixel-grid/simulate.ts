@@ -2813,66 +2813,99 @@ export function cultureAt(E: number, N: number, layout: SimLayout, ox: number, o
  * (along-row u, cross-row v) frame; add it to the pattern origin.
  */
 /**
- * bestPhaseOffset is pure but costs ~35 ms (192 phases x 400 pixels x 16
- * sub-samples), and the resolution ladder calls it once per size (twice per size
- * with "vs aligned"), with IDENTICAL arguments, since rotation is not an input.
- * Results are cached by argument. `threshold` is deliberately left out of the
- * key: the search maximises continuous coverage and never reads it, so moving the
- * purity slider reuses every cached placement.
+ * bestPhaseOffset scores every candidate with the engine itself, so it is cached
+ * by argument: the resolution ladder calls it once per size, twice with "vs
+ * aligned", with identical arguments, since rotation is not an input. The
+ * sensor IS part of the key, because the answer depends on the blur (see below).
  */
 const phaseCache = new Map<string, [number, number]>();
 const PHASE_CACHE_MAX = 512;
 
 export function bestPhaseOffset(
-  // `threshold` is accepted but unread (see above); it stays in the signature
-  // because every caller has it in hand and dropping it would silently shift
-  // the two origins one slot left in the JS test suites, which are untyped.
-  pattern: PatternType, res: number, width: number, spacing: number, _threshold: number, ox0: number, oy0: number,
+  pattern: PatternType, res: number, width: number, spacing: number, threshold: number, ox0: number, oy0: number,
+  /**
+   * The sensor the placement is being chosen FOR. Optional so the untyped JS
+   * suites keep their positional call sites; absent, it is a sharp sensor at
+   * `threshold`, which is exactly the old behaviour.
+   */
+  sensor?: SensorParams,
 ): [number, number] {
   // An imported trial sits where the file put it; there is no phase to slide.
   if (pattern === 'imported') return [0, 0];
-  const key = `${pattern}|${res}|${width}|${spacing}|${ox0}|${oy0}`;
+  const sen: SensorParams = sensor ?? { sigmaX: 0, sigmaY: 0, mixThreshold: threshold, offX: 0, offY: 0 };
+  const key = `${pattern}|${res}|${width}|${spacing}|${ox0}|${oy0}|${sen.sigmaX}|${sen.sigmaY}|${sen.mixThreshold}|${sen.offX ?? 0}|${sen.offY ?? 0}`;
   const hit = phaseCache.get(key);
   if (hit) return [hit[0], hit[1]]; // a copy: callers must never share the cached tuple
-  const out = searchPhaseOffset(pattern, res, width, spacing, ox0, oy0);
+  const out = searchPhaseOffset(pattern, res, width, spacing, ox0, oy0, sen);
   if (phaseCache.size >= PHASE_CACHE_MAX) phaseCache.delete(phaseCache.keys().next().value as string);
   phaseCache.set(key, out);
   return [out[0], out[1]];
 }
 
+/** Candidate phases per axis, and the most pixels a candidate is scored over. */
+const STRIP_PHASE_STEPS = 48;
+const STRIP_PHASE_MAX_CELLS = 3_000;
+
+/**
+ * Slide a periodic planting to the phase that yields the most PURE pixels
+ * through the real sensor.
+ *
+ * This used to maximise a SHARP proxy, the mean dominant-crop coverage with no
+ * blur and no threshold, on the reasoning that it "peaks only when strip edges
+ * land exactly on pixel edges". That is true for a sharp sensor and backwards
+ * for a blurred one. An edge on a pixel edge sits BETWEEN two pixels, so after
+ * the blur both neighbours are contaminated; an edge through the middle of a
+ * pixel sacrifices that one pixel and leaves its neighbours cleaner. Measured on
+ * 3 m strips at 2 m pixels with the Sentinel-2 blur, the sharp optimum was the
+ * blurred WORST: 30,660 sharp-pure pixels there against 10,290 blurred, where
+ * the phase it rejected gave 20,370. It chose the bottom of the range at three
+ * rungs of the ladder in four, which is how turning a strip trial onto the
+ * pixel rows came to look worse than leaving it at 10 degrees.
+ *
+ * So each candidate is scored by simulateField, on the pure count the page
+ * reports, over a window a few periods across. The search covers one PURITY
+ * period per axis, which for a "-2" pattern (crops alternate every second
+ * strip) is two strips, not one: the old search swept a single strip and never
+ * reached half of that pattern's phases.
+ */
 function searchPhaseOffset(
   pattern: PatternType, res: number, width: number, spacing: number, ox0: number, oy0: number,
+  sensor: SensorParams,
 ): [number, number] {
-  const W = width, P = width + Math.max(0, spacing);
-  const assign = (k: number, two: boolean) => (two ? Math.floor(k / 2) : k) & 1;
-  const search = (origin: number, two: boolean): number => {
-    const STEPS = 192, SUB = 16, NPIX = 400;
-    const m0 = Math.round(origin / res);
-    // Maximise the mean dominant-crop coverage (continuous): this peaks only when
-    // strip edges land exactly on pixel edges, not merely when pixels are "pure
-    // enough" to clear the threshold (which leaves a constant sub-pixel shift).
+  const P = width + Math.max(0, spacing);
+  const vAxis = pattern === 'row' || pattern === 'strip-row-2' || pattern === 'checker';
+  const uAxis = pattern === 'col' || pattern === 'strip-col-2' || pattern === 'checker';
+  if (!(res > 0) || !(P > 0) || (!vAxis && !uAxis)) return [0, 0];
+  const two = pattern === 'strip-row-2' || pattern === 'strip-col-2';
+  const period = two ? 2 * P : P;
+
+  // A window a few periods across, snapped to the lattice under the origin, and
+  // capped so a fine pixel over a wide strip stays affordable.
+  let side = Math.max(4 * period, 16 * res);
+  if ((side / res) * (side / res) > STRIP_PHASE_MAX_CELLS) side = Math.sqrt(STRIP_PHASE_MAX_CELLS) * res;
+  const n = Math.max(4, Math.round(side / res));
+  const e0 = Math.floor(ox0 / res) * res, n0 = Math.floor(oy0 / res) * res;
+  const box = { res, utmBounds: [e0, n0, e0 + n * res, n0 + n * res] } as unknown as S2Grid;
+  const layout: SimLayout = { pattern, width, spacing, rotationDeg: 0 };
+
+  const score = (du: number, dv: number) => simulateField(box, [ox0 + du, oy0 + dv], layout, sensor).pureCrop;
+  const search = (axis: 'u' | 'v', other: number): number => {
+    // Strictly greater keeps the FIRST maximiser, so a flat optimum resolves to
+    // the smallest shift and an already-aligned pattern is left alone.
     let best = 0, bestScore = -1;
-    for (let s = 0; s < STEPS; s++) {
-      const d = (s / STEPS) * P;
-      let score = 0;
-      for (let p = 0; p < NPIX; p++) {
-        const lo = (m0 + p) * res;
-        let cA = 0, cB = 0;
-        for (let ss = 0; ss < SUB; ss++) {
-          const x = lo + ((ss + 0.5) / SUB) * res - origin - d; // pattern coordinate
-          const m = ((x % P) + P) % P;
-          if (m < W) { if (assign(Math.floor(x / P), two) === 0) cA++; else cB++; }
-        }
-        score += Math.max(cA, cB); // how cleanly this pixel is a single crop
-      }
-      if (score > bestScore) { bestScore = score; best = d; }
+    for (let k = 0; k < STRIP_PHASE_STEPS; k++) {
+      const d = (k / STRIP_PHASE_STEPS) * period;
+      const sc = axis === 'u' ? score(d, other) : score(other, d);
+      if (sc > bestScore) { bestScore = sc; best = d; }
     }
     return best;
   };
-  const vAxis = pattern === 'row' || pattern === 'strip-row-2' || pattern === 'checker';
-  const uAxis = pattern === 'col' || pattern === 'strip-col-2' || pattern === 'checker';
-  const dv = vAxis ? search(oy0, pattern === 'strip-row-2') : 0;
-  const du = uAxis ? search(ox0, pattern === 'strip-col-2') : 0;
+  // Row-type patterns vary across rows only, and column-type along rows only, so
+  // one axis is searched with the other left where it is. A checker varies both
+  // ways; searching v with u fixed and then u at that v is two 1-D passes rather
+  // than a 2-D grid, which is what the old search did too.
+  const dv = vAxis ? search('v', 0) : 0;
+  const du = uAxis ? search('u', dv) : 0;
   return [du, dv];
 }
 

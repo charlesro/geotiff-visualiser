@@ -103,27 +103,39 @@ function PcaStepBody(p: StepProps) {
     if (!sweep || !sweepAligned) return null;
     const rows = sweepAligned.flatMap(al => {
       const own = sweep.find(s => Math.abs(s.res - al.res) < 1e-9);
-      if (!own || own.current || own.partial || al.partial) return [];
-      // Ranked on the SAME quantity the panels print: resolving efficiency.
-      // Ranking on purity was a second defect on top of the mismatch. Purity is
-      // zero for every rung of a plot-scale trial at a 100% threshold, and a
-      // pair of zeroes was read here as "no measurement", so the verdict could
-      // never render and the panel sat on "Comparing the two ladders" forever.
-      // Resolving efficiency is a real number wherever the design is
-      // estimable, and `null` says outright that it is not.
+      // A pair is judged whenever it has a number on BOTH sides. The rung on
+      // the map is a placeholder until the idle pass fills it, and has none
+      // until then.
+      //
+      // Sampled rungs (the ◦ panels) ARE judged, on their shares. Two rules used
+      // to exclude them and the rung on the map, and between them they hid
+      // every informative size there was: on a large field every fine rung is
+      // sampled, so a strip design left 3 m, a 0% against 0% pair, as the
+      // whole verdict while the panels above it read 38% against 67% at 2 m.
+      // The ranked quantity is the SHARE, normalised within each window, which
+      // is what the panels print side by side and the reader compares anyway.
+      if (!own) return [];
       if (own.resolvingPct == null || al.resolvingPct == null) return [];
       if (!Number.isFinite(own.resolvingPct) || !Number.isFinite(al.resolvingPct)) return [];
       return [{ res: al.res, drawn: own.resolvingPct, aligned: al.resolvingPct,
-                drawnTotal: own.trialCount ?? NaN, alignedTotal: al.trialCount ?? NaN }];
+                drawnPure: own.pureCount ?? NaN, alignedPure: al.pureCount ?? NaN,
+                sampled: !!(own.partial || al.partial) }];
     });
     if (!rows.length) return null;
-    // `sizes` is how many pairs were actually judged, which is NOT every panel
-    // on screen: a rung sampled over a central window is excluded, and those
-    // panels still show their own percentages. Without saying how many were
-    // compared, a verdict reading "at every size" sits above a 0.5 m pair nine
-    // points apart and looks like it is contradicting them.
-    return { first: rows[0], sizes: rows.length,
-             worse: rows.filter(x => x.aligned < x.drawn - TIE_POINTS).map(x => x.res) };
+    /**
+     * BOTH directions, ranked on the share the panels print. The verdict used
+     * to compute only `worse`, so its vocabulary had no word for better: the
+     * kindest thing it could say about turning the trial onto the pixel rows
+     * was that it was "never more than 2 points behind", even where it won by
+     * 29. A reader told only how far behind something is concludes it is
+     * behind.
+     */
+    const better = rows.filter(x => x.aligned > x.drawn + TIE_POINTS).map(x => x.res);
+    const worse = rows.filter(x => x.aligned < x.drawn - TIE_POINTS).map(x => x.res);
+    // Lead with the size where the placements differ MOST. The first size
+    // measured whole is often the least informative one there is.
+    const lead = rows.reduce((a, b) => (Math.abs(b.aligned - b.drawn) > Math.abs(a.aligned - a.drawn) ? b : a));
+    return { lead, sizes: rows.length, better, worse };
   })();
   /**
    * Picking a rung of the ALIGNED ladder. Those panels are the design turned
@@ -219,21 +231,22 @@ function PcaStepBody(p: StepProps) {
                       onPick={pickOwn} onPickPair={pickAligned} />
                     {comparison ? (
                       <p className="text-[11px] leading-snug text-neutral-500">
-                        Resolving power at {comparison.first.res} m: <span className="font-mono text-sky-300">{comparison.first.drawn.toFixed(0)}%</span> at {angleLabel}°
-                        vs <span className="font-mono text-neutral-300">{comparison.first.aligned.toFixed(0)}%</span> along the pixel rows.
-                        {/* The two shares are taken over each placement's own trial pixels, and the
-                            placements catch different numbers of edge pixels. Printed only when both
-                            rungs reported a total, never one side alone: half a ratio reads as the other's. */}
-                        {Number.isFinite(comparison.first.drawnTotal) && Number.isFinite(comparison.first.alignedTotal) && (
-                          <> Of {fmt(comparison.first.drawnTotal)} and {fmt(comparison.first.alignedTotal)} trial pixels.</>
-                        )}
-                        {/* Said only as far as the numbers show it, in the figure they were ranked on. */}
-                        {/* Said only as far as the numbers show it: never worse by more than
-                            the tie band is the claim the ranking supports, not "as pure", and
-                            the sizes it was checked over are the ones measured whole. */}
-                        {comparison.worse.length === 0
-                          ? ` Along the rows is never more than ${TIE_POINTS} points behind, over the ${comparison.sizes} ${comparison.sizes === 1 ? 'size' : 'sizes'} measured whole.`
-                          : ` Along the rows resolves less at ${comparison.worse.join(', ')} m.`}
+                        Pure crop at {comparison.lead.res} m{comparison.lead.sampled ? ' ◦' : ''}: <span className="font-mono text-sky-300">{comparison.lead.drawn.toFixed(0)}%</span> at {angleLabel}°
+                        vs <span className="font-mono text-neutral-300">{comparison.lead.aligned.toFixed(0)}%</span> along the pixel rows
+                        {/* The counts, in the units the reader can check on the panels,
+                            and never one side alone: half a comparison reads as the other. */}
+                        {Number.isFinite(comparison.lead.drawnPure) && Number.isFinite(comparison.lead.alignedPure)
+                          ? <> ({fmt(comparison.lead.drawnPure)} against {fmt(comparison.lead.alignedPure)} pure pixels{comparison.lead.sampled ? ', sampled over the centre of the field' : ''}).</>
+                          : '.'}
+                        {/* Said only as far as the numbers show it, in the figure they were
+                            ranked on, and in whichever direction they point. */}
+                        {comparison.better.length > 0 && comparison.worse.length === 0
+                          ? ` Along the rows gives more pure crop at ${comparison.better.join(', ')} m, and is never more than ${TIE_POINTS} points behind at any of the ${comparison.sizes} ${comparison.sizes === 1 ? 'size' : 'sizes'}.`
+                          : comparison.better.length > 0
+                            ? ` Along the rows gives more at ${comparison.better.join(', ')} m and less at ${comparison.worse.join(', ')} m.`
+                            : comparison.worse.length > 0
+                              ? ` Along the rows gives less at ${comparison.worse.join(', ')} m.`
+                              : ` The two placements are within ${TIE_POINTS} points at every one of the ${comparison.sizes} ${comparison.sizes === 1 ? 'size' : 'sizes'}.`}
                       </p>
                     ) : (
                       <p className="text-[11px] leading-snug text-neutral-500">Comparing the two ladders…</p>

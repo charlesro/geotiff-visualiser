@@ -2593,11 +2593,15 @@ console.log('\nI. field purity: the documented 50% → 100% phase case');
   // bestPhaseOffset must find the 5 m shift that puts the edges back on the lattice.
   const [du, dv] = bestPhaseOffset('col', 10, 20, 0, 0.8, minE + 5, minN);
   ok('the search only moves the striping axis', dv === 0 && du > 0);
-  // The score is flat across every shift that keeps all 16 sub-samples of a
-  // pixel inside one strip, and the search keeps the FIRST maximiser, so it
-  // stops just short of the exact 5 m: anywhere in that plateau aligns.
-  ok('it lands within one sub-sample of the ideal 5 m shift',
-    Math.abs(du - 5) < 10 / 16, `du=${du.toFixed(4)}, sub-sample=${(10 / 16).toFixed(4)} m`);
+  // The search now scores with the engine itself, so it can only be as precise
+  // as the engine's own fine cell (2.5 m for 20 m strips at 10 m pixels): every
+  // shift from 4.0 to 6.25 m scores 100% there, and the search keeps the FIRST
+  // maximiser. The old tolerance, one of its private 16 sub-samples (0.625 m),
+  // demanded a precision the engine cannot see; "restores 100%" below is the
+  // check with teeth.
+  const cell = 10 / strideFor(10, minFeatureM(layout));
+  ok('it lands on the plateau the engine scores as fully aligned',
+    Math.abs(du - 5) < cell, `du=${du.toFixed(4)}, engine fine cell=${cell.toFixed(3)} m`);
   ok('and applying it restores 100% purity',
     simulateField(grid, [minE + 5 + du, minN + dv], layout, SHARP).purePct === 100);
   ok('an already-aligned pattern is left effectively alone',
@@ -3161,6 +3165,68 @@ console.log('\nH18. an aligned block trial is STAKED on its best phase, not corn
     const at10 = stakeBlockPlan(D18, blockPlacement(w, base18, 10, res, true), base18, 10, res, SEN18, w);
     ok('a rotated trial is not staked, and is returned untouched',
       at10.staked === false && at10.offset[0] === 0 && at10.offset[1] === 0);
+  }
+}
+
+console.log('\nH19. a strip planting is phased for the BLURRED sensor, not a sharp one');
+{
+  /**
+   * searchPhaseOffset maximised sharp coverage, which peaks with strip edges on
+   * pixel edges. Under a blur that is the WORST phase: an edge between two
+   * pixels contaminates both. On 3 m strips at 2 m pixels it chose the bottom of
+   * the range at three rungs in four, and turning the trial onto the pixel rows
+   * then reported worse than leaving it at 10 degrees.
+   */
+  const AOI19 = [1.960737705230713, 48.2027531931173, 1.9634413719177248, 48.20795866241308];
+  const base19 = aoiUtmOrigin(AOI19, 32631);
+  const [c0, d0, c1, d1] = utmEnvelope(AOI19, 32631);
+  const W19 = 3, PAT19 = 'strip-row-2';
+  const S19 = { sigmaX: 0.62, sigmaY: 0.62, mixThreshold: 0.9, offX: 0, offY: 0 };
+  const pure19 = (res, rot, du, dv, sen = S19) => {
+    const w = [Math.floor(c0 / res) * res, Math.floor(d0 / res) * res, Math.ceil(c1 / res) * res, Math.ceil(d1 / res) * res];
+    const t = rot * Math.PI / 180, c = Math.cos(t), s = Math.sin(t);
+    const L = { pattern: PAT19, width: W19, spacing: 0, rotationDeg: rot };
+    const sim = simulateField({ res, utmBounds: w }, [base19[0] + du * c - dv * s, base19[1] + du * s + dv * c], L, sen);
+    return coverStats({ mixed: sim.mixed, coverSpecies: speciesChannel(L).coverSpecies, nSpecies: sim.nSpecies,
+                        offTrial: sim.proportionOffTrial }).pureCrop;
+  };
+
+  // (1) The trap itself, pinned: the sharp optimum IS the blurred worst here.
+  {
+    const res = 2, sharp = { ...S19, sigmaX: 0, sigmaY: 0 };
+    const at = f => [pure19(res, 0, 0, f * res, sharp), pure19(res, 0, 0, f * res)];
+    const [s0, b0] = at(0), [sHalf, bHalf] = at(0.5);
+    ok('a sharp sensor prefers strip edges mid-pixel here', sHalf > s0, `${sHalf} vs ${s0}`);
+    ok('while the blurred sensor gets HALF as many pure pixels there', bHalf < 0.6 * b0, `${bHalf} vs ${b0}`);
+  }
+
+  // (2) With the sensor passed, the search lands on the best blurred phase.
+  for (const res of [1, 2]) {
+    const [du, dv] = bestPhaseOffset(PAT19, res, W19, 0, 0.9, base19[0], base19[1], S19);
+    const chosen = pure19(res, 0, du, dv);
+    let best = 0;
+    for (let i = 0; i < 48; i++) best = Math.max(best, pure19(res, 0, du, (i / 48) * 2 * W19));
+    ok(`at ${res} m the chosen phase is the best one available`, chosen === best, `${chosen} of a best ${best}`);
+    // (3) The contradiction this fixes: aligned must not lose to 10 degrees.
+    const ten = pure19(res, 10, du, dv);
+    ok(`and turned onto the pixel rows it beats the same trial at 10 degrees`, chosen > ten, `${chosen} vs ${ten}`);
+  }
+
+  // (4) The search covers a "-2" pattern's full period, two strips, not one.
+  {
+    const res = 2;
+    const [, dv] = bestPhaseOffset(PAT19, res, W19, 0, 0.9, base19[0], base19[1], S19);
+    ok('a -2 pattern is searched over two strips', dv >= 0 && dv < 2 * W19, `dv=${dv.toFixed(3)}`);
+  }
+
+  // (5) Without a sensor it is still the sharp search, so older callers keep
+  // their meaning: this is what the four legacy checks in section C rely on.
+  {
+    const res = 2;
+    const withNone = bestPhaseOffset(PAT19, res, W19, 0, 0.9, base19[0] + 0.01, base19[1]);
+    const withSharp = bestPhaseOffset(PAT19, res, W19, 0, 0.9, base19[0] + 0.01, base19[1],
+      { sigmaX: 0, sigmaY: 0, mixThreshold: 0.9, offX: 0, offY: 0 });
+    ok('no sensor means a sharp sensor at the given threshold', withNone.join() === withSharp.join());
   }
 }
 

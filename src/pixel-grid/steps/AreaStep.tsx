@@ -15,14 +15,6 @@ function AreaStepBody(p: StepProps) {
 
   return (
         <Step n={1} title="Experiment area" summary={areaSummary} open={activeStep === 'area'} onClick={() => toggleStep('area')}>
-        {/* What this page is for. It used to be written only under the drawing
-            buttons, shown when there was no field, and a first visit always opens
-            on the demo field, so nobody arriving cold ever read it. */}
-        <p className="text-[11px] leading-relaxed text-neutral-400">
-          See where a satellite's pixels fall on your trial, and whether that sensor could tell your treatments apart.
-          Draw or upload the field, pick the sensor, lay out the experiment, and export the pixel footprints.
-        </p>
-
         {/* Search with autocomplete */}
         <form onSubmit={onSearch} className="relative flex gap-2">
           <input

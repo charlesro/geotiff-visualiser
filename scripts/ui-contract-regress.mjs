@@ -148,87 +148,96 @@ console.log('\nU1b. a trial angle applies its turn, shift and field together (Pi
     /catch \(e\)/.test(job) && /setImportError\(/.test(job));
 }
 
-console.log('\nU2. step 3 states a purity only when the whole field was measured');
+console.log('\nU2. step 3 states NO purity: it lives in one place, the step-4 ladder');
 const simStep = read('src/pixel-grid/steps/SimStep.tsx');
+const controls = read('src/pixel-grid/steps/controls.tsx');
 const useSim = read('src/pixel-grid/use-simulation.ts');
-const ui = read('src/pixel-grid/ui.tsx');
 
-// 1. The card's number comes from the whole-grid simulation, and from nothing else.
-const fieldSimLine = (simStep.match(/^\s*const fieldSim =.*$/m) || [''])[0];
-check('step 3 measures purity only when the WHOLE grid is simulated',
-  /gridApi\.grid\s*\?\s*p?\.?sim\.sim\s*:\s*null/.test(fieldSimLine.replace(/\s+/g, ' ')),
-  fieldSimLine.trim());
-check('and takes no fallback from the PCA, which is unmounted while step 3 is open',
-  fieldSimLine !== '' && !/pca/i.test(fieldSimLine),
-  fieldSimLine.trim());
+// The step-3 card used to carry its own purity headline, count and advisory
+// notes. That was a SECOND place the number lived, and every time the ladder's
+// definition moved the card had to be moved with it or the page said two
+// things: 62% on the ladder beside 47% on the Purity tab for the same pure
+// pixels. The card now describes the trial and nothing else. These checks fail
+// if a purity line, its notes or the plumbing that fed them come back.
+const summaries = controls.slice(controls.indexOf('export function BlockSummary('),
+  controls.indexOf('/**', controls.indexOf('export function ImportedSummary(') + 10));
+check('neither summary card renders a purity headline', !/<Resolving\b/.test(summaries) && !/function Resolving\b/.test(controls));
+check('nor the advisory notes that explained it',
+  !/const note =/.test(summaries) && !/narrower than one pixel/.test(summaries) && !/Lowering the purity threshold/.test(summaries));
+check('nor takes the props that fed them',
+  !/\bpurePct\b/.test(summaries) && !/\bresolving\b/.test(summaries) && !/\bthreshold\b/.test(summaries));
+check('step 3 passes none of them down',
+  !/resolving=\{/.test(simStep) && !/purePct=\{/.test(simStep) && !/const fieldSim =/.test(simStep));
+check('and no capped-grid line apologises for a purity the card never states',
+  !/no trial-wide purity to state here/.test(simStep));
+check('and the hook no longer computes a card-only purity', !/const resolving = useMemo/.test(useSim));
 
-// 2. The premises that make such a fallback dead. If either changes, revisit 1.
-const runEffect = useSim.slice(useSim.indexOf("if (activeStep !== 'pca'"));
-check('usePcaSim drops its run as soon as the active step is not the PCA',
-  /^if \(activeStep !== 'pca'[^\n]*setPcaRun\(null\)/.test(runEffect.split('\n')[0]));
-check('pcaView is null without a run', /if \(!pcaRun\) return null;/.test(useSim));
-check('Step unmounts a collapsed panel, so step 3 exists only while it is open',
-  /\{open && <div/.test(ui));
-
-// 3. Past the cap the card is silent, and the step says why rather than
-//    dropping the row with no explanation.
-const note = simStep.match(/\{build\?\.capped &&[\s\S]{0,600}?<\/p>\s*\)\}/);
-check('a capped grid gets a line explaining the missing purity', !!note);
-check('that line offers the two real ways out (step 4, a coarser sensor)',
-  !!note && /Step&nbsp;4/.test(note[0]) && /coarser sensor/.test(note[0]));
-
-// 4. The doc above fieldSim must not promise a fallback it does not take.
-const doc = simStep.slice(0, simStep.indexOf('const fieldSim'));
-check('the comment does not promise a PCA fallback',
-  !/PCA runs on the field itself, so it is the fallback/.test(doc));
-
-console.log('\nU3. the aligned-vs-drawn verdict reads the number it prints');
+console.log('\nU3. the aligned-vs-drawn verdict reads the number it prints, both ways');
 {
   const src = fs.readFileSync(path.join(ROOT, 'src/pixel-grid/steps/PcaStep.tsx'), 'utf8');
 
-  // (1) The ranking rule, lifted from the source and run, not reimplemented.
+  // (1) The ranking rules, lifted from the source and run, not reimplemented.
+  // BOTH directions: the verdict used to compute only `worse`, so it had no
+  // word for better and the kindest thing it could say about the aligned
+  // placement was "never more than 2 points behind", even where it won by 29.
   const tie = Number(src.match(/const TIE_POINTS = ([\d.]+)\s*;/)[1]);
-  const pred = src.match(/rows\.filter\((x => [^)]*?)\)\.map/)[1];
-  const worse = new Function('TIE_POINTS', `return (${pred});`)(tie);
-  ok('a point of purity is a tie, not a verdict',
-    worse({ drawn: 50, aligned: 49.5 }) === false, `TIE_POINTS=${tie}`);
-  ok('and a real drop is called worse', worse({ drawn: 50, aligned: 39 }) === true);
+  const predOf = name => src.match(new RegExp(`const ${name} = rows\\.filter\\((x => [^)]*?)\\)\\.map`))?.[1];
+  const betterSrc = predOf('better'), worseSrc = predOf('worse');
+  ok('the verdict ranks in BOTH directions', !!betterSrc && !!worseSrc, `better: ${betterSrc} | worse: ${worseSrc}`);
+  const better = new Function('TIE_POINTS', `return (${betterSrc});`)(tie);
+  const worse = new Function('TIE_POINTS', `return (${worseSrc});`)(tie);
+  ok('a point of purity is a tie in either direction',
+    better({ drawn: 50, aligned: 50.5 }) === false && worse({ drawn: 50, aligned: 49.5 }) === false, `TIE_POINTS=${tie}`);
+  ok('a real gain is called better, and a real drop worse',
+    better({ drawn: 38, aligned: 67 }) === true && worse({ drawn: 50, aligned: 39 }) === true);
+  ok('and one pair is never both', !(better({ drawn: 38, aligned: 67 }) && worse({ drawn: 38, aligned: 67 })));
 
-  // (2) Everything the rule reads must be printed in the sentence beside it.
-  // This is the assertion that fails on the shipped bug, where the filter read
-  // counts while the paragraph printed percentages, and on its first fix, where
-  // it read counts and printed counts but the reader had asked for percentages.
+  // (2) Everything the rules read must be printed in the sentence beside them.
   // The rule is not WHICH quantity, it is that they are the same quantity.
-  const para = src.slice(src.indexOf('Resolving power at {'));
+  const para = src.slice(src.indexOf('Pure crop at {'));
   const sentence = para.slice(0, para.indexOf('</p>'));
-  const ranked = [...new Set([...pred.matchAll(/x\.(\w+)/g)].map(m => m[1]))];
-  const shown = new Set([...sentence.matchAll(/comparison\.first\.(\w+)/g)].map(m => m[1]));
+  const ranked = [...new Set([...`${betterSrc} ${worseSrc}`.matchAll(/x\.(\w+)/g)].map(m => m[1]))];
+  const shown = new Set([...sentence.matchAll(/comparison\.lead\.(\w+)/g)].map(m => m[1]));
   ok('every field the verdict ranks on is printed in the same sentence',
     ranked.length > 0 && ranked.every(f => shown.has(f)), `ranks on ${ranked.join(', ')}`);
-  ok('and the panel shows those as percentages, which is what was asked for',
-    /comparison\.first\.drawn\.toFixed\(0\)\}%/.test(sentence) &&
-    /comparison\.first\.aligned\.toFixed\(0\)\}%/.test(sentence), [...shown].join(', '));
+  ok('and they are printed as the percentages the panels show',
+    /comparison\.lead\.drawn\.toFixed\(0\)\}%/.test(sentence) &&
+    /comparison\.lead\.aligned\.toFixed\(0\)\}%/.test(sentence), [...shown].join(', '));
 
-  // (3) The margin in the words is the margin in the rule. A hand-typed figure is
-  // how the doc comment came to describe a rule that had already been replaced.
+  // (3) The sentence can actually SAY better, not only "behind".
+  ok('the sentence has a branch that says the aligned placement gives more',
+    /comparison\.better\.length > 0/.test(sentence) && /gives more/.test(sentence));
+
+  // (4) The margin in the words is the margin in the rule.
   ok('the tie margin the panel prints comes from the constant it ranks with',
     /\$\{TIE_POINTS\}/.test(sentence) && !/\b3%/.test(sentence));
 
-  // (4) Two shares over two different totals: the reader can only see why they
-  // are not strictly comparable if both denominators are on screen.
-  ok('both trial totals reach the sentence, and only together',
-    shown.has('drawnTotal') && shown.has('alignedTotal') &&
-    /Number\.isFinite\(comparison\.first\.drawnTotal\) && Number\.isFinite\(comparison\.first\.alignedTotal\)/.test(sentence));
+  // (5) The counts, both or neither, in the units the panels show. Trial-pixel
+  // totals used to be printed here, a THIRD denominator beside shares over
+  // planted crop, which is the currency mix this page has shipped twice.
+  ok('both pure counts reach the sentence, and only together',
+    shown.has('drawnPure') && shown.has('alignedPure') &&
+    /Number\.isFinite\(comparison\.lead\.drawnPure\) && Number\.isFinite\(comparison\.lead\.alignedPure\)/.test(sentence));
+  ok('and no trial-pixel total is quoted beside the shares', !/trial pixels/.test(sentence));
+
+  // (6) It leads with the size where the placements differ most.
+  ok('the headline pair is the one that differs most, not merely the first',
+    /rows\.reduce\(\(a, b\) => \(Math\.abs\(b\.aligned - b\.drawn\) > Math\.abs\(a\.aligned - a\.drawn\)/.test(src));
+
+  // (7) Sampled rungs are judged too. Excluding them, together with the rung on
+  // the map, hid every informative size on a large field and left a 0% against
+  // 0% pair as the whole verdict beneath panels reading 38% against 67%.
+  ok('sampled rungs are not thrown out of the comparison',
+    !/own\.partial \|\| al\.partial\) return \[\]/.test(src) && /sampled: !!\(own\.partial \|\| al\.partial\)/.test(src));
+  ok('nor is the rung currently on the map', !/own\.current \|\|/.test(src));
+  ok('and a sampled headline pair says it was sampled', /comparison\.lead\.sampled \?/.test(sentence));
+
   const sweepSrc = fs.readFileSync(path.join(ROOT, 'src/pixel-grid/PcaSweep.tsx'), 'utf8');
   ok('and the ladder panels are labelled with the same quantity, a percentage',
     /c\.resolvingPct\.toFixed\(0\)\}%/.test(sweepSrc));
-  // The share is knowingly not monotone in pixel size (the same pure count over
-  // a shrinking plant count reads 4% then 7%), so the COUNT beside it is what
-  // does not mislead. It is not optional decoration.
   ok('and the pure-pixel count is printed beside it, never the share alone',
     /fmt\(c\.pureCount\)\}px/.test(sweepSrc));
-  // A variety pair that cannot be told apart at all is not a small percentage.
-  ok('and a collapsed contrast is named, not rounded to 0%',
+  ok('and an unmeasurable rung is named, not rounded to 0%',
     /resolvingPct === null \? 'n\/a'/.test(sweepSrc));
 }
 

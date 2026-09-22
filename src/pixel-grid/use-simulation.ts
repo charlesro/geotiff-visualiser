@@ -7,7 +7,7 @@ import {
   blockPlacement, layoutKey, plantedAreaPx, stakeBlockPlan,
   type BlockDesign, type FieldParams, type FieldSim, type PatternType, type SensorParams, type SimLayout,
 } from './simulate';
-import { contrastInfo, plantedPixels, pureEfficiency } from './resolving';
+import { contrastInfo, plantedPixels } from './resolving';
 import { aoiUtmOrigin, buildS2Grid, type LngLatBounds, type S2Grid } from './s2-grid';
 import { fieldOverlapTest, type Poly } from './geometry';
 import { cellInFieldTest } from './field-membership';
@@ -472,26 +472,19 @@ export function useSimulation({ aoi, gridApi, exp, simOn, fieldOrigin }: {
     // pattern drift apart.
     const base = fieldOrigin;
     if (!OPTIMIZE_PLACEMENT) return { origin: base, offset: [0, 0] };
-    const [du, dv] = bestPhaseOffset(pattern, build.res, stripWidth, spacing, threshold / 100, base[0], base[1]);
+    // The sensor is passed so the phase is chosen for the blur this page
+    // simulates: a sharp optimum is the blurred worst (see searchPhaseOffset).
+    const [du, dv] = bestPhaseOffset(pattern, build.res, stripWidth, spacing, threshold / 100, base[0], base[1], sensor);
     const t = (rotation * Math.PI) / 180, cos = Math.cos(t), sin = Math.sin(t);
     return { origin: [base[0] + du * cos - dv * sin, base[1] + du * sin + dv * cos] as [number, number], offset: [du, dv] as [number, number] };
     // layoutSig rather than the loose primitives: it also covers the block
     // design, whose seed, plot size and alleys move none of them.
-  }, [aoi, build?.epsg, build?.res, layoutSig, threshold, fieldOrigin?.[0], fieldOrigin?.[1]]);
+  }, [aoi, build?.epsg, build?.res, layoutSig, sensorSig, fieldOrigin?.[0], fieldOrigin?.[1]]);
 
   const sim = useMemo(
     () => (simOn && renderGrid && patternOrigin ? simulateField(renderGrid, patternOrigin.origin, layout, sensor) : null),
     [simOn, renderGrid, patternOrigin, pattern, stripWidth, spacing, rotation, sensorSig],
   );
-
-  /**
-   * The card's headline pair: pure pixels, and that count as a share of the
-   * pixels that have any crop in them (see resolving.ts). Free: it is read off
-   * the simulation the card already ran, with no second pass.
-   */
-  const resolving = useMemo(
-    () => (sim && renderGrid ? pureEfficiency(sim, plantedAreaPx(layout, renderGrid.res)) : null),
-    [sim, renderGrid, layoutSig]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
    * What the purity would be if the imagery is not exactly where it says it is.
@@ -636,7 +629,7 @@ export function useSimulation({ aoi, gridApi, exp, simOn, fieldOrigin }: {
       ? `${bd.nSpecies} species × ${bd.nBlocks} blocks · ${bd.plotLength} × ${bd.plotWidth} m plots`
       : `${speciesD[0]?.name} × ${speciesD[1]?.name} · ${stripWidth} m ${PATTERNS.find(p => p.id === pattern)?.label.toLowerCase() ?? ''}`;
 
-  return { patternOrigin, sim, resolving, geoSpread, ndviSeries, simStyle, fieldOutlineStyle, simGeojson, simSummary };
+  return { patternOrigin, sim, geoSpread, ndviSeries, simStyle, fieldOutlineStyle, simGeojson, simSummary };
 }
 
 /** The PCA, always over the FIELD and never the viewport, plus the resolution sweep. */
@@ -884,7 +877,7 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
     // with `& 1`, so it would optimise "species 0 or 1 coverage" and ignore the
     // rest.
     if (OPTIMIZE_PLACEMENT && layout.pattern !== 'block' && layout.pattern !== 'imported') {
-      const [du, dv] = bestPhaseOffset(pattern, r, stripWidth, spacing, threshold / 100, base[0], base[1]);
+      const [du, dv] = bestPhaseOffset(pattern, r, stripWidth, spacing, threshold / 100, base[0], base[1], sensorL);
       ox = base[0] + du * cos - dv * sin; oy = base[1] + du * sin + dv * cos;
     }
     /**

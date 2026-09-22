@@ -228,71 +228,16 @@ export function LayoutFields({ pattern, stripWidth, setStripWidth, spacing, setS
 }
 
 /**
- * What this trial is, and whether the chosen sensor can actually see it.
- *
- * TWO different limits bite at different pixel sizes, and a bare purity
- * percentage hides which one you have hit:
- *
- *  - under about one pixel per plot width the GEOMETRY is impossible. No
- *    threshold, no PSF, no sensor tuning recovers it; the plot has to grow.
- *  - above that the blur still crosses plot edges, so a plot several pixels
- *    wide can still yield no fully pure pixel. What recovers those is relaxing
- *    the purity threshold, NOT a finer grid, and saying so is the difference
- *    between a useful card and a discouraging one.
- *
- * The percentage is always the one the engine MEASURED over the real grid. The
- * notes explain that number; they never stand in for it, and when the grid is
- * too fine to render there is no measurement and the card stays silent.
+ * What this trial is: its size, its plots, and how many pixels a plot spans.
+ * Purity is read off the resolution ladder in step 4, which reports it per
+ * pixel size with the count beside it; this card deliberately does not repeat
+ * it, so there is one place that number lives rather than two to reconcile.
  */
-/**
- * The headline pair: pure pixels, and that count as a share of the PLANTED AREA
- * (the crop the design puts on the ground, in whole pixels). "Of the crop you
- * planted, this much comes back as a clean pixel."
- *
- * The denominator is deliberately not the count of pixels with crop in them.
- * That count moves with the placement and so absorbs the improvement the reader
- * is looking for: staking a trial onto the pixel grid won 126 more pure pixels
- * (+10.2%) while the plant count rose 6.7%, and the share moved one point.
- * Planted area is fixed by the design and the pixel size, so the share tracks
- * the count. See resolving.ts.
- *
- * The count is still printed beside it and never dropped: the share is not
- * monotone in pixel size, because purity genuinely is not.
- */
-function Resolving({ r, threshold }: {
-  r?: { pct: number | null; pure: number; planted: number; total: number; nEff: number; dead: boolean } | null;
-  threshold: number;
-}) {
-  if (!r) return null;
-  const tone = r.pct === null ? 'text-rose-400' : r.pct >= 70 ? 'text-emerald-300' : r.pct >= 40 ? 'text-amber-300' : 'text-rose-300';
-  return (
-    <div className="mt-1">
-      <span className={`font-mono ${tone}`}>{r.pct === null ? 'n/a' : `${r.pct.toFixed(0)}%`}</span>
-      <span className="text-neutral-500">
-        {r.pct === null ? <> this design plants less than one pixel of crop at this size</> : <> of the crop you planted comes back pure</>}
-      </span>
-      <Explain text={r.dead
-        ? <>Two varieties cannot be told apart at this pixel size at all, however the pixels are analysed.</>
-        : <>Counted against the {fmt(Math.round(r.planted))} pixels' worth of crop your plot sizes actually plant, which does not change when the trial moves. Measured denominators do, and then a placement winning 10% more pure pixels reads as 4% better. The mixed pixels are worth about {r.nEff.toFixed(0)} more clean pixels per variety on top, if you unmix them rather than averaging clean pixels per plot.</>}><InfoDot /></Explain>
-      <div className="text-neutral-400">
-        <span className="font-mono text-neutral-100">{fmt(r.pure)}</span> pure
-        {' '}of <span className="font-mono text-neutral-200">{fmt(Math.round(r.planted))}</span> planted pixels
-        <span className="text-neutral-500"> at {threshold}% purity</span>
-      </div>
-    </div>
-  );
-}
-
-export function BlockSummary({ design, plan, res, threshold, purePct, resolving, geo }: {
+export function BlockSummary({ design, plan, res, geo }: {
   design: BlockDesign;
   plan?: { totalU: number; totalV: number; nPlots: number };
   /** Pixel size in metres; absent until a grid is built. */
   res?: number;
-  threshold: number;
-  /** Measured pure-pixel share, absent when the grid was too fine to render. */
-  purePct?: number;
-  /** The headline pair; see Resolving. */
-  resolving?: { pct: number | null; pure: number; planted: number; total: number; nEff: number; dead: boolean } | null;
   /** How much of that purity is luck: see GeoSpread. */
   geo?: GeoSpreadInfo | null;
 }) {
@@ -300,13 +245,6 @@ export function BlockSummary({ design, plan, res, threshold, purePct, resolving,
   const plotArea = design.plotLength * design.plotWidth;
   const acrossPx = res ? design.plotWidth / res : null;
   const alongPx = res ? design.plotLength / res : null;
-  const subPixel = acrossPx != null && acrossPx < 1;
-
-  const note = subPixel
-    ? `A plot is narrower than one pixel at ${res} m, so no pixel can sit inside one. Widen the plots or pick a finer sensor.`
-    : purePct === 0 && res
-      ? `The sensor's blur reaches across every plot edge at ${res} m. Lowering the purity threshold below ${threshold}% is what recovers pixels here, not a finer grid.`
-      : null;
 
   return (
     <div className="rounded-md border border-white/10 bg-white/[0.02] px-2.5 py-2 text-[11px] text-neutral-300">
@@ -319,9 +257,7 @@ export function BlockSummary({ design, plan, res, threshold, purePct, resolving,
           <span>plot is <span className="font-mono text-neutral-100">{alongPx.toFixed(1)} × {acrossPx.toFixed(1)}</span> px</span>
         )}
       </div>
-      <Resolving r={resolving} threshold={threshold} />
       <GeoSpread geo={geo} />
-      {note && <div className="mt-1 text-neutral-400">{note}</div>}
     </div>
   );
 }
@@ -331,15 +267,11 @@ export function BlockSummary({ design, plan, res, threshold, purePct, resolving,
  * job as BlockSummary, for plots that came from a file. Sizes are measured off
  * the resolved plan (the grid's metres), never off the file's degrees.
  */
-export function ImportedSummary({ plan, angle, res, threshold, purePct, resolving, geo }: {
+export function ImportedSummary({ plan, angle, res, geo }: {
   plan: ImportedPlan;
   /** The trial's angle to the pixel rows, so its size is measured along its OWN sides. */
   angle: number;
   res?: number;
-  threshold: number;
-  purePct?: number;
-  /** The headline pair; see Resolving. */
-  resolving?: { pct: number | null; pure: number; planted: number; total: number; nEff: number; dead: boolean } | null;
   /** How much of that purity is luck: see GeoSpread. */
   geo?: GeoSpreadInfo | null;
 }) {
@@ -365,11 +297,6 @@ export function ImportedSummary({ plan, angle, res, threshold, purePct, resolvin
     const u = x * cosA - y * sinA, v = x * sinA + y * cosA;
     e0 = Math.min(e0, u); e1 = Math.max(e1, u); n0 = Math.min(n0, v); n1 = Math.max(n1, v);
   }
-  const note = sidePx != null && sidePx < 1
-    ? `A typical plot is smaller than one ${res} m pixel, so no pixel can sit inside one. Pick a finer sensor.`
-    : purePct === 0 && res
-      ? `The sensor's blur reaches across every plot edge at ${res} m. Lowering the purity threshold below ${threshold}% is what recovers pixels here, not a finer grid.`
-      : null;
   return (
     <div className="rounded-md border border-white/10 bg-white/[0.02] px-2.5 py-2 text-[11px] text-neutral-300">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
@@ -377,14 +304,12 @@ export function ImportedSummary({ plan, angle, res, threshold, purePct, resolvin
         <span><span className="font-mono text-neutral-100">{fmt(plan.plots.length)}</span> plots of about <span className="font-mono text-neutral-100">{median.toFixed(0)} m²</span></span>
         {sidePx != null && <span>about <span className="font-mono text-neutral-100">{sidePx.toFixed(1)}</span> px across</span>}
       </div>
-      <Resolving r={resolving} threshold={threshold} />
       <GeoSpread geo={geo} />
       {!plan.plotIds && (
         <div className="mt-1 text-neutral-400">
           More plots than the simulation can tell apart one by one: a pixel spanning two plots of the same variety counts as pure.
         </div>
       )}
-      {note && <div className="mt-1 text-neutral-400">{note}</div>}
     </div>
   );
 }

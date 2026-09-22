@@ -57,7 +57,6 @@ export function useFieldGrid({ aoi, fieldRing }: {
 }) {
   const [sourceId, setSourceId] = usePersistentState('sourceId', 's2-10', v => typeof v === 'string' && SOURCES.some(s => s.id === v));
   const [gsd, setGsd] = usePersistentState('gsd', 1, inRange(0.01, 1000));
-  const [customAnchor, setCustomAnchor] = usePersistentState<'utm' | 'plot'>('customAnchor', 'utm', oneOf('utm', 'plot'));
   const [viewBounds, setViewBounds] = useState<LngLatBounds | null>(null);
   const [sigmaX, setSigmaX] = usePersistentState('sigmaX', () => SOURCES.find(s => s.id === 's2-10')!.psf, inRange(0, 5));
   const [sigmaY, setSigmaY] = usePersistentState('sigmaY', () => SOURCES.find(s => s.id === 's2-10')!.psf, inRange(0, 5));
@@ -145,12 +144,12 @@ export function useFieldGrid({ aoi, fieldRing }: {
     if (source.kind === 'custom') {
       const zone = utmZoneForLng((aoi[0] + aoi[2]) / 2);
       const south = (aoi[1] + aoi[3]) / 2 < 0;
-      const epsg = utmEpsg(zone, south);
-      if (customAnchor === 'plot') {
-        const [ulx, uly] = aoiUtmOrigin(aoi, epsg);
-        return { res: gsd, anchor: { epsg, ulx, uly } };
-      }
-      return { res: gsd, zone, south }; // multiples of GSD (gdalwarp -tap)
+      // Pixel edges on round multiples of the pixel size (gdalwarp -tap). There
+      // used to be an "align to my plot" alternative that started the grid at
+      // the field's corner instead; it is gone, and so is its persisted setting,
+      // since a saved choice with no control left to undo it would have kept
+      // silently moving the grid.
+      return { res: gsd, zone, south };
     }
     if (selectedGrid) return { res: source.res, anchor: selectedGrid };
     // Offline fallback: only exact for phase-0 grids (S2/HLS); Landsat needs the catalog.
@@ -169,7 +168,7 @@ export function useFieldGrid({ aoi, fieldRing }: {
       return { res: source.res };
     }
     return null;
-  }, [aoi, sourceId, gsd, customAnchor, selectedGrid, gridState]);
+  }, [aoi, sourceId, gsd, selectedGrid, gridState]);
 
   const build = useMemo(() => (aoi && buildOpts ? buildS2Grid(aoi, buildOpts) : null), [aoi, buildOpts]);
   const grid = build?.grid ?? null;
@@ -327,7 +326,6 @@ export function useFieldGrid({ aoi, fieldRing }: {
   /** S2/HLS use the MGRS tile word; Landsat uses a UTM zone. */
   const gridNoun = source.provider.startsWith('Landsat C2') ? 'zone' : 'tile';
   /** Whether a custom GSD nests cleanly inside Sentinel-2's 10 m grid. */
-  const nestsS2 = Math.abs(10 / pxSize - Math.round(10 / pxSize)) < 1e-9;
   /** How much the pixels (and any aligned plot) are rotated from true north. */
   const convergence = aoi && build?.epsg ? gridConvergence((aoi[0] + aoi[2]) / 2, (aoi[1] + aoi[3]) / 2, build.epsg) : null;
 
@@ -342,7 +340,7 @@ export function useFieldGrid({ aoi, fieldRing }: {
         ? `${source.provider} · ${fmt(build.cellCount)} px (zoom to view)`
         : gridState === 'loading' ? 'identifying…' : 'pick a satellite & resolution';
 
-  return { sourceId, setSourceId, source, gsd, setGsd, customAnchor, setCustomAnchor,
+  return { sourceId, setSourceId, source, gsd, setGsd,
            sigmaX, setSigmaX, sigmaY, setSigmaY,
            psfOffX, setPsfOffX, psfOffY, setPsfOffY, psfOffXM, psfOffYM, geoErrM, setGeoErrM,
            grids, gridState, selectedGridKey, setSelectedGridKey, selectedGrid,
@@ -350,5 +348,5 @@ export function useFieldGrid({ aoi, fieldRing }: {
            viewBounds, setViewBounds, pxSize, psfSigmaM, psfFwhmM, psfCenter,
            psfSigmaXM, psfSigmaYM, psfFwhmXM, psfFwhmYM, psfAnisotropic,
            dims, areaHa, fieldAreaHa, fieldAreaM2, maxAreaHa, fieldCellCount,
-           gridNoun, nestsS2, convergence, onDownload, pickRes, gridSummary };
+           gridNoun, convergence, onDownload, pickRes, gridSummary };
 }

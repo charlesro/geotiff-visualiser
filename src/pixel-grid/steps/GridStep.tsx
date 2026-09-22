@@ -17,7 +17,7 @@ const clampSigma = (raw: string) => Math.max(0, Math.min(5, parseFloat(raw) || 0
 function GridStepBody(p: StepProps) {
   const { activeStep, toggleStep, gridSummary } = p;
   const { aoi } = p.area;
-  const { sourceId, setSourceId, source, gsd, setGsd, customAnchor, setCustomAnchor, sigmaX, setSigmaX, sigmaY, setSigmaY, psfOffX, setPsfOffX, psfOffY, setPsfOffY, psfOffXM, psfOffYM, geoErrM, setGeoErrM, grids, gridState, selectedGridKey, setSelectedGridKey, selectedGrid, build, grid, pxSize, psfSigmaM, psfSigmaXM, psfSigmaYM, psfFwhmXM, psfFwhmYM, psfAnisotropic, dims, fieldAreaM2, maxAreaHa, fieldCellCount, gridNoun, nestsS2, onDownload } = p.gridApi;
+  const { sourceId, setSourceId, source, gsd, setGsd, sigmaX, setSigmaX, sigmaY, setSigmaY, psfOffX, setPsfOffX, psfOffY, setPsfOffY, psfOffXM, psfOffYM, geoErrM, setGeoErrM, grids, gridState, selectedGridKey, setSelectedGridKey, selectedGrid, build, grid, pxSize, psfSigmaM, psfSigmaXM, psfSigmaYM, psfFwhmXM, psfFwhmYM, psfAnisotropic, dims, fieldAreaM2, maxAreaHa, fieldCellCount, gridNoun, onDownload } = p.gridApi;
 
   const fwhmTxt = psfAnisotropic
     ? `${psfFwhmXM < 10 ? psfFwhmXM.toFixed(1) : Math.round(psfFwhmXM)} × ${psfFwhmYM < 10 ? psfFwhmYM.toFixed(1) : Math.round(psfFwhmYM)}`
@@ -100,7 +100,7 @@ function GridStepBody(p: StepProps) {
           </div>
         )}
 
-        {/* A grid you impose: GSD and origin are grid-defining, so they stay visible. */}
+        {/* A grid you impose: its pixel size is the one thing that defines it. */}
         {source.kind === 'custom' && (<>
           <div>
             <span className={CAP}>Pixel size (GSD)</span>
@@ -113,22 +113,6 @@ function GridStepBody(p: StepProps) {
                 onChange={e => { const v = parseFloat(e.target.value); if (v > 0) setGsd(Math.max(0.01, Math.min(1000, v))); }}
                 className="w-16 rounded-md border border-white/10 bg-neutral-900 px-2 py-1 text-sm text-neutral-100 focus:border-sky-500 focus:outline-none" />
             </div>
-            <p className="mt-1 text-[11px] leading-snug text-neutral-400">
-              {nestsS2
-                ? <>✓ nests in Sentinel-2&rsquo;s 10 m grid ({Math.round(10 / gsd)}×{Math.round(10 / gsd)} per S2 pixel).</>
-                : <>Doesn&rsquo;t divide 10 m, so it won&rsquo;t align to Sentinel-2&rsquo;s grid.</>}
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="flex flex-1 gap-1.5">
-              {([['utm', 'UTM grid (× GSD)'], ['plot', 'Align to my plot']] as const).map(([v, lbl]) => (
-                <button key={v} onClick={() => setCustomAnchor(v)}
-                  className={`flex-1 rounded-md border px-2 py-1.5 text-xs ${customAnchor === v ? 'border-sky-500 bg-sky-500/15 text-sky-300' : 'border-white/10 bg-neutral-900 text-neutral-300 hover:bg-neutral-800'}`}>{lbl}</button>
-              ))}
-            </div>
-            <Explain align="right" text={customAnchor === 'utm'
-              ? 'Pixel edges fall on round multiples of the pixel size.'
-              : 'The grid starts at the bottom-left corner of the box around your field.'}><InfoDot /></Explain>
           </div>
         </>)}
 

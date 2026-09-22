@@ -17,25 +17,6 @@ function SimStepBody(p: StepProps) {
           compareAligned, setCompareAligned, setActiveStep } = p;
   const { aoi } = p.area;
   const { build } = p.gridApi;
-  /**
-   * The purity the engine measured OVER THE FIELD, never an estimate and never a
-   * window of it.
-   *
-   * The map's simulation only qualifies while the whole grid is rendered. Past
-   * the cell cap (a 0.3 m sensor over a hectare) `renderGrid` is the VIEWPORT,
-   * so that percentage would describe whatever happens to be on screen and would
-   * change as you pan: this card once claimed the trial's purity from a corner
-   * of it.
-   *
-   * There is no second measurement to fall back on, and reading `pca.pcaView`
-   * here only looked like one: `Step` renders {open && children}, so this body
-   * exists only while step 3 is open, and usePcaSim clears its run the moment
-   * the active step is not 'pca'. The value was null on every render but the one
-   * between the click and that effect. Past the cap the PCA is not field-wide
-   * either, since its grid is then a sample of the field. So the card shows
-   * geometry, states no percentage, and the line below says why.
-   */
-  const fieldSim = p.gridApi.grid ? p.sim.sim : null;
   const { pattern, setPattern, stripWidth, setStripWidth, spacing, setSpacing, rotation, setRotation, magnitude, setMagnitude, alpha, setAlpha, beta, setBeta, threshold, setThreshold, blockDesign, setBlockDesign, blockPlan, colors, names, speciesD, presetsActive, setSpeciesAt, setPresetAt, importedDesign, varieties, importedPlan, importedAngle, importedFileAngle, importedTurn } = p.exp;
   // The angle the controls show and edit: the trial's own for an imported one.
   const imported = pattern === 'imported';
@@ -102,24 +83,11 @@ function SimStepBody(p: StepProps) {
             )}
 
             {pattern === 'block' && (
-              <BlockSummary design={blockDesign} plan={blockPlan} res={build?.res}
-                threshold={threshold} purePct={fieldSim?.purePct} resolving={p.sim.resolving} geo={p.sim.geoSpread} />
+              <BlockSummary design={blockDesign} plan={blockPlan} res={build?.res} geo={p.sim.geoSpread} />
             )}
 
             {pattern === 'imported' && importedPlan && (
-              <ImportedSummary plan={importedPlan} angle={importedAngle} res={build?.res} threshold={threshold} purePct={fieldSim?.purePct} resolving={p.sim.resolving} geo={p.sim.geoSpread} />
-            )}
-
-            {/* Said out loud, because a card that simply drops its purity row
-                reads as a trial with nothing to report rather than a sensor too
-                fine to simulate whole. It also points at the one place a capped
-                field still gets a number. */}
-            {build?.capped && (pattern === 'block' || (imported && importedPlan)) && (
-              <p className="text-[11px] leading-snug text-neutral-400">
-                Too many pixels at {build.res} m to simulate the whole field, so only the ones in view are simulated
-                and there is no trial-wide purity to state here. Step&nbsp;4 measures it on a central sample. To measure it
-                here instead, the grid has to fit: a coarser sensor, or a smaller area, since the cap is the two together.
-              </p>
+              <ImportedSummary plan={importedPlan} angle={importedAngle} res={build?.res} geo={p.sim.geoSpread} />
             )}
 
             {/* Dozens of varieties would bury the rest of the step, so an imported
