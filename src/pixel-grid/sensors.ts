@@ -10,11 +10,25 @@ import { EARTH_SEARCH_URL, type SourceConfig } from './s2-grid';
  * so there is no lattice to discover: you impose one and hand the recipe to the
  * provider.
  *
- * Every `psf` is a Gaussian sigma in PIXELS, derived from that sensor's
- * published MTF at Nyquist via  MTF(1/2) = exp(-pi^2 sigma^2 / 2)  =>
- * sigma = sqrt(-2 ln M) / pi, taking the BLURRIEST end of each published range
- * so the purity numbers this page reports are conservative rather than
- * flattering. `psfSrc` is where that figure is documented.
+ * Every `psf` is a Gaussian sigma in PIXELS, and it comes from one of two
+ * places, which `psfSrc` names:
+ *
+ *  MEASURED. Sentinel-2, PlanetScope, WorldView-2 and Pleiades carry a FWHM
+ *    fitted on real images of the PHENET trials at Mauguio and Toulouse, by
+ *    blurring a very-high-resolution reference of the same scene onto the
+ *    sensor's grid. That fit already contains the detector footprint, the
+ *    motion blur and the residual atmosphere, so nothing is added on top.
+ *    sigma = FWHM / 2.355 / GSD. These are the figures to trust: a published
+ *    MTF describes the instrument, this describes the product as delivered,
+ *    and for the tasked sensors the two differ by a factor of two to four.
+ *
+ *  PUBLISHED. The rest keep sigma = sqrt(-2 ln M) / pi from the sensor's MTF
+ *    at Nyquist, M = MTF(1/2), taking the BLURRIEST end of each published
+ *    range so the purity numbers are conservative rather than flattering.
+ *
+ * A pansharpened product is sharp only SPATIALLY, borrowed from the
+ * panchromatic band. An index like LAI is computed on the native multispectral
+ * bands, so for trial design it is the native MS row that counts.
  */
 
 /** Sensor pixels the PCA samples when the full field is too fine to render. */
@@ -39,8 +53,15 @@ interface Source {
    * are softer (larger effective GRD than GSD → σ≈0.6). Both axes use this value.
    */
   psf: number;
-  /** Where the MTF/PSF figure comes from (shown as a link). */
-  psfSrc?: { url: string; label: string };
+  /** Where the MTF/PSF figure comes from (shown as a link when it has a url). */
+  psfSrc?: { url?: string; label: string };
+  /**
+   * True when `psf` was fitted on real imagery rather than read off a published
+   * MTF. It changes what the blur budget may claim: a fit on an image already
+   * contains the detector footprint and the motion blur, so adding a separate
+   * pixel box on top counts the detector twice.
+   */
+  psfMeasured?: boolean;
   /** Grid lattice phase is 0, so a rule-based offline grid is still exact (catalog only). */
   offlinePhase0?: boolean;
   /**
@@ -73,9 +94,15 @@ const SRC_S2 = { url: 'https://sentiwiki.copernicus.eu/web/s2-mission', label: '
 const SRC_LS = { url: 'https://www.usgs.gov/landsat-missions/spatial-performance-landsat-8-instruments', label: 'USGS · Landsat 8 spatial performance' };
 const eo = (slug: string) => ({ url: `https://www.eoportal.org/satellite-missions/${slug}`, label: 'eoPortal' });
 const SRC_PLANET = { url: 'https://www.tandfonline.com/doi/full/10.1080/01431161.2024.2357839', label: 'SuperDove vs Landsat 8 (2024)' };
+/**
+ * Fitted on the PHENET images themselves, NIR band, note Table 9. No url: the
+ * note is not published, and inventing a link for a number this load-bearing
+ * would be worse than saying plainly where it was measured.
+ */
+const SRC_PHENET = { label: 'measured on PHENET images at Mauguio and Toulouse' };
 const SOURCES: Source[] = [
-  { id: 's2-10', provider: 'Sentinel-2', resLabel: '10 m', res: 10, kind: 'catalog', group: FIXED, offlinePhase0: true, offlineSouth: 'false-northing', psf: 0.62, psfSrc: SRC_S2,
-    note: 'Blue, green, red and NIR bands: B02, B03, B04, B08.',
+  { id: 's2-10', provider: 'Sentinel-2', resLabel: '10 m', res: 10, kind: 'catalog', group: FIXED, offlinePhase0: true, offlineSouth: 'false-northing', psf: 0.59, psfSrc: SRC_PHENET, psfMeasured: true,
+    note: 'Blue, green, red and NIR bands: B02, B03, B04, B08. Measured FWHM 14 m, 1.4x the pixel.',
     cfg: { collection: 'sentinel-2-l2a', asset: 'B04', res: 10, gridLabel: s2Label, alt: esS2(10) } },
   { id: 's2-20', provider: 'Sentinel-2', resLabel: '20 m', res: 20, kind: 'catalog', group: FIXED, offlinePhase0: true, offlineSouth: 'false-northing', psf: 0.62, psfSrc: SRC_S2,
     note: 'Red-edge and SWIR bands: B05 to B07, B8A, B11, B12.',
@@ -91,16 +118,20 @@ const SOURCES: Source[] = [
     note: 'Native Landsat 8/9 grid, offset half a pixel from Sentinel-2.',
     cfg: { collection: 'landsat-c2-l2', asset: null, res: 30, gridLabel: lsLabel,
       alt: { collection: 'landsat-c2-l2', asset: null, res: 30, gridLabel: lsLabel, url: EARTH_SEARCH_URL } } },
-  { id: 'wv', provider: 'WorldView / GeoEye', resLabel: '0.3 m', res: 0.3, kind: 'custom', group: TASK, psf: 0.55, psfSrc: eo('worldview-3'),
-    note: 'Maxar tasking, no fixed grid.' },
-  { id: 'pleiades', provider: 'Pléiades', resLabel: '0.5 m', res: 0.5, kind: 'custom', group: TASK, psf: 0.60, psfSrc: eo('pleiades'),
-    note: 'Airbus tasking, no fixed grid.' },
+  { id: 'wv', provider: 'WorldView-2 · native MS', resLabel: '1.6 m', res: 1.6, kind: 'custom', group: TASK, psf: 0.50, psfSrc: SRC_PHENET, psfMeasured: true,
+    note: 'The bands an index is computed on. Measured FWHM 1.9 m. This is the row to design a trial against.' },
+  { id: 'wv-ps', provider: 'WorldView-2 · pansharpened', resLabel: '0.4 m', res: 0.4, kind: 'custom', group: TASK, psf: 1.17, psfSrc: SRC_PHENET, psfMeasured: true,
+    note: 'Measured FWHM 1.1 m, so nearly 3 pixels across: the fine grid is not a fine resolution.' },
+  { id: 'pleiades', provider: 'Pléiades · native MS', resLabel: '2 m', res: 2, kind: 'custom', group: TASK, psf: 1.06, psfSrc: SRC_PHENET, psfMeasured: true,
+    note: 'Measured FWHM 5 m, far softer than the 2 m pixel suggests.' },
+  { id: 'pleiades-ps', provider: 'Pléiades · pansharpened', resLabel: '0.5 m', res: 0.5, kind: 'custom', group: TASK, psf: 2.55, psfSrc: SRC_PHENET, psfMeasured: true,
+    note: 'Measured FWHM 3 m, six pixels across. Sharp to look at, not to measure with.' },
   { id: 'skysat', provider: 'SkySat', resLabel: '0.5 m', res: 0.5, kind: 'custom', group: TASK, psf: 0.62, psfSrc: eo('skysat'),
     note: 'Planet tasking, softer than its pixel size suggests.' },
   { id: 'spot', provider: 'SPOT 6/7', resLabel: '1.5 m', res: 1.5, kind: 'custom', group: TASK, psf: 0.60, psfSrc: eo('spot-6-7'),
     note: 'Airbus tasking, no fixed grid.' },
-  { id: 'planet', provider: 'PlanetScope', resLabel: '3 m', res: 3, kind: 'custom', group: TASK, psf: 0.66, psfSrc: SRC_PLANET,
-    note: 'Planet daily imagery, softer than its 3 m pixels suggest.' },
+  { id: 'planet', provider: 'PlanetScope', resLabel: '3 m', res: 3, kind: 'custom', group: TASK, psf: 1.37, psfSrc: SRC_PHENET, psfMeasured: true,
+    note: 'Measured FWHM 9.7 m, over three pixels across. Daily revisit, but it cannot resolve a small plot.' },
   { id: 'custom', provider: 'Custom', resLabel: '', res: 1, kind: 'custom', group: TASK, psf: 0.55,
     note: 'Any sensor: pick the pixel size and where the grid starts.' },
 ];

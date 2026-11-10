@@ -378,3 +378,126 @@ export function pureEfficiency(sim: FieldSim, plantedPx: number | null): Resolvi
     dead: info.dead,
   };
 }
+
+// ===== geolocation, per-plot verdict and the note's closed form ==============
+
+/**
+ * CE90 to a per-axis sigma. A circular normal error of sigma per axis has a
+ * Rayleigh radial miss, so the radius holding 90 % of it is sigma*sqrt(-2 ln 0.1).
+ * The Geoloc figure is a CE90 EVERYWHERE on the page: the blur budget divides it
+ * by this, and the robust set below uses it as the radius 9 images in 10 land in.
+ */
+export const CE90_TO_SIGMA = 2.1460;
+
+/** Cover ids at or below this are plots or species; above it are the sentinels. */
+const MAX_CROP_COVER = 252;
+
+/**
+ * Inverse of the standard normal CDF (Acklam's rational approximation, about
+ * 1e-9 relative). Only the closed form below needs it.
+ */
+export function probit(p: number): number {
+  if (!(p > 0 && p < 1)) return p <= 0 ? -Infinity : Infinity;
+  const a = [-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02, 1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00];
+  const b = [-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02, 6.680131188771972e+01, -1.328068155288572e+01];
+  const c = [-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00, -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00];
+  const d = [7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00, 3.754408661907416e+00];
+  const lo = 0.02425;
+  if (p < lo) {
+    const q = Math.sqrt(-2 * Math.log(p));
+    return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+  }
+  if (p > 1 - lo) return -probit(1 - p);
+  const q = p - 0.5, r = q * q;
+  return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
+}
+
+/**
+ * Buffer width in units of the effective sigma: a pixel is pure once its centre
+ * sits this many sigmas inside the plot edge. Q(k) = 1 - threshold, so 1.28 at
+ * 90 % and 1.64 at 95 %.
+ */
+export const bufferK = (threshold: number): number => -probit(1 - Math.max(0.5, Math.min(0.999, threshold)));
+
+/**
+ * The smallest plot side that keeps at least one pure pixel wherever the grid
+ * falls, by the PHENET note's closed form (any-pixel criterion):
+ *
+ *   L_min = GSD + 2 * z * sigma_eff,   z = Q^-1(1 - sqrt(threshold))
+ *
+ * The purest pixel is the one nearest the plot centre, at worst half a pixel
+ * away on each axis (the GSD term), and it needs F(x)F(y) >= threshold, so each
+ * axis needs sqrt(threshold). 1.632 at 90 %. Checked against the note's own
+ * table (PlanetScope 16.8 m, Sentinel-2 32.2 m) in the regression suite.
+ */
+export function minPlotSideM(res: number, sigmaEffM: number, threshold: number): number | null {
+  if (!(res > 0) || !(sigmaEffM > 0) || !(threshold > 0) || !(threshold < 1)) return null;
+  return res + 2 * -probit(1 - Math.sqrt(threshold)) * sigmaEffM;
+}
+
+/**
+ * Where the imagery can land: `n` shifts on the circle of radius CE90.
+ *
+ * NOT clamped to half a pixel, unlike a count. A count is periodic in the
+ * lattice, so past half a pixel it stops changing. A pixel chosen by its
+ * coordinates is not: one whole pixel of shift hands it its neighbour's ground.
+ * The boundary is enough because a plot's pure region is convex (a superlevel
+ * set of a log-concave share), so a disc lies inside it as soon as its rim does.
+ */
+export function ce90Shifts(ce90M: number, n = 8): [number, number][] {
+  if (!(ce90M > 0) || n < 1) return [];
+  return Array.from({ length: n }, (_, i) => {
+    const t = (2 * Math.PI * i) / n;
+    return [ce90M * Math.cos(t), ce90M * Math.sin(t)] as [number, number];
+  });
+}
+
+/**
+ * The pixels that are pure for the SAME cover at every placement: 1 where the
+ * nominal verdict is a crop cover and every shifted verdict is that same cover.
+ * A pixel pure for plot A at one placement and plot B at another is not robust,
+ * it has changed plots. All arrays index the same lattice pixels.
+ */
+export function robustMask(nominal: ArrayLike<number>, shifted: ArrayLike<number>[]): Uint8Array {
+  const out = new Uint8Array(nominal.length);
+  for (let k = 0; k < nominal.length; k++) {
+    const id = nominal[k];
+    if (id > MAX_CROP_COVER) continue;
+    let ok = 1;
+    for (let s = 0; s < shifted.length; s++) if (shifted[s][k] !== id) { ok = 0; break; }
+    out[k] = ok;
+  }
+  return out;
+}
+
+/** Pure pixels per plot: what a variety trial is actually read by. */
+export interface PlotTally {
+  plots: number;
+  /** Fewest and median pure pixels in a plot. */
+  min: number;
+  median: number;
+  /** Plots with no pure pixel at all: these cannot be followed. */
+  none: number;
+}
+
+/**
+ * Count pure pixels plot by plot. `verdict[k]` is the engine's own byte (the
+ * dominant cover id, which IS the plot id on a block or imported trial), and
+ * `mask`, when given, keeps only the pixels it marks (the robust set).
+ */
+export function plotTally(verdict: ArrayLike<number>, nPlots: number, mask?: ArrayLike<number> | null): PlotTally | null {
+  if (!(nPlots > 0) || nPlots > MAX_CROP_COVER + 1) return null;
+  const per = new Uint32Array(nPlots);
+  for (let k = 0; k < verdict.length; k++) {
+    const id = verdict[k];
+    if (id < nPlots && (!mask || mask[k])) per[id]++;
+  }
+  const sorted = Array.from(per).sort((x, y) => x - y);
+  const mid = sorted.length >> 1;
+  return {
+    plots: nPlots,
+    min: sorted[0],
+    median: sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2,
+    none: sorted.filter(v => v === 0).length,
+  };
+}

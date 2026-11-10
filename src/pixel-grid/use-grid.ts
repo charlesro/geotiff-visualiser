@@ -14,12 +14,14 @@ import {
   type BuildOptions,
   type CoveringGrid,
   type LngLatBounds,
+  type S2Grid,
 } from './s2-grid';
-import { gridToShapefileZip } from './shapefile';
+import { gridToShapefileZip, type ExtraField } from './shapefile';
 import { polyAreaHa, type Poly } from './geometry';
 import { cellInFieldTest } from './field-membership';
 import { fmt } from './util';
 import { SOURCES } from './sensors';
+import { CE90_TO_SIGMA } from './resolving';
 import { inRange, usePersistentState } from './persist';
 
 /**
@@ -260,6 +262,13 @@ export function useFieldGrid({ aoi, fieldRing }: {
     setGsd(r);
   }, []);
 
+  /**
+   * Filled in by the page shell with the simulation's per-pixel verdicts. A ref
+   * rather than an argument: this hook cannot see the simulation (it is built
+   * from this hook's own output), and the button calls onDownload with a click
+   * event, which must never be mistaken for anything else.
+   */
+  const exportAttrsRef = useRef<((g: S2Grid) => ExtraField[] | null) | null>(null);
   const onDownload = () => {
     if (!grid) return;
     const slug = source.provider.toLowerCase().replace(/[^a-z0-9]+/g, '');
@@ -268,8 +277,14 @@ export function useFieldGrid({ aoi, fieldRing }: {
     // The exported pixels are the ones overlapping the field, as on the map:
     // the same mask the map drew, when it describes this grid.
     const keep = inField && inField.grid === grid ? inField.mask : null;
-    const out = keep ? { ...grid, cells: grid.cells.filter((_, k) => keep[k]) } : grid;
-    saveAs(gridToShapefileZip(out, stem), `${stem}.zip`);
+    const kept = keep ? grid.cells.map((_, k) => k).filter(k => keep[k]) : null;
+    const out = kept ? { ...grid, cells: kept.map(k => grid.cells[k]) } : grid;
+    // The simulation's verdict per pixel, when one is running: computed on the
+    // WHOLE grid, where index k is the pixel, then cut down by the same mask.
+    const extra = (exportAttrsRef.current?.(grid) ?? []).map(f => ({
+      name: f.name, values: kept ? kept.map(k => f.values[k]) : f.values,
+    }));
+    saveAs(gridToShapefileZip(out, stem, extra), `${stem}.zip`);
   };
 
   // derived stats
@@ -284,6 +299,42 @@ export function useFieldGrid({ aoi, fieldRing }: {
   const psfFwhmXM = 2.3548 * psfSigmaXM;
   const psfFwhmYM = 2.3548 * psfSigmaYM;
   const psfAnisotropic = Math.abs(sigmaX - sigmaY) > 1e-9;
+  /**
+   * The blur budget: what the effective spot is made of.
+   *
+   * Three independent spreads sit between a point on the ground and the number
+   * in a pixel, and for INDEPENDENT spreads it is the variances that add, not
+   * the widths: a large optical spread to the right is as likely to meet a
+   * geolocation shift to the left as to the right, so they partly cancel and
+   * the total is less than the sum. Hence every total below is in quadrature.
+   *
+   *  OPTICS. sigmaX/sigmaY above, the only one the engine actually convolves.
+   *  GEOLOCATION. `geoErrM` is a CE90, the radius holding 90 % of the errors,
+   *    which is how every provider publishes it. For a circular normal error
+   *    the radial miss is Rayleigh, so CE90 = sigma * sqrt(-2 ln 0.1), i.e.
+   *    sigma = CE90 / 2.146. The PHENET note's default, when nothing is known,
+   *    is a third of a pixel, which is a CE90 of 0.715 px.
+   *  PIXEL BOX. A pixel integrates over its own footprint, and a uniform
+   *    distribution over one pixel has variance 1/12, so sigma = 1/sqrt(12)
+   *    = 0.289 px. simulate.ts really does this, by averaging SUB=4 sub-samples
+   *    across the footprint before the Gaussian.
+   *
+   * The box is listed but NOT added into the total, which stays the note's
+   * sqrt(optics^2 + geolocation^2). For every PRESET it would be counted twice:
+   * a FWHM fitted on an image contains the detector, and so does a published
+   * MTF at Nyquist, which is a SYSTEM MTF and not a lens-only one. So
+   * `boxDoubleCounts` is true whenever the sigma came from either, and false
+   * only for `custom`, where a typed sigma could mean anything and the box may
+   * genuinely be a separate term.
+   *
+   * The engine applies the box regardless. The panel says so out loud rather
+   * than quietly correcting a number simulate.ts did not compute.
+   */
+  const geoSigmaM = geoErrM > 0 ? geoErrM / CE90_TO_SIGMA : 0;
+  const boxSigmaM = pxSize / Math.sqrt(12);
+  const effSigmaXM = Math.hypot(psfSigmaXM, geoSigmaM);
+  const effSigmaYM = Math.hypot(psfSigmaYM, geoSigmaM);
+  const boxDoubleCounts = !!source.psfSrc;
   const psfSigmaM = Math.max(psfSigmaXM, psfSigmaYM);
   const psfFwhmM = 2.3548 * psfSigmaM;
   // Centre the PSF blob on the CENTRE of the pixel nearest the field middle, so it
@@ -340,7 +391,8 @@ export function useFieldGrid({ aoi, fieldRing }: {
         ? `${source.provider} · ${fmt(build.cellCount)} px (zoom to view)`
         : gridState === 'loading' ? 'identifying…' : 'pick a satellite & resolution';
 
-  return { sourceId, setSourceId, source, gsd, setGsd,
+  return { geoSigmaM, boxSigmaM, effSigmaXM, effSigmaYM, boxDoubleCounts,
+           sourceId, setSourceId, source, gsd, setGsd,
            sigmaX, setSigmaX, sigmaY, setSigmaY,
            geoErrM, setGeoErrM,
            grids, gridState, selectedGridKey, setSelectedGridKey, selectedGrid,
@@ -348,5 +400,5 @@ export function useFieldGrid({ aoi, fieldRing }: {
            viewBounds, setViewBounds, pxSize, psfSigmaM, psfFwhmM, psfCenter,
            psfSigmaXM, psfSigmaYM, psfFwhmXM, psfFwhmYM, psfAnisotropic,
            dims, areaHa, fieldAreaHa, fieldAreaM2, maxAreaHa, fieldCellCount,
-           gridNoun, convergence, onDownload, pickRes, gridSummary };
+           gridNoun, convergence, onDownload, exportAttrsRef, pickRes, gridSummary };
 }

@@ -120,24 +120,24 @@ function PcaStepBody(p: StepProps) {
       if (own.resolvingPct == null || al.resolvingPct == null) return [];
       if (!Number.isFinite(own.resolvingPct) || !Number.isFinite(al.resolvingPct)) return [];
       /**
-       * With a geolocation error set, the pair is judged on its WORST cases.
+       * With a geolocation error set, the pair is judged on what SURVIVES it.
        *
        * The nominal share is one draw: where the imagery happens to land. For a
        * placement staked onto the grid it is the lucky draw by construction,
-       * so comparing nominals credited staking with luck. On a 50 m plot trial
-       * at 10 m the verdict called staking better on 182 against 225 pure
-       * pixels, where the worst cases were 177 against 180: a 24% gain that was
-       * 2% once the imagery could land anywhere within the error. `drawn` and
-       * `aligned` hold whichever figures are being compared, so the ranking
-       * rule below and the sentence that prints them can never disagree about
-       * what they compare. A rung whose range is not in yet is left out rather
-       * than judged on its nominal alongside worst cases.
+       * so comparing nominals credited staking with luck. The figure ranked is
+       * the robust share: the pixels pure for the same plot wherever the image
+       * lands within its CE90, which is what a pixel list chosen by coordinates
+       * can rely on. `drawn` and `aligned` hold whichever figures are being
+       * compared, so the ranking rule below and the sentence that prints them
+       * can never disagree about what they compare. A rung whose robust share
+       * is not in yet is left out rather than judged on its nominal beside
+       * others' robust ones. The nominal rides along as the "at best".
        */
       if (worstCase) {
-        if (own.geoLo == null || al.geoLo == null) return [];
-        return [{ res: al.res, drawn: own.geoLo, aligned: al.geoLo,
-                  drawnPure: own.geoLoPure ?? NaN, alignedPure: al.geoLoPure ?? NaN,
-                  drawnBest: own.geoHi ?? NaN, alignedBest: al.geoHi ?? NaN,
+        if (own.geoRobust == null || al.geoRobust == null) return [];
+        return [{ res: al.res, drawn: own.geoRobust, aligned: al.geoRobust,
+                  drawnPure: own.geoRobustPure ?? NaN, alignedPure: al.geoRobustPure ?? NaN,
+                  drawnBest: own.resolvingPct, alignedBest: al.resolvingPct,
                   sampled: !!(own.partial || al.partial) }];
       }
       return [{ res: al.res, drawn: own.resolvingPct, aligned: al.resolvingPct,
@@ -256,7 +256,7 @@ function PcaStepBody(p: StepProps) {
                     {comparison ? (
                       <p className="text-[11px] leading-snug text-neutral-500">
                         Pure crop at {comparison.lead.res} m{comparison.lead.sampled ? ' ◦' : ''}
-                        {worstCase && <>, counting on the worst case {geoErrM >= comparison.lead.res / 2 ? 'wherever the imagery lands' : `within ${geoErrM} m`}</>}:{' '}
+                        {worstCase && <>, counting only the pixels that stay pure wherever the image lands within its {geoErrM} m CE90</>}:{' '}
                         <span className="font-mono text-sky-300">{comparison.lead.drawn.toFixed(0)}%</span> at {angleLabel}°
                         vs <span className="font-mono text-neutral-300">{comparison.lead.aligned.toFixed(0)}%</span> along the pixel rows
                         {/* The counts, in the units the reader can check on the panels,
@@ -267,18 +267,18 @@ function PcaStepBody(p: StepProps) {
                         {/* The best case, so the reader sees what the nominal figures on the
                             panels were promising and how much of it was the imagery's luck. */}
                         {worstCase && Number.isFinite(comparison.lead.drawnBest) && Number.isFinite(comparison.lead.alignedBest)
-                          ? <>, and at best {comparison.lead.drawnBest.toFixed(0)}% vs {comparison.lead.alignedBest.toFixed(0)}%.</>
+                          ? <>, against {comparison.lead.drawnBest.toFixed(0)}% vs {comparison.lead.alignedBest.toFixed(0)}% if the image lands exactly where it says.</>
                           : '.'}
                         {/* Said only as far as the numbers show it, in the figure they were
                             ranked on, and in whichever direction they point. */}
                         {comparison.better.length > 0 && comparison.worse.length === 0
-                          ? ` ${worstCase ? 'Even in the worst case, along' : 'Along'} the rows gives more pure crop at ${comparison.better.join(', ')} m, and is never more than ${TIE_POINTS} points behind at any of the ${comparison.sizes} ${comparison.sizes === 1 ? 'size' : 'sizes'}.`
+                          ? ` ${worstCase ? 'Even counting only what survives, along' : 'Along'} the rows gives more pure crop at ${comparison.better.join(', ')} m, and is never more than ${TIE_POINTS} points behind at any of the ${comparison.sizes} ${comparison.sizes === 1 ? 'size' : 'sizes'}.`
                           : comparison.better.length > 0
-                            ? ` ${worstCase ? 'In the worst case, along' : 'Along'} the rows gives more at ${comparison.better.join(', ')} m and less at ${comparison.worse.join(', ')} m.`
+                            ? ` ${worstCase ? 'Counting only what survives, along' : 'Along'} the rows gives more at ${comparison.better.join(', ')} m and less at ${comparison.worse.join(', ')} m.`
                             : comparison.worse.length > 0
-                              ? ` ${worstCase ? 'In the worst case, along' : 'Along'} the rows gives less at ${comparison.worse.join(', ')} m.`
+                              ? ` ${worstCase ? 'Counting only what survives, along' : 'Along'} the rows gives less at ${comparison.worse.join(', ')} m.`
                               : worstCase
-                                ? ` Once the imagery may be ${geoErrM >= comparison.lead.res / 2 ? 'anywhere against the pixel grid' : `${geoErrM} m off`}, the two placements are within ${TIE_POINTS} points at every one of the ${comparison.sizes} ${comparison.sizes === 1 ? 'size' : 'sizes'}: staking onto the grid buys nothing you can count on.`
+                                ? ` Once the image may land anywhere within ${geoErrM} m, the two placements are within ${TIE_POINTS} points at every one of the ${comparison.sizes} ${comparison.sizes === 1 ? 'size' : 'sizes'}: staking onto the grid buys nothing you can count on.`
                                 : ` The two placements are within ${TIE_POINTS} points at every one of the ${comparison.sizes} ${comparison.sizes === 1 ? 'size' : 'sizes'}.`}
                       </p>
                     ) : (

@@ -151,8 +151,11 @@ function SimStepBody(p: StepProps) {
                 ))}
               </div>
               <div>
-                <span className="mb-1 block text-[11px] text-neutral-500">Pure ≥ {threshold}% one crop</span>
-                <input type="range" min="50" max="100" step="5" value={threshold}
+                {/* 90 % is the PHENET note's pure pixel. 100 is not offered: a
+                    Gaussian never reaches zero, so at 100 % the answer was set by
+                    where the kernel is cut off, not by the trial. */}
+                <span className="mb-1 block text-[11px] text-neutral-500">Pure ≥ {threshold}% of its signal from one plot{threshold === 90 ? ' (the PHENET note\'s threshold)' : ''}</span>
+                <input type="range" min="50" max="99" step="1" value={threshold}
                   onChange={e => setThreshold(parseInt(e.target.value))} className="w-full accent-sky-500" />
               </div>
             </Disclosure>

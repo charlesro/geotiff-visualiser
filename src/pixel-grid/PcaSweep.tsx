@@ -1,7 +1,8 @@
 import { Fragment, memo, useEffect, useMemo, useRef } from 'react';
 import type { FieldParams } from './simulate';
 import { axisSigns, fitCover, peekFit, pointStyle, samplePts, type ColorBy, type CoverSource } from './pca-field';
-import { fmt } from './util';
+import { fmt, pct0 } from './util';
+import type { PlotTally } from './resolving';
 
 /**
  * Small-multiples PCA: one compact scatter per pixel size, so you can watch the
@@ -38,15 +39,25 @@ export interface SweepStep extends CoverSource {
   /** The share's denominator: the planted crop area, in whole pixels. */
   plantCount?: number;
   /**
-   * The share's range if the imagery is up to the step 2 geolocation error off,
-   * measured through this rung's own pipeline so it is in the same units as the
-   * share it qualifies. Undefined when no geolocation error is set.
+   * Geolocation, read two ways off the same CE90 (step 2's Geoloc figure), both
+   * through this rung's own pipeline and in the share's own units. Undefined
+   * when no geolocation error is set.
+   *
+   * geoRobust: the pixels pure for the same plot wherever the image lands
+   * within the CE90. The set a pixel list chosen by coordinates can rely on.
+   * geoMean: the PHENET note's number, the share under one effective spot
+   * sigma_eff = sqrt(sigma_psf^2 + sigma_geo^2). Absent past 5 px of blur.
    */
-  geoLo?: number;
-  geoHi?: number;
-  /** The pure-pixel counts of the samples that gave geoLo and geoHi. */
-  geoLoPure?: number;
-  geoHiPure?: number;
+  geoRobust?: number;
+  geoRobustPure?: number;
+  geoMean?: number;
+  geoMeanPure?: number;
+  /** Pure pixels plot by plot, at the nominal placement and over the robust set. */
+  plots?: PlotTally;
+  plotsRobust?: PlotTally;
+  /** The note's closed-form smallest plot side at this pixel size, and the design's own. */
+  minPlotM?: number;
+  plotSideM?: number;
   /** Pure pixels, and the trial pixels they are counted over (NaN on a placeholder). */
   pureCount?: number;
   trialCount?: number;
@@ -186,7 +197,10 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
       return { res: s.res, purePct: s.purePct,
                resolvingPct: s.current ? undefined : s.resolvingPct, nEff: s.current ? undefined : s.nEff,
                plantCount: s.plantCount, contrastDead: s.contrastDead,
-               geoLo: s.current ? undefined : s.geoLo, geoHi: s.current ? undefined : s.geoHi,
+               geoRobust: s.current ? undefined : s.geoRobust, geoRobustPure: s.current ? undefined : s.geoRobustPure,
+               geoMean: s.current ? undefined : s.geoMean,
+               plots: s.current ? undefined : s.plots, plotsRobust: s.current ? undefined : s.plotsRobust,
+               minPlotM: s.minPlotM, plotSideM: s.plotSideM,
                pureCount: s.current ? NaN : (s.pureCount ?? NaN), trialCount: s.trialCount ?? NaN,
                partial: !!s.partial, pts, tooFew: fit.tooFew, waiting: false };
     });
@@ -242,31 +256,46 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
             </span>
           )}
         </div>
-        {/* The share's range over where the imagery may actually land, the one
-            place the geolocation error shows. Said as "no change" rather than
-            dropped when it does not move the share, so a reader who set it can
-            see that it was applied.
-
-            PAST HALF A PIXEL it says "wherever it lands" instead of naming the
-            figure. Only the phase matters and half a pixel already reaches
-            every phase, so 5 m, 12.5 m and 50 m give one identical range at
-            10 m pixels. Labelled "within 50 m" that reads as the setting being
-            ignored, which is what it looked like to the first person who typed
-            a big number into it. */}
-        {geoErrM > 0 && c.geoLo !== undefined && c.geoHi !== undefined && (() => {
-          const anyPhase = geoErrM >= c.res / 2;
-          const where = anyPhase ? 'wherever it lands' : `within ${geoErrM} m`;
-          const moves = Math.round(c.geoHi) - Math.round(c.geoLo) >= 1;
+        {/* Geolocation, as what SURVIVES it. This line used to print the range
+            of the pure-pixel COUNT over a few placements, and a count hides the
+            damage: on a 15 m plot at a 3.5 m CE90 the count stays 64 to 77
+            wherever the image lands, while only 16 of the 64 pixels flagged at
+            the nominal position are pure at every placement. A pixel is picked
+            by its coordinates, so the set has to survive, not its size. */}
+        {geoErrM > 0 && c.geoRobust !== undefined && (
+          <div className="px-0.5 font-mono text-[9px] leading-tight text-neutral-500"
+            title={[
+              `${fmt(c.geoRobustPure ?? 0)} of these pixels are pure, for the same plot, wherever the image lands within its ${geoErrM} m CE90 (9 images in 10). These are the ones a pixel list chosen by coordinates can rely on`,
+              c.geoMean !== undefined
+                ? `Averaged over images instead, as the PHENET note does (one effective spot, sigma_geo = CE90 / 2.146), the share is ${pct0(c.geoMean)}`
+                : 'The across-image mean is not computed here: the effective spot is wider than 5 pixels',
+            ].join('. ')}>
+            <span className={c.geoRobust < 0.5 ? 'text-rose-400' : 'text-amber-300/80'}>{pct0(c.geoRobust)}</span> stay pure within {geoErrM} m
+          </div>
+        )}
+        {/* The plot is what a variety trial is read by: a rung can carry a fine
+            share and still leave whole plots with nothing to follow. Counted
+            over the robust set when a geolocation error is set. */}
+        {(() => {
+          const t = geoErrM > 0 && c.plotsRobust ? c.plotsRobust : c.plots;
+          if (!t) return null;
           return (
             <div className="px-0.5 font-mono text-[9px] leading-tight text-neutral-500"
-              title={[
-                `If the imagery is ${anyPhase ? `off by half a ${c.res} m pixel or more` : `up to ${geoErrM} m from where it says`}, this share lands anywhere from ${c.geoLo.toFixed(0)}% to ${c.geoHi.toFixed(0)}%`,
-                anyPhase ? `Past half a pixel every sub-pixel position is reachable, so a larger figure than ${c.res / 2} m changes nothing here` : null,
-              ].filter(Boolean).join('. ')}>
-              {moves ? `${c.geoLo.toFixed(0)}-${c.geoHi.toFixed(0)}% ${where}` : `no change ${where}`}
+              title={`Pure pixels per plot${geoErrM > 0 && c.plotsRobust ? `, counting only those that stay pure within the ${geoErrM} m CE90` : ''}: fewest ${t.min}, median ${t.median}. ${t.none} of the ${t.plots} plots have none and cannot be followed at this pixel size`}>
+              plots: min {t.min} · med {t.median}
+              {t.none > 0 && <span className="text-rose-400"> · {t.none}/{t.plots} none</span>}
             </div>
           );
         })()}
+        {/* The PHENET note's closed form, so a reader sees what the simulation
+            should find before reading what it found. Amber when the design's
+            own plots are narrower than it asks for. */}
+        {c.minPlotM !== undefined && (
+          <div className={`px-0.5 font-mono text-[9px] leading-tight ${c.plotSideM !== undefined && c.plotSideM < c.minPlotM ? 'text-amber-300/80' : 'text-neutral-600'}`}
+            title={`Smallest plot side that keeps a pure pixel wherever the grid falls, by the PHENET note's closed form: pixel + 2 x z x effective sigma, with z from the ${threshold}% threshold${c.plotSideM !== undefined ? `. This design's plots are ${c.plotSideM} m on their short side` : ''}`}>
+            needs ≥ {c.minPlotM.toFixed(1)} m plots
+          </div>
+        )}
         <div className="pointer-events-none">
           {c.waiting
             ? <div className="flex items-center justify-center text-[9px] text-neutral-600" style={{ height: 92 }}>…</div>

@@ -133,6 +133,13 @@ const coverShares = (fr: ArrayLike<number>, bare = 0, off = 0) => {
 
 const fmt = (n: number) => n.toLocaleString('en-US');
 const fmtM = (m: number) => (m < 0.995 ? `${Math.round(m * 100)} cm` : `${m.toFixed(2)} m`);
+/**
+ * A share as a whole percent that never reads as a bare 0% or 100% when it is
+ * neither: 0.3 is "<1%" and 99.7 is ">99%". A robust share is often a sliver,
+ * and "0%" for 12 surviving pixels would say none did.
+ */
+const pct0 = (v: number): string =>
+  (v > 0 && v < 0.5 ? '<1%' : v < 100 && v >= 99.5 ? '>99%' : `${v.toFixed(0)}%`);
 
-export { lerpHex, hexRgb, mix3, mixN, distinctColors, categoricalColors, coverShares, fmt, fmtM };
+export { lerpHex, hexRgb, mix3, mixN, distinctColors, categoricalColors, coverShares, fmt, fmtM, pct0 };
 export type { CoverKind };

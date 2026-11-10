@@ -44,7 +44,7 @@ const REVEAL = {
 };
 
 fs.rmSync(BUILD, { recursive: true, force: true });
-for (const rel of ['src/lib/geo.ts', 'src/lib/projections.ts', 'src/pixel-grid/s2-grid.ts', 'src/pixel-grid/geometry.ts', 'src/pixel-grid/simulate.ts', 'src/pixel-grid/resolving.ts', 'src/pixel-grid/shapefile.ts', 'src/pixel-grid/util.ts', 'src/pixel-grid/pca-field.ts', 'src/pixel-grid/ladder.ts', 'src/pixel-grid/ladder-rung.ts', 'src/pixel-grid/sensors.ts', 'src/pixel-grid/design-import.ts', 'src/pixel-grid/imported-plan.ts', 'src/pixel-grid/imported-rotate.ts', 'src/pixel-grid/field-membership.ts']) {
+for (const rel of ['src/lib/geo.ts', 'src/lib/projections.ts', 'src/pixel-grid/s2-grid.ts', 'src/pixel-grid/geometry.ts', 'src/pixel-grid/simulate.ts', 'src/pixel-grid/resolving.ts', 'src/pixel-grid/shapefile.ts', 'src/pixel-grid/util.ts', 'src/pixel-grid/pca-field.ts', 'src/pixel-grid/ladder.ts', 'src/pixel-grid/ladder-rung.ts', 'src/pixel-grid/sensors.ts', 'src/pixel-grid/design-import.ts', 'src/pixel-grid/imported-plan.ts', 'src/pixel-grid/imported-rotate.ts', 'src/pixel-grid/field-membership.ts', 'src/pixel-grid/pixel-verdicts.ts']) {
   let ts = fs.readFileSync(path.join(ROOT, rel), 'utf8');
   for (const decl of REVEAL[rel] ?? []) ts = reveal(ts, decl);
   // esbuild only strips types; relative specifiers still need an extension to
@@ -79,7 +79,7 @@ const { resolveImportedPlan, varietyKeyOf, convexHull, hullWidth, narrowestFeatu
 const { purePixels, stakeOnGrid, rotateImportedPlan, alignedWithin } = await import(path.join(BUILD, 'src/pixel-grid/imported-rotate.mjs'));
 const { varietiesOf: readerVarietiesOf, varietyKeyOf: readerVarietyKeyOf } = await import(path.join(BUILD, 'src/pixel-grid/design-import.mjs'));
 const { pointInPoly, fieldOverlapTest, viewShowsField } = await import(path.join(BUILD, 'src/pixel-grid/geometry.mjs'));
-const { contrastInfo, pureEfficiency, plantedPixels, plantedShare } = await import(path.join(BUILD, 'src/pixel-grid/resolving.mjs'));
+const { contrastInfo, pureEfficiency, plantedPixels, plantedShare, probit, bufferK, minPlotSideM, ce90Shifts, robustMask, plotTally, CE90_TO_SIGMA } = await import(path.join(BUILD, 'src/pixel-grid/resolving.mjs'));
 const { cellInFieldTest } = await import(path.join(BUILD, 'src/pixel-grid/field-membership.mjs'));
 const { gridToShapefileZip } = await import(path.join(BUILD, 'src/pixel-grid/shapefile.mjs'));
 
@@ -2709,6 +2709,27 @@ console.log('\nL. the exported shapefile is a real zipped shapefile');
     files.set(name, { method, crc, data: buf.slice(off + 30 + nlen + elen, off + 30 + nlen + elen + size) });
     off += 30 + nlen + elen + size;
   }
+  // The simulation's verdict per pixel rides in the same .dbf, as extra
+  // whole-number columns after the geometry ones.
+  {
+    const n = grid.cells.length;
+    const pure = Uint8Array.from({ length: n }, (_, i) => i % 2), robust = Uint8Array.from({ length: n }, (_, i) => (i % 4 === 1 ? 1 : 0));
+    const xb = new Uint8Array(await gridToShapefileZip(grid, 'x', [{ name: 'PURE', values: pure }, { name: 'ROBUST', values: robust }]).arrayBuffer());
+    const xv = new DataView(xb.buffer);
+    let o = 0, dbf = null;
+    while (o + 4 <= xb.length && xv.getUint32(o, true) === 0x04034b50) {
+      const size = xv.getUint32(o + 18, true), nl = xv.getUint16(o + 26, true), el = xv.getUint16(o + 28, true);
+      if (String.fromCharCode(...xb.slice(o + 30, o + 30 + nl)) === 'x.dbf') dbf = xb.slice(o + 30 + nl + el, o + 30 + nl + el + size);
+      o += 30 + nl + el + size;
+    }
+    const dd = new DataView(dbf.buffer, dbf.byteOffset, dbf.byteLength);
+    const hdr = dd.getUint16(8, true), rec = dd.getUint16(10, true), names = [], lens = [];
+    for (let f = 32; f + 32 <= hdr - 1; f += 32) { names.push(String.fromCharCode(...dbf.slice(f, f + 11)).replace(/\0.*$/, '')); lens.push(dbf[f + 16]); }
+    ok('the export can carry PURE and ROBUST columns after the geometry', names.slice(-2).join(',') === 'PURE,ROBUST', names.join(' '));
+    const tail = k => String.fromCharCode(...dbf.slice(hdr + k * rec + rec - 12, hdr + k * rec + rec)).replace(/ /g, '');
+    ok('holding each pixel\'s own value', tail(0) === '00' && tail(1) === '11' && tail(2) === '00' && tail(3) === '10', [0, 1, 2, 3].map(tail).join(' '));
+    ok('and a plain export is unchanged', dd.getUint32(4, true) === n && rec === 1 + lens.reduce((a, b) => a + b, 0));
+  }
   ok('the local file headers name every sidecar the GIS needs',
     [...files.keys()].join(' ') === 's2_pixels_10m.shp s2_pixels_10m.shx s2_pixels_10m.dbf s2_pixels_10m.prj s2_pixels_10m.cpg',
     [...files.keys()].join(' '));
@@ -3444,6 +3465,69 @@ console.log('\nH17. the purity pair: pure pixels, over the crop area actually pl
     const out = contrastInfo({ species: sp, bare: new Float32Array(N), offTrial: null, nSpecies: S, count: N });
     ok('an all-zero soil column does not make a no-alley trial unidentifiable', !out.dead && out.nEff > 0, out.nEff.toFixed(2));
   }
+}
+
+console.log('\nH22. the PHENET note: its closed forms, its table, and what survives a geolocation error');
+{
+  // The closed forms, against the figures printed in the note itself.
+  ok('probit inverts the normal CDF', Math.abs(probit(0.975) - 1.959964) < 1e-5 && Math.abs(probit(0.5)) < 1e-12, probit(0.975).toFixed(6));
+  ok('the buffer is 1.28 sigma at 90 % and 1.64 at 95 %',
+    Math.abs(bufferK(0.9) - 1.2816) < 1e-3 && Math.abs(bufferK(0.95) - 1.6449) < 1e-3, `${bufferK(0.9).toFixed(4)}, ${bufferK(0.95).toFixed(4)}`);
+  // "Formula" column of the note's any-pixel table: GSD, sigma_eff, L_min.
+  for (const [name, gsd, sEff, want] of [['WorldView-2', 1.6, 0.97, 4.8], ['Pleiades', 2, 2.23, 9.3], ['PlanetScope', 3, 4.24, 16.8], ['Sentinel-2', 10, 6.82, 32.2]]) {
+    const got = minPlotSideM(gsd, sEff, 0.9);
+    // The note prints one decimal from a sigma_eff it rounds to two, so 0.1 m is its own precision.
+    ok(`smallest plot, ${name}: the note's ${want} m`, Math.abs(got - want) < 0.1, got.toFixed(2));
+  }
+  ok('no closed form at 100 %, where a Gaussian never clears', minPlotSideM(10, 6, 1) === null && minPlotSideM(10, 0, 0.9) === null);
+  ok('CE90 = 2.146 sigma (Rayleigh)', Math.abs(CE90_TO_SIGMA - Math.sqrt(-2 * Math.log(0.1))) < 1e-4, String(CE90_TO_SIGMA));
+
+  // The shifts go to the CE90 itself and are never clamped to half a pixel.
+  const sh = ce90Shifts(3.5);
+  ok('eight shifts on the CE90 circle, unclamped', sh.length === 8 && sh.every(([x, y]) => Math.abs(Math.hypot(x, y) - 3.5) < 1e-9));
+  ok('none when no error is set', ce90Shifts(0).length === 0);
+
+  // robustMask: same cover at EVERY placement, crop covers only.
+  const nominal = Uint8Array.of(0, 0, 1, 255, 254, 3);
+  const mask = robustMask(nominal, [Uint8Array.of(0, 255, 1, 255, 254, 4), Uint8Array.of(0, 0, 1, 0, 254, 3)]);
+  ok('a pixel is robust only when every placement gives the same crop cover',
+    Array.from(mask).join('') === '101000', Array.from(mask).join(''));
+  // 255 mixed and 254 bare never count; a pixel that changes plot (3 then 4) does not either.
+
+  const t = plotTally(Uint8Array.of(0, 0, 0, 1, 255, 3, 3), 4);
+  ok('plot tally: fewest, median and plots with none', t.plots === 4 && t.min === 0 && t.median === 1.5 && t.none === 1,
+    JSON.stringify(t));
+  ok('and over a mask it counts only the marked pixels',
+    plotTally(Uint8Array.of(0, 0, 1), 2, Uint8Array.of(1, 0, 0)).none === 1);
+  ok('no tally without plots', plotTally(Uint8Array.of(0), 0) === null);
+
+  // The note's own scene, through the real engine: one 15 m plot among others.
+  const scene = (res, sig, thr, g, dx = 0, dy = 0) => {
+    const nPx = Math.ceil(15 / res) + 2 * (Math.ceil(3 * sig) + 6), rows = nPx * g, cols = nPx * g, f = res / g;
+    const x0 = Math.round(((nPx * res - 15) / 2 + dx) / f) * f, y0 = Math.round(((nPx * res - 15) / 2 + dy) / f) * f;
+    const map = new Uint8Array(rows * cols);
+    for (let r = 0; r < rows; r++) { const iy = Math.floor(((r + 0.5) * f - y0) / 15);
+      for (let c = 0; c < cols; c++) map[r * cols + c] = (Math.floor(((c + 0.5) * f - x0) / 15) === 0 && iy === 0) ? 0 : 1; }
+    return aggregate(new Array(rows * cols).fill(new Float64Array(0)), rows, cols, g, sig, sig, true, 0, map, thr, 0, 0, Uint8Array.of(0, 1), 2).cropMapMixed;
+  };
+  const count = m => { let n = 0; for (const v of m) if (v === 0) n++; return n; };
+  // Pleiades native MS, 2 m pixels, measured FWHM 5 m: the note counts about 20.
+  const plSig = 5 / 2.3548 / 2;
+  const at90 = count(scene(2, plSig, 0.9, 8)), at100 = count(scene(2, plSig, 1.0, 8));
+  ok('at 90 % the engine finds the note\'s pure pixels on Pleiades (about 20)', at90 >= 16 && at90 <= 23, String(at90));
+  ok('at 100 % it found none, which is why 100 is no longer offered', at100 === 0, String(at100));
+
+  // WorldView-2 native MS at its 3.5 m CE90: the COUNT barely moves, the SET does.
+  const wvSig = 1.9 / 2.3548 / 1.6;
+  const nom = scene(1.6, wvSig, 0.9, 16);
+  const shifted = ce90Shifts(3.5).map(([dx, dy]) => scene(1.6, wvSig, 0.9, 16, dx, dy));
+  // Of the CENTRAL plot's pixels only: the surroundings share one id in this
+  // scene and are pure, and robust, far from it.
+  const counts = shifted.map(count), survivors = robustMask(nom, shifted).reduce((a, v, k) => a + (v && nom[k] === 0 ? 1 : 0), 0);
+  ok('the count of pure pixels hides a geolocation error',
+    Math.min(...counts) >= 0.9 * count(nom), `${count(nom)} nominal, ${Math.min(...counts)}..${Math.max(...counts)} shifted`);
+  ok('the robust set does not: under a third of the nominal pixels survive',
+    survivors > 0 && survivors < count(nom) / 3, `${survivors} of ${count(nom)}`);
 }
 
 console.log('\n' + (bad ? `${bad} FAILURE(S)` : 'ALL PIXEL-GRID CHECKS PASSED'));

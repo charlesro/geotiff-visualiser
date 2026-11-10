@@ -2,12 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import proj4 from 'proj4';
 import { crsToProj4Def } from '../lib/geo';
 import {
-  BARE, CROP_COLORS, strideFieldSim, shiftSamples, CROP_PRESETS, PATTERNS, TRUTH_TYPES, bestPhaseOffset, cropById, makeBetaSchedule, simulateField,
+  BARE, CROP_COLORS, strideFieldSim, CROP_PRESETS, PATTERNS, TRUTH_TYPES, bestPhaseOffset, cropById, makeBetaSchedule, simulateField,
   truthAt, utmEnvelope, TMAX, coverStats, speciesChannel, meanPerSpecies,
   blockPlacement, layoutKey, plantedAreaPx, stakeBlockPlan,
   type BlockDesign, type FieldParams, type FieldSim, type PatternType, type SensorParams, type SimLayout,
 } from './simulate';
-import { contrastInfo, plantedPixels, plantedShare } from './resolving';
+import { CE90_TO_SIGMA, ce90Shifts, contrastInfo, minPlotSideM, plantedPixels, plantedShare, plotTally, robustMask, type PlotTally } from './resolving';
 import { aoiUtmOrigin, buildS2Grid, type LngLatBounds, type S2Grid } from './s2-grid';
 import { fieldOverlapTest, type Poly } from './geometry';
 import { cellInFieldTest } from './field-membership';
@@ -47,17 +47,6 @@ import type { ImportedDesign, ImportedPlan } from './imported-types';
  * the comparison is judged on (TIE_POINTS in PcaStep). A cheaper thumbnail is
  * not worth a verdict that sampling could flip.
  */
-/**
- * Geolocation samples per rung, per axis (shiftSamples' n): n x n offsets plus
- * zero, so 5 simulations a rung where step 3 used to spend 17. Measured against
- * n = 4 on a strip and a block design at 1, 2 and 4 m pixels and at 1 and 5 m
- * of error, the ranges were identical in all twelve cases, to 0.0 points, at
- * about a third of the time. Purity moves in steps as edges cross pixel edges,
- * and the extreme steps are reached at the corners of the unit cell, which
- * n = 2 already samples.
- */
-const GEO_LADDER_N = 2;
-
 const LADDER_MAX_CELLS = 20_000;
 
 /**
@@ -223,7 +212,12 @@ export function useExperiment({ sigmaX, sigmaY, fieldBounds, fieldOrigin, pixelS
   // The repo engine's own default is 80%, which flatters the design: it calls a
   // pixel "pure maize" when a fifth of it is wheat. Start strict; the slider in
   // "Noise & purity threshold" relaxes it.
-  const [threshold, setThreshold] = usePersistentState('threshold', 100, inRange(50, 100));
+  // 90 % is the PHENET note's definition of a pure pixel (contamination <= 10 %).
+  // 100 is not offered: a Gaussian never reaches zero, so at 100 % "pure" meant
+  // "nothing foreign inside the kernel's cut-off at ceil(3 sigma) pixels", an
+  // artefact of the truncation that read 0 pure pixels where the note counts 20.
+  // A saved 100 fails this range and falls back to 90.
+  const [threshold, setThreshold] = usePersistentState('threshold', 90, inRange(50, 99));
 
   /**
    * The randomised block design. Persisted under its own key and validated
@@ -1042,46 +1036,82 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
      * Only when an uncertainty is set: it is off by default and costs a few
      * simulations per rung when on.
      */
-    let geoLo: number | undefined, geoHi: number | undefined;
-    let geoLoPure: number | undefined, geoHiPure: number | undefined;
+    /**
+     * The plot is the unit a variety trial is read by, so each rung also says
+     * how its pure pixels are spread over the plots. Cover ids ARE plot ids on a
+     * block trial and on an imported one that kept them; a periodic pattern has
+     * no plots, and a rung sampled over the centre of the field does not see
+     * them all, so neither gets a tally.
+     */
+    const nPlots = partial ? 0
+      : layoutL.pattern === 'block' && layoutL.block ? layoutL.block.nPlots
+      : layoutL.pattern === 'imported' && layoutL.imported?.plotIds ? layoutL.imported.coverSpecies.length
+      : 0;
+    const plots: PlotTally | null = plotTally(mixed, nPlots);
+    /** The design's own short plot side, for the closed form to be read against. */
+    const plotSideM = layoutL.pattern === 'block' && layoutL.block
+      ? Math.min(layoutL.block.design.plotLength, layoutL.block.design.plotWidth)
+      : layoutL.pattern === 'imported' ? undefined : stripWidth;
+    const sigGeoM = geoErrM > 0 ? geoErrM / CE90_TO_SIGMA : 0;
+    const minPlotM = minPlotSideM(r, Math.hypot(Math.max(sigmaX, sigmaY) * r, sigGeoM), threshold / 100) ?? undefined;
+
+    /**
+     * Geolocation, ONE model with two readings. The Geoloc figure is a CE90:
+     * nine images in ten land within it.
+     *
+     * ROBUST: the pixels that are pure, for the same plot, wherever the image
+     * lands within that radius. This replaces a range of COUNTS, which hid the
+     * damage: on a 15 m plot at WorldView-2's 3.5 m CE90 the count stays between
+     * 64 and 77 at every placement while only 16 of the 64 pixels flagged at the
+     * nominal position are pure at all of them. A pixel is chosen by its
+     * coordinates, so it is the SET that has to survive, not its size. The
+     * shifts are not clamped to half a pixel for the same reason: a count is
+     * periodic in the lattice, a chosen pixel is not.
+     *
+     * MEAN: the note's own number. Over many images the miss is a Gaussian of
+     * sigma = CE90 / 2.146, and averaging the PSF over it gives one effective
+     * spot, sigma_eff = sqrt(sigma_psf^2 + sigma_geo^2). Skipped past 5 pixels
+     * of blur, the widest kernel the engine is allowed anywhere else.
+     */
+    let geoRobust: number | undefined, geoRobustPure: number | undefined;
+    let geoMean: number | undefined, geoMeanPure: number | undefined;
+    let plotsRobust: PlotTally | null = null;
     if (geoErrM > 0 && resolvingPct != null) {
       const coverSp = speciesChannel(layoutL).coverSpecies;
-      const shareAt = (lay: SimLayout, org: [number, number]): { pct: number | null; pure: number } => {
-        const s2 = simulateField(box, org, lay, sensorL);
+      const verdictAt = (lay: SimLayout, org: [number, number], sen: SensorParams): Uint8Array => {
+        const s2 = simulateField(box, org, lay, sen);
         const mx = new Uint8Array(n);
-        const sp = s2.proportionBySpecies ? new Float32Array(n * nSp) : null;
-        const off = s2.proportionOffTrial ? new Float32Array(n) : null;
-        keep.forEach((k, j) => {
-          mx[j] = s2.mixed[k];
-          if (sp && s2.proportionBySpecies) for (let q = 0; q < nSp; q++) sp[j * nSp + q] = s2.proportionBySpecies[k * nSp + q];
-          if (off && s2.proportionOffTrial) off[j] = s2.proportionOffTrial[k];
-        });
-        const st2 = coverStats({ mixed: mx, coverSpecies: coverSp, nSpecies: nSp, offTrial: off });
-        return { pct: plantedShare(st2.pureCrop, plantedPixels({ species: sp, offTrial: off, nSpecies: nSp, count: n }), geo).pct,
-                 pure: st2.pureCrop };
+        keep.forEach((k, j) => { mx[j] = s2.mixed[k]; });
+        return mx;
       };
-      // The count travels with each share, so the verdict can print the pure
-      // pixels of the WORST case rather than scaling a rounded percentage back.
-      const vals: { pct: number; pure: number }[] = [{ pct: resolvingPct, pure: st.pureCrop }];
       const importedPlan = layoutL.pattern === 'imported' ? layoutL.imported : undefined;
-      for (const [dx, dy] of shiftSamples(geoErrM, r, GEO_LADDER_N)) {
-        if (dx === 0 && dy === 0) continue; // the nominal, already counted
-        // An imported plan carries absolute coordinates and has no origin, so
-        // the plan itself is what moves; everything else moves by its origin.
-        const v = importedPlan
-          ? shareAt({ ...layoutL, imported: shiftImportedPlan(importedPlan, -dx, -dy) }, [ox, oy])
-          : shareAt(layoutL, [ox - dx, oy - dy]);
-        if (v.pct != null) vals.push({ pct: v.pct, pure: v.pure });
+      // A shift of half the short plot side carries the plot's own centre line
+      // onto its edge, so nothing can survive it: no need to simulate that.
+      const hopeless = plotSideM != null && geoErrM >= plotSideM / 2;
+      const shifted = hopeless ? null : ce90Shifts(geoErrM).map(([dx, dy]) => (importedPlan
+        ? verdictAt({ ...layoutL, imported: shiftImportedPlan(importedPlan, -dx, -dy) }, [ox, oy], sensorL)
+        : verdictAt(layoutL, [ox - dx, oy - dy], sensorL)));
+      const mask = shifted ? robustMask(mixed, shifted) : new Uint8Array(n);
+      // Crop only, exactly as coverStats counts the nominal: robustMask already
+      // leaves out mixed, bare and off-trial verdicts.
+      let robust = 0;
+      for (let j = 0; j < n; j++) if (mask[j] && !(proportionOffTrial && proportionOffTrial[j] > 0.5)) robust++;
+      geoRobustPure = robust;
+      geoRobust = plantedShare(robust, measured, geo).pct ?? undefined;
+      plotsRobust = plotTally(mixed, nPlots, mask);
+
+      const effX = Math.hypot(sigmaX, sigGeoM / r), effY = Math.hypot(sigmaY, sigGeoM / r);
+      if (Math.max(effX, effY) <= 5) {
+        const mx = verdictAt(layoutL, [ox, oy], { sigmaX: effX, sigmaY: effY, mixThreshold: threshold / 100 });
+        const st2 = coverStats({ mixed: mx, coverSpecies: coverSp, nSpecies: nSp, offTrial: proportionOffTrial });
+        geoMeanPure = st2.pureCrop;
+        geoMean = plantedShare(st2.pureCrop, measured, geo).pct ?? undefined;
       }
-      const lo = vals.reduce((a, b) => (b.pct < a.pct ? b : a));
-      const hi = vals.reduce((a, b) => (b.pct > a.pct ? b : a));
-      geoLo = lo.pct; geoHi = hi.pct; geoLoPure = lo.pure; geoHiPure = hi.pure;
     }
-    // `mixed` travels with the rung, not just its tally: the thumbnail colours
-    // each dot pure or mixed off these same bytes, so it cannot paint a pixel
-    // green that the purity printed under it counted as mixed.
     return { res: r, proportionA, proportionBare, mixed, purePct: st.purePct, pureCount: st.pureCrop, trialCount: st.total,
-             resolvingPct, nEff: under.nEff, contrastDead: under.dead, plantCount: Math.round(planted), geoLo, geoHi, geoLoPure, geoHiPure,
+             resolvingPct, nEff: under.nEff, contrastDead: under.dead, plantCount: Math.round(planted),
+             geoRobust, geoRobustPure, geoMean, geoMeanPure,
+             plots: plots ?? undefined, plotsRobust: plotsRobust ?? undefined, minPlotM, plotSideM,
              proportionBySpecies, nSpecies: nSp, proportionOffTrial, pixelIds, partial };
     // ladderSig covers the whole design, block parameters included; blockDesign's
     // fields are all in it.

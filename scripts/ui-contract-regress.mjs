@@ -192,18 +192,39 @@ console.log('\nU2b. one sampling-position control, not two, and its effect is wh
   // Geolocation error used to show only in the step 3 card, which exists only
   // for block and imported trials: on a strip design it moved nothing at all.
   // It now shows on every ladder panel, for every layout.
-  check('the ladder computes a geolocation range for each rung', /geoLo, geoHi/.test(useSim2) && /shiftSamples\(geoErrM, r, GEO_LADDER_N\)/.test(useSim2));
+  // What a rung reports under a geolocation error is the SET that survives it,
+  // not a range of counts: on a 15 m plot at a 3.5 m CE90 the count stays 64 to
+  // 77 at every placement while only 16 of the 64 nominal pixels are pure at
+  // all of them. The shifts go out to the CE90 and are NOT clamped to half a
+  // pixel, because a pixel chosen by its coordinates is not periodic.
+  check('the ladder computes the robust set for each rung, out to the CE90',
+    /ce90Shifts\(geoErrM\)\.map/.test(useSim2) && /robustMask\(mixed, shifted\)/.test(useSim2)
+    && !/shiftSamples\(geoErrM/.test(useSim2));
+  // The note's own number: one effective spot, sigma_eff in quadrature.
+  check('and the across-image mean under sigma_eff, as the note does',
+    /Math\.hypot\(sigmaX, sigGeoM \/ r\)/.test(useSim2) && /sigGeoM = geoErrM > 0 \? geoErrM \/ CE90_TO_SIGMA : 0/.test(useSim2));
+  check('skipped past the widest kernel the engine is allowed elsewhere', /Math\.max\(effX, effY\) <= 5/.test(useSim2));
   check('only when an uncertainty is set, so it costs nothing by default', /if \(geoErrM > 0 && resolvingPct != null\)/.test(useSim2));
   check('every sample goes through the SAME share rule as the rung it qualifies',
     (useSim2.match(/plantedShare\(/g) || []).length >= 2 && !/0\.8 \* geo/.test(useSim2));
-  check('each panel prints the range, and says so when it does not move',
-    /c\.geoLo\.toFixed\(0\)\}-\$\{c\.geoHi\.toFixed\(0\)\}% \$\{where\}/.test(sweepSrc) && /no change \$\{where\}/.test(sweepSrc));
-  // Past half a pixel every sub-pixel position is reachable, so 5, 12.5 and 50 m
-  // give one identical range at 10 m pixels. Naming the figure there reads as
-  // the setting being ignored, which is what it looked like to the first person
-  // who typed a big number in.
-  check('and stops naming a figure once any phase is reachable',
-    /const anyPhase = geoErrM >= c\.res \/ 2;/.test(sweepSrc) && /wherever it lands/.test(sweepSrc));
+  check('each panel prints what stays pure within the CE90, never a bare 0%',
+    /pct0\(c\.geoRobust\)\}<\/span> stay pure within \{geoErrM\} m/.test(sweepSrc) && !/geoLo|geoHi/.test(sweepSrc));
+  check('and its tooltip gives the count and the note\'s across-image mean',
+    /wherever the image lands within its \$\{geoErrM\} m CE90/.test(sweepSrc) && /pct0\(c\.geoMean\)/.test(sweepSrc));
+  // The plot is what a variety trial is read by: a fine share can still leave
+  // whole plots with nothing to follow.
+  check('each panel says how the pure pixels are spread over the plots',
+    /plots: min \{t\.min\} · med \{t\.median\}/.test(sweepSrc) && /\{t\.none\}\/\{t\.plots\} none/.test(sweepSrc));
+  check('counted over the robust set once a geolocation error is set',
+    /geoErrM > 0 && c\.plotsRobust \? c\.plotsRobust : c\.plots/.test(sweepSrc));
+  check('and prints the note\'s closed-form smallest plot beside the simulation',
+    /needs ≥ \{c\.minPlotM\.toFixed\(1\)\} m plots/.test(sweepSrc) && /c\.plotSideM < c\.minPlotM/.test(sweepSrc));
+  // 90 % is the note's pure pixel. At 100 % a Gaussian never clears, so the
+  // answer was set by where the kernel is cut off: 0 pure pixels on Pleiades
+  // where the note counts 20.
+  check('the threshold defaults to the note\'s 90 % and 100 is not offered',
+    /usePersistentState\('threshold', 90, inRange\(50, 99\)\)/.test(useSim2)
+    && /min="50" max="99" step="1"/.test(read('src/pixel-grid/steps/SimStep.tsx')));
   check('and step 4 hands the panels the error to label it with', (pcaStep.match(/geoErrM=\{geoErrM\}/g) || []).length >= 2);
   check('and step 3 no longer carries a second range', !/GeoSpread/.test(read('src/pixel-grid/steps/controls.tsx')) && !/geoSpread/.test(useSim2));
 }
@@ -286,15 +307,16 @@ console.log('\nU3. the aligned-vs-drawn verdict reads the number it prints, both
   // one draw, and for a staked placement it is the lucky draw by construction:
   // on a 50 m plot trial at 10 m the verdict called staking better on 182
   // against 225 pure pixels where the worst cases were 177 against 180.
-  ok('with a geolocation error it ranks the worst cases, not the nominals',
+  ok('with a geolocation error it ranks what survives it, not the nominals',
     /const worstCase = geoErrM > 0;/.test(src) &&
-    /if \(worstCase\) \{[\s\S]{0,200}drawn: own\.geoLo, aligned: al\.geoLo/.test(src));
-  ok('and prints the worst-case pure counts, not the nominal ones',
-    /drawnPure: own\.geoLoPure \?\? NaN, alignedPure: al\.geoLoPure \?\? NaN/.test(src));
-  ok('a rung whose range is missing is left out, never judged on its nominal among worst cases',
-    /if \(own\.geoLo == null \|\| al\.geoLo == null\) return \[\];/.test(src));
-  ok('the sentence says which basis it compared on, and shows the best case beside it',
-    /counting on the worst case \{geoErrM >= comparison\.lead\.res \/ 2/.test(sentence) && /at best \{comparison\.lead\.drawnBest/.test(sentence));
+    /if \(worstCase\) \{[\s\S]{0,200}drawn: own\.geoRobust, aligned: al\.geoRobust/.test(src));
+  ok('and prints the robust pure counts, not the nominal ones',
+    /drawnPure: own\.geoRobustPure \?\? NaN, alignedPure: al\.geoRobustPure \?\? NaN/.test(src));
+  ok('a rung whose robust share is missing is left out, never judged on its nominal beside robust ones',
+    /if \(own\.geoRobust == null \|\| al\.geoRobust == null\) return \[\];/.test(src));
+  ok('the sentence says which basis it compared on, and shows the nominal beside it',
+    /counting only the pixels that stay pure wherever the image lands within its \{geoErrM\} m CE90/.test(sentence)
+    && /if the image lands exactly where it says/.test(sentence));
   ok('and when staking wins nothing it can count on, it says so',
     /staking onto the grid buys nothing you can count on/.test(sentence));
 
@@ -371,6 +393,89 @@ console.log('\nU5. a number field is typed into, not fought with');
     /useEffect\(\(\) => stop, \[\]\)/.test(fn));
 }
 
+
+console.log('\nU6. a measured PSF reproduces the FWHM it was measured at');
+{
+  const src = read('src/pixel-grid/sensors.ts');
+  // psf is a sigma in PIXELS, so the metres it claims are psf * 2.355 * res.
+  // These six were fitted on the PHENET images themselves; a published MTF
+  // describes the instrument, this describes the product, and for the tasked
+  // sensors the two differ by a factor of two to four. Pinned so a later edit
+  // cannot quietly put the flattering spec figures back.
+  const MEASURED = [
+    ['s2-10', 10, 14.0], ['planet', 3, 9.7], ['wv', 1.6, 1.9],
+    ['wv-ps', 0.4, 1.1], ['pleiades', 2, 5.0], ['pleiades-ps', 0.5, 3.0],
+  ];
+  for (const [id, res, fwhm] of MEASURED) {
+    const row = new RegExp(`\\{ id: '${id}',[^}]*?res: ([0-9.]+),[^}]*?psf: ([0-9.]+),`).exec(src);
+    if (!row) { check(`${id} is still a source`, false); continue; }
+    const gotRes = parseFloat(row[1]), got = parseFloat(row[2]) * 2.355 * gotRes;
+    check(`${id} at ${res} m carries the measured ${fwhm} m FWHM`,
+      gotRes === res && Math.abs(got - fwhm) < 0.05 * fwhm, `${gotRes} m, ${got.toFixed(2)} m`);
+  }
+  // A link would be a fabrication: the note is not published.
+  check('and says it was measured rather than linking somewhere it is not',
+    /const SRC_PHENET = \{ label: 'measured on PHENET images at Mauguio and Toulouse' \};/.test(src) && !/SRC_PHENET = \{ url/.test(src));
+  check('so the panel renders a plain label when there is no url',
+    /source\.psfSrc\.url\s*\?/.test(read('src/pixel-grid/steps/GridStep.tsx')));
+  // Pansharpened sharpness is spatial, borrowed from the panchromatic band.
+  check('and the native MS row is the one offered first',
+    src.indexOf("id: 'wv'") < src.indexOf("id: 'wv-ps'")
+    && src.indexOf("id: 'pleiades'") < src.indexOf("id: 'pleiades-ps'"));
+}
+
+console.log('\nU7. the blur budget adds variances, and owns up to the box');
+{
+  const grid = read('src/pixel-grid/use-grid.ts');
+  const step = read('src/pixel-grid/steps/GridStep.tsx');
+
+  // Independent spreads add in VARIANCE, not in width. Summing the widths would
+  // overstate every total, because a spread one way as often meets a shift the
+  // other way as the same way.
+  check('the effective spot is a quadrature sum, never a sum of widths',
+    /effSigmaXM = Math\.hypot\(psfSigmaXM, geoSigmaM\)/.test(grid)
+    && /effSigmaYM = Math\.hypot\(psfSigmaYM, geoSigmaM\)/.test(grid));
+  // Providers publish CE90, the radius holding 90 % of a Rayleigh radial miss.
+  check('and the geolocation figure is read as a CE90, not as a sigma',
+    /export const CE90_TO_SIGMA = 2\.1460;/.test(read('src/pixel-grid/resolving.ts')) && /geoErrM \/ CE90_TO_SIGMA/.test(grid)
+    // ONE constant: the budget and the ladder must not each carry their own.
+    && !/const CE90_TO_SIGMA/.test(grid));
+  check('a pixel integrates over its footprint, so the box is 1\/sqrt(12)',
+    /boxSigmaM = pxSize \/ Math\.sqrt\(12\)/.test(grid));
+
+  // Both a measured FWHM and a published MTF at Nyquist are SYSTEM figures that
+  // already contain the detector, so the box is a second helping of it. Only a
+  // typed sigma may legitimately be lens-only.
+  check('the box double-counts for every preset, not only the measured ones',
+    /const boxDoubleCounts = !!source\.psfSrc;/.test(grid));
+  check('and the panel says which of the three the sigma came from',
+    /'measured' \| 'published' \| 'typed'/.test(step)
+    && /source\.psfMeasured \? 'measured' : source\.psfSrc \? 'published' : 'typed'/.test(step));
+
+  // simulate.ts applies the box whatever the budget says. A panel that printed
+  // only the clean total would disagree with the purity numbers beside it.
+  check('the list always states the kernel the engine really convolves',
+    /name="engine kernel" val=\{pair\(Math\.hypot\(effX, box\), Math\.hypot\(effY, box\)\)\}/.test(step));
+  check('and calls the overlap a double count rather than quietly fixing it',
+    /the footprint is counted twice\. Conservative, not correct/.test(step));
+  // One list, every source, at the current setting: blur, what it costs, where
+  // the grid and the image sit, the signal noise, and what is NOT simulated.
+  check('the list covers all five groups, the unsimulated ones included',
+    ['Blur, as a sigma', 'What it costs at', 'Placement', 'Signal', 'Not simulated'].every(h => step.includes(`<Head>${h}`)));
+  check('and names each source the simulation leaves out',
+    ['per-band blur', 'heavy tails', 'plot to plot', 'grid rotation'].every(n => step.includes(`name="${n}"`)));
+  check('the buffer and the smallest plot follow the threshold in force',
+    /bufferK\(threshold \/ 100\)/.test(step) && /minPlotSideM\(res, eff, threshold \/ 100\)/.test(step));
+
+  // The export carried geometry only, so the pixels worth trusting never left
+  // the screen.
+  const shell = read('src/pixel-grid/PixelGridApp.tsx');
+  check('the shapefile carries the verdict per pixel, the robust set included',
+    /name: 'PURE', values: v\.pure/.test(shell) && /name: 'ROBUST', values: v\.robust/.test(shell)
+    && /exportAttrsRef\.current\?\.\(grid\)/.test(grid));
+  check('cut down by the same mask as the cells it describes',
+    /values: kept \? kept\.map\(k => f\.values\[k\]\) : f\.values/.test(grid));
+}
 
 console.log(bad ? `\n${bad} UI-CONTRACT CHECK(S) FAILED` : '\nALL UI-CONTRACT CHECKS PASSED');
 process.exit(bad ? 1 : 0);

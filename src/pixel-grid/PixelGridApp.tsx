@@ -6,6 +6,7 @@ import { inRange, isBool, isLngLat, oneOf, readSaved, resetSavedState, saveRefus
 import { useAoiField, usePlaceSearch } from './use-area';
 import { useFieldGrid } from './use-grid';
 import { useExperiment, usePcaSim, useSimulation } from './use-simulation';
+import { pixelVerdicts } from './pixel-verdicts';
 import { aoiUtmOrigin } from './s2-grid';
 import { readDesignFiles } from './design-import';
 import { convexHull } from './imported-plan';
@@ -346,6 +347,22 @@ export default function PixelGridApp() {
   const { layoutSig, sensorSig, cropSig } = exp;
 
   const simApi = useSimulation({ aoi, gridApi, exp, simOn, fieldOrigin });
+  /**
+   * What the export says about each pixel. Assigned here, each render, because
+   * only the shell holds both halves: the grid hook that writes the file and
+   * the simulation that knows which pixels to trust. Nothing is computed until
+   * the button is pressed. With no simulation running the file is geometry
+   * only, as it always was.
+   */
+  gridApi.exportAttrsRef.current = g => {
+    if (!simOn || !simApi.patternOrigin) return null;
+    const v = pixelVerdicts(g, simApi.patternOrigin.origin, exp.layout, exp.sensor, gridApi.geoErrM);
+    return [
+      { name: 'PURE', values: v.pure },
+      { name: 'COVER', values: v.cover },
+      ...(v.robust ? [{ name: 'ROBUST', values: v.robust }] : []),
+    ];
+  };
   const { patternOrigin, simSummary } = simApi;
 
   // mapSim: when the PCA runs on the grid the map already simulated, it reuses that result.

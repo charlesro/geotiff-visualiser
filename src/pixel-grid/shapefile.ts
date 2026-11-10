@@ -63,7 +63,10 @@ const dbfNum = (v: number, len: number, dec: number): string => {
 };
 const dbfStr = (v: string, len: number): string => (v + ' '.repeat(len)).slice(0, len);
 
-function writeDbf(grid: S2Grid): Uint8Array {
+/** An extra whole-number column, one value per cell of the grid being written. */
+export interface ExtraField { name: string; values: ArrayLike<number> }
+
+function writeDbf(grid: S2Grid, extra: ExtraField[] = []): Uint8Array {
   const n = grid.cells.length;
   const fields: DbfField[] = [
     { name: 'COL', type: 'N', len: 11, dec: 0, value: i => dbfNum(grid.cells[i].col, 11, 0) },
@@ -75,6 +78,10 @@ function writeDbf(grid: S2Grid): Uint8Array {
     { name: 'EPSG', type: 'N', len: 6, dec: 0, value: () => dbfNum(grid.epsg, 6, 0) },
     { name: 'RES_M', type: 'N', len: 8, dec: 2, value: () => dbfNum(grid.res, 8, 2) },
     { name: 'MGRS_TILE', type: 'C', len: 6, dec: 0, value: () => dbfStr(grid.tile ?? '', 6) },
+    // What the simulation says about each pixel (PURE, COVER, ROBUST), when the
+    // caller has it. dBASE caps a field name at 10 characters.
+    ...extra.map((f): DbfField => ({ name: f.name.slice(0, 10), type: 'N', len: 6, dec: 0,
+      value: i => dbfNum(Number(f.values[i]) || 0, 6, 0) })),
   ];
 
   const recordSize = 1 + fields.reduce((s, f) => s + f.len, 0);
@@ -298,9 +305,9 @@ function zipStore(files: { name: string; data: Uint8Array }[]): Uint8Array {
  * Build a zipped shapefile (Blob) of the grid's pixel polygons, in native UTM.
  * `base` is the file stem inside the zip (e.g. "s2_pixels_10m").
  */
-export function gridToShapefileZip(grid: S2Grid, base: string): Blob {
+export function gridToShapefileZip(grid: S2Grid, base: string, extra: ExtraField[] = []): Blob {
   const { shp, shx } = writeShpShx(grid);
-  const dbf = writeDbf(grid);
+  const dbf = writeDbf(grid, extra);
   const prj = asciiBytes(utmWkt(grid));
   const cpg = asciiBytes('UTF-8');
   const zip = zipStore([
