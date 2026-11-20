@@ -866,21 +866,101 @@ export interface BlockPlot {
 export const MAX_PLOTS = MAX_COVER + 1;
 
 /**
- * One block's species order. Seeded PER BLOCK rather than once per design, so
- * adding a repetition leaves every earlier block byte-identical and a partly
- * staked trial is not invalidated by extending it. Independent per-block draws
- * are correct RCBD statistics, so two blocks may legitimately come out alike.
+ * One block's own random stream. Seeded PER BLOCK rather than once per design,
+ * so adding a repetition leaves every earlier block byte-identical and a partly
+ * staked trial is not invalidated by extending it.
  */
-export function blockPermutation(nSpecies: number, block: number, seed: number): Uint8Array {
-  const n = Math.max(1, nSpecies | 0);
+function blockStream(block: number, seed: number): () => number {
   const s = (Math.imul(seed | 0, 0x9e3779b1) ^ Math.imul(block + 1, 0x85ebca6b)) >>> 0;
   const rnd = randomLcg((s % 2147483647) || 1);
   for (let i = 0; i < 8; i++) rnd();   // nearby LCG seeds correlate in their first draws
+  return rnd;
+}
+
+/** Fisher-Yates, in place. */
+function shuffleOrder(a: Uint8Array, rnd: () => number): void {
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(rnd() * (i + 1));
+    const t = a[i]; a[i] = a[j]; a[j] = t;
+  }
+}
+
+/**
+ * One block's species order drawn on its own, with no regard for its
+ * neighbours: the FIRST draw of the block's stream. blockOrders keeps it
+ * whenever it puts no species beside itself.
+ */
+export function blockPermutation(nSpecies: number, block: number, seed: number): Uint8Array {
+  const n = Math.max(1, nSpecies | 0);
   const out = new Uint8Array(n);
   for (let i = 0; i < n; i++) out[i] = i;
-  for (let i = n - 1; i > 0; i--) {    // Fisher-Yates
-    const j = Math.floor(rnd() * (i + 1));
-    const t = out[i]; out[i] = out[j]; out[j] = t;
+  shuffleOrder(out, blockStream(block, seed));
+  return out;
+}
+
+/** Draws a block may spend looking for an order that suits its neighbours. */
+const ORDER_TRIES = 64;
+
+/**
+ * Every block's species order, block after block: out[b * nSpecies + k] is the
+ * species of plot k of block b.
+ *
+ * NO TWO PLOTS THAT SHARE A SIDE CARRY THE SAME SPECIES. Inside a block that is
+ * given, each species being there once. Between blocks, plot k lies beside plot
+ * k of the block before it in the row, and a block's first plot lies against
+ * the last plot of the block above it (see blockPlots).
+ *
+ * The orders used to be drawn independently, which is textbook RCBD and puts a
+ * species beside itself often: with two species and two blocks in a row, about
+ * one seed in two gave two strips, each species a single band across both
+ * repetitions. Asked for on 2026-11-20: "the same color plots should not be
+ * side by side". It changes no pixel count: a pixel astride two plots of one
+ * species was already counted mixed (purity is per plot, suite section H10b).
+ *
+ * Each block still draws from its own stream, and draws again until its order
+ * suits the blocks already placed (the one before it in the row and the one
+ * above): uniform among the orders allowed. The first draw is the old order,
+ * so a layout that already kept its species apart is unchanged, and a block
+ * depends only on earlier ones, so adding a repetition still leaves every
+ * earlier block as it was. From two species up such an order was found for
+ * every arrangement the suite tries (section H3); with two species the trial
+ * is a checkerboard, the first block's order being the only thing left to draw.
+ */
+export function blockOrders(nSpecies: number, nBlocks: number, cols: number, seed: number): Uint8Array {
+  const n = Math.max(1, nSpecies | 0);
+  const perRow = Math.max(1, cols | 0);
+  const out = new Uint8Array(n * nBlocks);
+  const draw = new Uint8Array(n);
+  for (let b = 0; b < nBlocks; b++) {
+    const at = b * n;
+    const left = b % perRow > 0 ? at - n : -1;         // the block before it in the row
+    const up = b >= perRow ? (b - perRow) * n : -1;    // the block above
+    const clash = (o: Uint8Array) => {
+      if (up >= 0 && o[0] === out[up + n - 1]) return true;
+      if (left >= 0) for (let k = 0; k < n; k++) if (o[k] === out[left + k]) return true;
+      return false;
+    };
+    const rnd = blockStream(b, seed);
+    for (let i = 0; i < n; i++) draw[i] = i;
+    shuffleOrder(draw, rnd);
+    if (n >= 2) {
+      let tries = 1;
+      while (clash(draw) && tries < ORDER_TRIES) { shuffleOrder(draw, rnd); tries++; }
+      if (clash(draw)) {
+        // Never seen (64 draws at one chance in two or better), but the rule
+        // must not rest on luck: a rotation of the block before, or the block
+        // above as it is when the row starts here.
+        if (left >= 0) {
+          for (let s = 1; s < n; s++) {
+            for (let k = 0; k < n; k++) draw[k] = out[left + ((k + s) % n)];
+            if (!clash(draw)) break;
+          }
+        } else {
+          for (let k = 0; k < n; k++) draw[k] = out[up + k];
+        }
+      }
+    }
+    out.set(draw, at);
   }
   return out;
 }
@@ -970,11 +1050,7 @@ export function buildBlockPlan(
     blocksPerRow: cols, seed: design.seed | 0,
   };
   const nPlots = nSpecies * nBlocks;
-  const plotSpecies = new Uint8Array(nPlots);
-  for (let b = 0; b < nBlocks; b++) {
-    const perm = blockPermutation(nSpecies, b, resolved.seed);
-    for (let k = 0; k < nSpecies; k++) plotSpecies[b * nSpecies + k] = perm[k];
-  }
+  const plotSpecies = blockOrders(nSpecies, nBlocks, cols, resolved.seed);
 
   const snap = place.snap && place.snap > 0 ? place.snap : 0;
   let u0 = place.centerU - totalU / 2;
@@ -1077,6 +1153,27 @@ const PHASE_MAX_N = 6;
  * Scored on the pure-pixel COUNT, the quantity the page reports. The corner
  * snap is itself one of the candidates, so this can never return less than it.
  */
+/**
+ * The window stakeBlockPlan scores a phase over, in pixels, and how many
+ * phases it tries per axis: the extent itself, cut down when it is very large,
+ * and as fine a mesh as the budget pays for over it. Null for an extent that
+ * is no extent. Its own function because the design suggestion has to count a
+ * plot's pixels at the phase the page WILL stake it at, which means the same
+ * mesh, from the same rule.
+ */
+export function stakeMesh(extent: [number, number, number, number], res: number): { nx: number; ny: number; steps: number } | null {
+  const [e0, n0, e1, n1] = extent;
+  let nx = Math.max(1, Math.round((e1 - e0) / res)), ny = Math.max(1, Math.round((n1 - n0) / res));
+  if (!Number.isFinite(nx) || !Number.isFinite(ny)) return null;
+  if (nx * ny > PHASE_MAX_CELLS) {
+    const k = Math.sqrt(PHASE_MAX_CELLS / (nx * ny));
+    nx = Math.max(1, Math.floor(nx * k)); ny = Math.max(1, Math.floor(ny * k));
+  }
+  // Candidates per axis, from the same budget rule stakeOnGrid uses: the work is
+  // the window, so the grid is as fine as the budget allows and no finer.
+  return { nx, ny, steps: Math.max(1, Math.min(PHASE_MAX_N, Math.floor(Math.sqrt(PHASE_BUDGET / Math.max(1, nx * ny))))) };
+}
+
 export function stakeBlockPlan(
   design: BlockDesign,
   place: { centerU: number; centerV: number; snap?: number; phaseU?: number; phaseV?: number },
@@ -1085,27 +1182,28 @@ export function stakeBlockPlan(
   res: number,
   sensor: SensorParams,
   extent: [number, number, number, number],
+  /**
+   * Phases to try per axis, in place of the mesh's own. For a caller that
+   * scores a small stand-in of a trial and needs the phase the whole trial
+   * will be given on its field (suggest-design).
+   */
+  steps?: number,
 ): { plan: BlockPlan; offset: [number, number]; staked: boolean } {
   const base = buildBlockPlan(design, place);
   const snap = place.snap && place.snap > 0 ? place.snap : 0;
   if (!(snap > 0) || !(res > 0)) return { plan: base, offset: [0, 0], staked: false };
 
   // The rung's own extent, centred and capped only if it is very large.
+  const mesh = stakeMesh(extent, res);
+  if (!mesh) return { plan: base, offset: [0, 0], staked: false };
+  const { nx, ny } = mesh;
   const [e0, n0, e1, n1] = extent;
-  let nx = Math.max(1, Math.round((e1 - e0) / res)), ny = Math.max(1, Math.round((n1 - n0) / res));
-  if (!Number.isFinite(nx) || !Number.isFinite(ny)) return { plan: base, offset: [0, 0], staked: false };
-  if (nx * ny > PHASE_MAX_CELLS) {
-    const k = Math.sqrt(PHASE_MAX_CELLS / (nx * ny));
-    nx = Math.max(1, Math.floor(nx * k)); ny = Math.max(1, Math.floor(ny * k));
-  }
   const cx = (e0 + e1) / 2, cy = (n0 + n1) / 2;
   const w0 = Math.floor((cx - (nx * res) / 2) / res) * res;
   const v0 = Math.floor((cy - (ny * res) / 2) / res) * res;
   const box = { res, utmBounds: [w0, v0, w0 + nx * res, v0 + ny * res] } as unknown as S2Grid;
 
-  // Candidates per axis, from the same budget rule stakeOnGrid uses: the work is
-  // the window, so the grid is as fine as the budget allows and no finer.
-  const n = Math.max(1, Math.min(PHASE_MAX_N, Math.floor(Math.sqrt(PHASE_BUDGET / Math.max(1, nx * ny)))));
+  const n = steps && steps > 0 ? Math.min(PHASE_MAX_N, Math.floor(steps)) : mesh.steps;
   if (n < 2) return { plan: base, offset: [0, 0], staked: false };
 
   let best = base, bestScore = -1, bestOff: [number, number] = [0, 0];
@@ -2421,6 +2519,9 @@ export const truthAt = (f: FieldParams, day: number): number =>
  */
 const strideFor = (gsd: number, width: number): number =>
   Math.max(4, Math.min(24, Math.ceil((4 * gsd) / Math.max(0.1, width))));
+
+/** Fine cells per pixel, each way, that a simulation of this layout is sampled on. */
+export const fineCellsPerPixel = (res: number, layout: SimLayout): number => strideFor(res, minFeatureM(layout));
 
 /** Build the fine-grid culture map (0/1) over a UTM extent, rotated to the layout. */
 function buildCropMap(

@@ -2,6 +2,7 @@ import type { useAoiField, usePlaceSearch } from '../use-area';
 import type { useFieldGrid } from '../use-grid';
 import type { Experiment, useSimulation, usePcaSim } from '../use-simulation';
 import type { ColorBy, ShapeBy } from '../pca-field';
+import type { SuggestAsk, SuggestOutcome } from './SuggestDesign';
 
 /**
  * What every step panel is handed. One shared bag rather than four bespoke prop
@@ -9,6 +10,9 @@ import type { ColorBy, ShapeBy } from '../pca-field';
  * planting design step 3 owns; step 3 reports a purity that depends on step 2's
  * sensor), so a "minimal" per-step list would be neither minimal nor stable.
  */
+/** The folds of step 3. */
+export type SimSection = 'design' | 'suggest' | 'size' | 'curves' | 'noise' | null;
+
 export interface StepProps {
   activeStep: 'area' | 'grid' | 'sim' | 'pca' | null;
   toggleStep: (s: 'area' | 'grid' | 'sim' | 'pca') => void;
@@ -29,7 +33,13 @@ export interface StepProps {
    * These live in the SHELL, not in the panels: `Step` renders {open && children},
    * so a collapsed step unmounts its subtree and any state held there is lost.
    */
-  simAdvOpen: boolean; setSimAdvOpen: (v: boolean | ((p: boolean) => boolean)) => void;
+  /**
+   * Which fold of step 3 is open: one at a time, or none. The step was a
+   * single column of everything (the design's nine fields, a summary, the
+   * suggestion, the plot-size table, the crops, the noise), 1,100 px of it in
+   * a panel that shows 450.
+   */
+  simSection: SimSection; setSimSection: (v: SimSection | ((p: SimSection) => SimSection)) => void;
   /** Step 2's blur and geolocation section: the two inputs and the budget they add up to. */
   blurOpen: boolean; setBlurOpen: (v: boolean | ((p: boolean) => boolean)) => void;
   pcaRetuneOpen: boolean; setPcaRetuneOpen: (v: boolean | ((p: boolean) => boolean)) => void;
@@ -77,6 +87,18 @@ export interface StepProps {
    * steps and a collapsed step forgets what it held.
    */
   wantPure: number; setWantPure: (n: number) => void;
+  /**
+   * "Suggest a design" in step 3: what is asked of the trial, the last trial
+   * built from it, and the build itself. In the shell because a build writes
+   * the design, the angle and the satellite at once, and because step 3
+   * forgets everything it holds when folded.
+   */
+  suggest: {
+    ask: SuggestAsk; setAsk: (a: SuggestAsk) => void;
+    busy: boolean;
+    outcome: SuggestOutcome | null;
+    build: () => void;
+  };
   /** The per-variety growth-curve editors of an imported trial, folded by default. */
   curvesOpen: boolean; setCurvesOpen: (v: boolean | ((p: boolean) => boolean)) => void;
   /** So the compare button in step 3 can jump to where the ladders are drawn. */

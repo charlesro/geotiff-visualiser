@@ -571,7 +571,7 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
     /onClick=\{\(\) => design\.apply!\(s\)\}/.test(card) && /setBlockDesign\(d => \(\{ \.\.\.d, plotLength: fieldSize\(a \* s\), plotWidth: fieldSize\(b \* s\) \}\)\)/.test(card));
   // Step unmounts a collapsed panel, and the card is shown in two of them.
   check('the count it is asked for lives in the shell, saved and validated',
-    /usePersistentState\('wantPure', 16, v => Number\.isInteger\(v\)/.test(shell) && /wantPure, setWantPure \}/.test(shell)
+    /usePersistentState\('wantPure', 16, v => Number\.isInteger\(v\)/.test(shell) && /wantPure, setWantPure, suggest \}/.test(shell)
     && !/useState\(/.test(card) && /const \{ wantPure, setWantPure \} = p;/.test(card));
   check('the numbers follow the inputs without holding up the field being typed in', /useDeferredValue\(inputs, null\)/.test(card));
   check('the model counts every side, and knows nothing of the engine',
@@ -709,7 +709,7 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
   check('step 3 folds the crops and their season for every layout, as it did for an imported trial',
     /\(pattern !== 'imported' \|\| varieties\.length > 0\) && \(\s*<Disclosure/.test(simStep2)
     && simStep2.indexOf('Growth curves ·') < simStep2.indexOf('<SpeciesList') && simStep2.indexOf('<SpeciesList') < simStep2.indexOf('NDVI season')
-    && simStep2.indexOf('NDVI season') < simStep2.indexOf('label="Noise & purity threshold"')
+    && simStep2.indexOf('NDVI season') < simStep2.indexOf('Noise & purity threshold · ε')
     && (simStep2.match(/<SpeciesList/g) || []).length === 1);
   check('so the plot-size card follows the design directly', simStep2.indexOf('<PlotSizeCard') < simStep2.indexOf('Growth curves ·'));
   check('step 4 folds the chart\'s five selects, naming what is drawn on the fold',
@@ -900,8 +900,9 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
   check('an imported trial found along the pixel rows is compared with the file\'s angle when nothing was remembered',
     /const fileFrom = importedNow && exp\.importedTurn !== 0 \? \{ deg: exp\.importedFileAngle, to: 0 \} : null;/.test(shell)
     && /const turnedFrom = adopted && adopted\.imported === importedNow \? \{ deg: adopted\.deg, to: adopted\.to \?\? 0 \} : fileFrom;/.test(shell));
+  // Three places: a file read, a file removed, and a trial built by "Suggest a design".
   check('another trial, or none, forgets it: it was the angle of the one before',
-    (shell.match(/setAdopted\(null\);/g) || []).length === 2
+    (shell.match(/setAdopted\(null\);/g) || []).length === 3
     && /const setAngleByHand = \(deg: number\) => \{ setCompareFrom\(null\); importApi\.setAngle\(deg\); \};/.test(shell));
   check('the step that turns the trial also offers the way back to the file\'s angle',
     /const turned = imported && importedTurn !== 0;/.test(pca)
@@ -1060,6 +1061,98 @@ console.log('\nU-speed. what keeps the page fast on a slow computer');
     check('unless the reader asked their browser to save data', /if \(saving\) return;/.test(entry));
   }
   check('a season is built once per species for the chart, not once per day', /const seasons = speciesD\.map\(s => makeTruth\(s\.truth, TMAX, parsOf\(s\)\)\);/.test(hook) && !/truthAt\(/.test(hook));
+}
+
+console.log('\nU-suggest. a block trial built from what is asked of it');
+// Step 3 offers to build the trial from four figures: species, repetitions,
+// pixels per micro-plot, and a satellite. The search is in suggest-design.ts,
+// which the engine suite runs; what can only be read is how the page uses it.
+{
+  const step = read('src/pixel-grid/steps/SimStep.tsx');
+  const panel = read('src/pixel-grid/steps/SuggestDesign.tsx');
+  const shell = read('src/pixel-grid/PixelGridApp.tsx');
+  const search = read('src/pixel-grid/suggest-design.ts');
+  check('the panel is offered where there is a block design to build, as one of step 3\'s folds',
+    /\{pattern === 'block' && \(\s*<Disclosure label="Suggest a design" open=\{at\('suggest'\)\} onToggle=\{fold\('suggest'\)\}>\s*<SuggestDesign \{\.\.\.p\} \/>/.test(step));
+  check('it holds nothing itself: step 3 forgets what it holds when folded', !/useState\(|useRef\(/.test(panel)
+    && /usePersistentState<SuggestAsk>\('suggestAsk'/.test(shell));
+  check('the four things asked: species, repetitions, pixels per plot, and a satellite of the table',
+    /label="Species" value=\{ask\.species\}/.test(panel) && /label="Repetitions" value=\{ask\.reps\}/.test(panel)
+    && /label="Pixels \/ plot" value=\{p\.wantPure\} onChange=\{p\.setWantPure\}/.test(panel)
+    && /const sats = ladderRungs\(\{ id: sourceId, res, sigmaX, sigmaY \}\);/.test(panel));
+  // The same figure as the plot-size card's last row, and the same satellites as the table: one page, one set of numbers.
+  check('the pixels asked for are the plot-size card\'s own figure', /pixels: wantPure,/.test(shell));
+  check('with a geolocation error the count is the pixels that hold within that satellite\'s CE90, unless the reader says otherwise',
+    /const ce90M = suggestAsk\.hold \? Math\.round\(gridApi\.ce90At\(r\) \* 100\) \/ 100 : 0;/.test(shell) && /\{ce90 > 0 && \(/.test(panel));
+  // Four settings in one go, or the trial on the map is not the trial that was counted.
+  check('a build writes the layout, the design, the angle and the satellite together',
+    /exp\.setPattern\('block'\);\s*exp\.setBlockDesign\(built\.design\);\s*exp\.setRotation\(0\);\s*setAdopted\(null\);\s*if \(sat\.id !== gridApi\.sourceId\) gridApi\.setSourceId\(sat\.id\);/.test(shell));
+  check('the plot is counted at the phase the page will stake it at, on the area the trial ends up in',
+    /return stakeMesh\(\[Math\.floor\(e0 \/ r\) \* r, Math\.floor\(n0 \/ r\) \* r, Math\.ceil\(e1 \/ r\) \* r, Math\.ceil\(n1 \/ r\) \* r\], r\)\?\.steps;/.test(shell)
+    && /let built = aoi && had \? ask\(field, stepsOn\(aoi\)\) : null;/.test(shell) && /const need = stepsOn\(box\);\s*if \(need === steps\) break;/.test(shell));
+  // The first version carried over the design's own alleys, the layout's
+  // defaults, and built a trial with dirt strips nobody had asked for.
+  check('the alleys are asked for in the panel, none by default, and never the design\'s leftovers',
+    /plotAlley: suggestAsk\.plotAlley, blockAlley: suggestAsk\.blockAlley,/.test(shell) && !/plotAlley: exp\.blockDesign\.plotAlley/.test(shell)
+    && /hold: true, plotAlley: 0, blockAlley: 0 \}\)/.test(shell)
+    && /label="Plot alley" value=\{ask\.plotAlley\}/.test(panel) && /label="Block alley" value=\{ask\.blockAlley\}/.test(panel));
+  check('the randomisation is the design\'s own', /seed: exp\.blockDesign\.seed/.test(shell));
+  // "plots of 10.5 x 11.5 m" stayed under the button after a plot-size row had made them 8.5 x 9.1.
+  check('what was built is described only while the page still holds it',
+    /outcome: outcomeStands \? suggestOutcome : null/.test(shell)
+    && /\['nSpecies', 'nBlocks', 'blocksPerRow', 'plotLength', 'plotWidth', 'plotAlley', 'blockAlley'\] as const\)\.every\(k => builtDesign\[k\] === exp\.blockDesign\[k\]\)/.test(shell)
+    && /suggestOutcome\.satId === gridApi\.sourceId/.test(shell));
+  check('the engine has the last word on the plot the search settles on',
+    /const counted = plotPixels\(mini\(best\.pu, best\.pv\), res, sensor, ce90M, steps\);\s*if \(\(counted\.held \?\? counted\.pure\) >= pixels\) return \{ \.\.\.best, \.\.\.counted \};\s*refused\.add\(/.test(search));
+  check('what the reader is told afterwards is the satellites table\'s own count on this field',
+    /if \(row\.plots\) onField = \{ pure: row\.plots\.min, held: row\.plotsRobust\?\.min \?\? null \};/.test(shell) && /the field's edge cuts the trial/.test(panel));
+  check('a trial that cannot be built says why', /No plot up to 1000 m keeps/.test(panel));
+  // "it shouldnt require to draw an experiment area": Build was greyed out with
+  // no area, step 3 was locked, and a small area got "draw a larger field".
+  check('no experiment area is needed: the button does not wait for one, and step 3 is open without one',
+    /disabled=\{busy \|\| !sat\}/.test(panel) && !/disabled=\{[^}]*aoi/.test(panel)
+    && /onClick=\{\(\) => toggleStep\('sim'\)\} enabled>/.test(step) && !/Draw an experiment area in step&nbsp;1 first/.test(step));
+  check('with no area, or one too small for any arrangement, the build makes the area around the trial',
+    /if \(!built \|\| built\.fits === false\) \{/.test(shell) && /if \(area\) setFieldBox\(ground\);/.test(shell)
+    && /area = \{ how: aoi \? 'replaced' : 'made', u: e1 - e0, v: n1 - n0 \};/.test(shell));
+  check('in the middle of the area there was, or of the map, with a margin that keeps the trial off the edge',
+    /const centre: \[number, number\] = aoi \? \[\(aoi\[0\] \+ aoi\[2\]\) \/ 2, \(aoi\[1\] \+ aoi\[3\]\) \/ 2\]\s*: view \? \[view\.lng, view\.lat\]/.test(shell)
+    && /const margin = Math\.max\(3 \* r, 0\.05 \* Math\.max\(own\.footprint\[0\], own\.footprint\[1\]\), 5\);/.test(shell));
+  check('an area that holds the trial is left as the reader drew it', /let built = aoi && had \? ask\(field, stepsOn\(aoi\)\) : null;/.test(shell));
+  check('and the reader is told when the area was made or replaced', /Experiment area made around it/.test(panel) && /was too small: replaced by one of/.test(panel));
+  check('a page-made area does not send the reader to step 2, as a drawn one does',
+    /const setFieldBox = useCallback\(\(b: LngLatBounds\) => \{\s*setAoi\(b\);\s*setAoiPoly\(null\);\s*setDrawKind\(null\);\s*forgetPreTrial\(\);\s*\}, \[\]\);/.test(read('src/pixel-grid/use-area.ts')));
+  check('step 3 names its design in the header with or without an area', !/const simSummary = !aoi/.test(read('src/pixel-grid/use-simulation.ts')));
+}
+
+console.log('\nU-compact. step 3 is folds, one open at a time');
+// "Too much together on screen": the step was one column of the design's nine
+// fields, a summary, the suggestion, the plot-size table, the crops and the
+// noise, about 1,100 px of it in a panel that shows 450.
+{
+  const step = read('src/pixel-grid/steps/SimStep.tsx');
+  const shell = read('src/pixel-grid/PixelGridApp.tsx');
+  const panel = read('src/pixel-grid/steps/SuggestDesign.tsx');
+  const folds = (step.match(/<Disclosure\b/g) || []).length;
+  check('everything under the layout is a fold: the design, the suggestion, the plot size, the crops, the noise', folds === 5
+    && ['design', 'suggest', 'size', 'curves', 'noise'].every(id => new RegExp(`open=\\{at\\('${id}'\\)\\} onToggle=\\{fold\\('${id}'\\)\\}`).test(step)),
+    `${folds} folds`);
+  check('one open at a time, and the choice is remembered',
+    /const fold = \(id: SimSection\) => \(\) => setSimSection\(cur => \(cur === id \? null : id\)\);/.test(step)
+    && /usePersistentState<SimSection>\('simSection', 'design',/.test(shell));
+  // Nothing has to be open to be read.
+  check('a shut fold says what it holds: the design by its figures, the noise by its threshold',
+    /`Design · \$\{blockDesign\.nSpecies\} species × \$\{blockDesign\.nBlocks\} blocks · plots \$\{blockDesign\.plotLength\} × \$\{blockDesign\.plotWidth\} m`/.test(step)
+    && /label=\{`Noise & purity threshold · ε = \$\{100 - threshold\} %`\}/.test(step));
+  check('choosing another layout opens the design it has to be given', /setPattern=\{v => \{ setPattern\(v\); setSimSection\('design'\); \}\}/.test(step));
+  check('the plot-size card and the design summary are inside folds, not always on screen',
+    /<Disclosure label="Plot size required" open=\{at\('size'\)\} onToggle=\{fold\('size'\)\}>\s*<PlotSizeCard \{\.\.\.p\} \/>/.test(step)
+    && step.indexOf('<BlockSummary') < step.indexOf('</Disclosure>'));
+  // "also in the build trial settings add purity threshold"
+  check('the build settings carry the purity threshold, and it is the page\'s own',
+    /const \{ threshold, setThreshold \} = p\.exp;/.test(panel) && /<NumField label="Purity" value=\{threshold\} onChange=\{setThreshold\} min=\{50\} max=\{99\} unit="%"/.test(panel)
+    && /threshold: exp\.threshold \/ 100, ce90M,/.test(shell));
+  check('a build described under the button is gone once the threshold is another', /&& suggestOutcome\.threshold === exp\.threshold/.test(shell));
 }
 
 console.log(bad ? `\n${bad} UI-CONTRACT CHECK(S) FAILED` : '\nALL UI-CONTRACT CHECKS PASSED');

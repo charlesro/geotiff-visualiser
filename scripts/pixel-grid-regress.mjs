@@ -44,7 +44,7 @@ const REVEAL = {
 };
 
 fs.rmSync(BUILD, { recursive: true, force: true });
-for (const rel of ['src/lib/geo.ts', 'src/lib/projections.ts', 'src/pixel-grid/s2-grid.ts', 'src/pixel-grid/geometry.ts', 'src/pixel-grid/simulate.ts', 'src/pixel-grid/resolving.ts', 'src/pixel-grid/shapefile.ts', 'src/pixel-grid/util.ts', 'src/pixel-grid/pca-field.ts', 'src/pixel-grid/ladder.ts', 'src/pixel-grid/ladder-rung.ts', 'src/pixel-grid/ladder-step.ts', 'src/pixel-grid/sensors.ts', 'src/pixel-grid/design-import.ts', 'src/pixel-grid/imported-plan.ts', 'src/pixel-grid/imported-rotate.ts', 'src/pixel-grid/field-membership.ts', 'src/pixel-grid/pixel-verdicts.ts', 'src/pixel-grid/plot-size.ts']) {
+for (const rel of ['src/lib/geo.ts', 'src/lib/projections.ts', 'src/pixel-grid/s2-grid.ts', 'src/pixel-grid/geometry.ts', 'src/pixel-grid/simulate.ts', 'src/pixel-grid/resolving.ts', 'src/pixel-grid/shapefile.ts', 'src/pixel-grid/util.ts', 'src/pixel-grid/pca-field.ts', 'src/pixel-grid/ladder.ts', 'src/pixel-grid/ladder-rung.ts', 'src/pixel-grid/ladder-step.ts', 'src/pixel-grid/suggest-design.ts', 'src/pixel-grid/sensors.ts', 'src/pixel-grid/design-import.ts', 'src/pixel-grid/imported-plan.ts', 'src/pixel-grid/imported-rotate.ts', 'src/pixel-grid/field-membership.ts', 'src/pixel-grid/pixel-verdicts.ts', 'src/pixel-grid/plot-size.ts']) {
   let ts = fs.readFileSync(path.join(ROOT, rel), 'utf8');
   for (const decl of REVEAL[rel] ?? []) ts = reveal(ts, decl);
   // esbuild only strips types; relative specifiers still need an extension to
@@ -929,6 +929,84 @@ console.log('\nH3. the randomised block design: geometry and reproducibility');
   ok('adding a repetition leaves every earlier block byte-identical',
     Array.from(buildBlockPlan({ ...design, nBlocks: 5 }, { centerU: 0, centerV: 0, snap: 0 }).plotSpecies.slice(0, 16)).join(',') ===
     Array.from(plan.plotSpecies).join(','));
+  // No species beside itself. Neighbours are read off the plots' RECTANGLES,
+  // not off the index rule blockOrders applies, so a rule that disagreed with
+  // the geometry would show here.
+  const besideItself = p => {
+    const d = p.design, eps = 1e-6, gap = Math.max(d.plotAlley, d.blockAlley) + eps;
+    const plots = blockPlots(p);
+    let n = 0;
+    for (let i = 0; i < plots.length; i++) for (let j = i + 1; j < plots.length; j++) {
+      const a = plots[i], b = plots[j];
+      if (a.species !== b.species) continue;
+      const du = Math.max(a.u0, b.u0) - Math.min(a.u1, b.u1);   // gap along u, negative when they overlap
+      const dv = Math.max(a.v0, b.v0) - Math.min(a.v1, b.v1);
+      if ((du < -eps && dv >= -eps && dv <= gap) || (dv < -eps && du >= -eps && du <= gap)) n++;
+    }
+    return n;
+  };
+  const everyPlan = function* () {
+    for (let sp = 2; sp <= 8; sp++) for (let nb = 1; nb <= 20; nb++) for (const per of new Set([1, 2, 3, 5, nb])) {
+      for (let seed = 0; seed < 6; seed++) for (const alleys of [[0, 0], [0.5, 1.5]]) {
+        yield buildBlockPlan({ ...design, nSpecies: sp, nBlocks: nb, blocksPerRow: per, seed, plotAlley: alleys[0], blockAlley: alleys[1] },
+          { centerU: 0, centerV: 0 });
+      }
+    }
+  };
+  ok('no two plots that share a side carry the same species, whatever the arrangement',
+    (() => {
+      let plans = 0;
+      for (const p of everyPlan()) { plans++; if (besideItself(p) > 0) return false; }
+      return plans > 5000;
+    })());
+  ok('independent draws did put a species beside itself (the check above can fail)',
+    (() => {
+      // The old plan: every block its own first draw.
+      let bad = 0, all = 0;
+      for (let seed = 0; seed < 200; seed++) {
+        const p = buildBlockPlan({ ...design, nSpecies: 2, nBlocks: 2, blocksPerRow: 2, seed }, { centerU: 0, centerV: 0 });
+        const old = { ...p, plotSpecies: Uint8Array.from([...blockPermutation(2, 0, seed), ...blockPermutation(2, 1, seed)]) };
+        all++; if (besideItself(old) > 0) bad++;
+      }
+      return bad > 0.35 * all && bad < 0.65 * all;
+    })());
+  ok('a block keeps its own first draw whenever that draw suits its neighbours',
+    (() => {
+      let kept = 0, redrawn = 0;
+      for (const p of everyPlan()) {
+        const n = p.design.nSpecies, sp = p.plotSpecies;
+        for (let b = 0; b < p.design.nBlocks; b++) {
+          const first = blockPermutation(n, b, p.design.seed);
+          const left = b % p.cols > 0 ? b - 1 : -1, up = b >= p.cols ? b - p.cols : -1;
+          let clash = up >= 0 && first[0] === sp[up * n + n - 1];
+          if (left >= 0) for (let k = 0; k < n; k++) if (first[k] === sp[left * n + k]) clash = true;
+          const same = first.every((s, k) => s === sp[b * n + k]);
+          if (!clash && !same) return false;
+          if (clash && same) return false;
+          if (same) kept++; else redrawn++;
+        }
+      }
+      return kept > 0 && redrawn > 0;
+    })());
+  ok('two species come out as a checkerboard',
+    (() => {
+      const p = buildBlockPlan({ ...design, nSpecies: 2, nBlocks: 6, blocksPerRow: 3, seed: 4 }, { centerU: 0, centerV: 0 });
+      const s = Array.from(p.plotSpecies), a = s[0], b = 1 - a;
+      return s.join(',') === [a, b, b, a, a, b, a, b, b, a, a, b].join(',');
+    })());
+  ok('adding a repetition leaves every earlier block byte-identical, several blocks per row too',
+    (() => {
+      for (let sp = 2; sp <= 8; sp++) for (const per of [1, 2, 3, 4]) for (let nb = 1; nb < 12; nb++) {
+        const d = { ...design, nSpecies: sp, blocksPerRow: per, seed: 3 };
+        const a = buildBlockPlan({ ...d, nBlocks: nb }, { centerU: 0, centerV: 0 }).plotSpecies;
+        const b = buildBlockPlan({ ...d, nBlocks: nb + 1 }, { centerU: 0, centerV: 0 }).plotSpecies;
+        if (Array.from(b.slice(0, a.length)).join(',') !== Array.from(a).join(',')) return false;
+      }
+      return true;
+    })());
+  ok('the orders stay random: with three species or more, seeds give different trials',
+    new Set(Array.from({ length: 40 }, (_, seed) =>
+      Array.from(buildBlockPlan({ ...design, nSpecies: 4, nBlocks: 4, blocksPerRow: 2, seed }, { centerU: 0, centerV: 0 }).plotSpecies).join(','))).size > 30);
   ok('the permutation is not the identity everywhere (the LCG warm-up works)',
     Array.from({ length: 12 }, (_, b) => Array.from(blockPermutation(4, b, 1)).join(',')).some(s => s !== '0,1,2,3'));
   ok('no clock and no global RNG: two plans built apart are identical',
@@ -1354,14 +1432,19 @@ console.log('\nH10b. the scatter and the purity numbers decide pure/mixed by ONE
 {
   // Two species, six touching blocks, and a purity threshold of 90%: the plots
   // that meet along the block boundaries carry the same variety on both sides.
-  // All six blocks in ONE row, so they sit end to end along u and the plots that
-  // meet across a block boundary can carry the same variety on both sides.
+  // All six blocks in ONE row, so they sit end to end along u. The page's own
+  // randomisation no longer puts a variety beside itself (blockOrders), but an
+  // imported trial can, and the rule is about any plot table: the order is set
+  // by hand here, every block alike, two strips of one variety each.
   const design = { nSpecies: 2, nBlocks: 6, plotLength: 6, plotWidth: 6, plotAlley: 0, blockAlley: 0, blocksPerRow: 6, seed: 3 };
   const pureT = 90;
   const resP = 1;
   const originP = aoiUtmOrigin(AOI, 32631);
   const minE = Math.floor(originP[0] / resP) * resP, minN = Math.floor(originP[1] / resP) * resP;
-  const planP = buildBlockPlan(design, blockPlacement([minE, minN, minE + 120, minN + 120], originP, 0, resP, true));
+  const planP = {
+    ...buildBlockPlan(design, blockPlacement([minE, minN, minE + 120, minN + 120], originP, 0, resP, true)),
+    plotSpecies: Uint8Array.from({ length: 12 }, (_, i) => i % 2),
+  };
   const layoutP = { pattern: 'block', width: 6, spacing: 0, rotationDeg: 0, block: planP };
   const srcP = simulatePatch(originP[0] + planP.u0 - 2, originP[1] + planP.v0 - 2, 60, resP,
     originP[0], originP[1], layoutP, { sigmaX: 0.6, sigmaY: 0.6, mixThreshold: pureT / 100 });
@@ -4304,6 +4387,135 @@ console.log('\nH32. the pixels that hold within the CE90, without simulating the
     ok('with no trial there is no search to run', ladderSearch(ctx, rung) === null);
     ok('ce90For is the note\'s default while nothing is typed, else the figure typed at every size',
       Math.abs(ce90For(true, 3, 10) - (CE90_TO_SIGMA * 10) / 3) < 1e-12 && ce90For(false, 3, 10) === 3 && ce90For(false, 3, 0.5) === 3);
+  }
+}
+
+console.log('\nH33. a block trial built from what is asked of it');
+{
+  // "Suggest a design": species, repetitions, pixels wanted in every micro-plot
+  // and a satellite in, the smallest block trial that gives them out. The plot
+  // search runs on a factorised count (one axis at a time), because every shape
+  // has to be tried; what it settles on is counted by the engine. Both halves
+  // are pinned: the factorised count IS the engine's, and the trial it returns
+  // really gives every plot what was asked, with nothing smaller that would.
+  const { suggestBlockDesign, plotPixels, plotCount, alleyInStep, axisShares } = await import(path.join(BUILD, 'src/pixel-grid/suggest-design.mjs'));
+  const { stakeMesh, fineCellsPerPixel } = await import(path.join(BUILD, 'src/pixel-grid/simulate.mjs'));
+  const ce90Of = res => Math.round(((CE90_TO_SIGMA * res) / 3) * 100) / 100;
+  const miniOf = (pu, pv, res, pa = 0.5, ba = 1.5) => ({ nSpecies: 2, nBlocks: 1, blocksPerRow: 1, seed: 1, plotAlley: pa, blockAlley: ba,
+    plotLength: Math.round((pu * res - ba) * 100) / 100, plotWidth: Math.round((pv * res - pa) * 100) / 100 });
+  const gOf = (d, res) => fineCellsPerPixel(res, { pattern: 'block', width: 2, spacing: 0, rotationDeg: 0, block: { design: d } });
+
+  // The factorised count against the engine: every pitch, four sensors, two meshes, with and without a CE90.
+  {
+    let n = 0; const differ = [];
+    for (const [res, sx, sy] of [[10, 0.59, 0.59], [2, 1.37, 1.37], [1.5, 0.6, 0.9], [0.5, 0, 0]]) {
+      for (const ce of [0, ce90Of(res)]) for (let pu = 3; pu <= 9; pu += 2) for (let pv = 2; pv <= 8; pv += 3) for (const steps of [4, 5, 6]) {
+        const d = miniOf(pu, pv, res);
+        if (!(d.plotLength > 0.2) || !(d.plotWidth > 0.2)) continue;
+        const sensor = { sigmaX: sx, sigmaY: sy, mixThreshold: 0.9 };
+        const fast = plotCount(d.plotLength, d.plotWidth, res, gOf(d, res), sensor, ce, steps), eng = plotPixels(d, res, sensor, ce, steps);
+        n++;
+        if (fast.pure !== eng.pure || fast.held !== eng.held) differ.push(`${res} m, ${pu}x${pv} px, CE90 ${ce}, mesh ${steps}: ${fast.pure}/${fast.held} against ${eng.pure}/${eng.held}`);
+      }
+    }
+    ok('the factorised count of a plot is the engine\'s count, pure and within the CE90', differ.length === 0 && n >= 150, differ.length ? differ.slice(0, 2).join(' ;; ') : `${n} plots`);
+  }
+  // One axis, by hand: a plot of exactly three pixels on the lattice, no blur.
+  {
+    const a = axisShares(0, 30, 10, 4, 0, -1, 4);
+    ok('one axis with no blur is the plot\'s own share of each pixel', Array.from(a).join() === '0,1,1,1,0,0');
+    const half = axisShares(5, 30, 10, 4, 0, -1, 4);
+    ok('and a plot started mid-pixel holds half of the two pixels it cuts', Array.from(half).join() === '0,0.5,1,1,0.5,0');
+    const blurred = axisShares(0, 30, 10, 4, 0.6, -1, 4);
+    ok('a blur takes from the edge pixels and gives to the ones outside, symmetrically', blurred[2] > blurred[1] && Math.abs(blurred[1] - blurred[3]) < 1e-12 && blurred[0] > 0 && Math.abs(blurred[0] - blurred[4]) < 1e-12);
+  }
+  ok('the block alley of stacked rows is the plot alley plus whole pixels, never under what was asked',
+    alleyInStep(0.5, 1.5, 2) === 2.5 && alleyInStep(0.5, 1.5, 0.5) === 1.5 && alleyInStep(0.5, 1.5, 10) === 10.5
+    && alleyInStep(1, 1, 3) === 1 && alleyInStep(2, 1, 3) === 2 && alleyInStep(0, 0, 3) === 0);
+
+  // What it builds.
+  const sats = { pleiades: [2, 1.37], s2: [10, 0.59], spot: [1.5, 0.6], planet: [3, 1.37] };
+  const ask = (sat, nSpecies, nBlocks, pixels, withCe90, extra = {}) => {
+    const [res, sig] = sats[sat];
+    return { nSpecies, nBlocks, pixels, res, sigmaX: sig, sigmaY: sig, threshold: 0.9, ce90M: withCe90 ? ce90Of(res) : 0, plotAlley: 0.5, blockAlley: 1.5, field: { u: 254, v: 244 }, ...extra };
+  };
+  const cases = [ask('pleiades', 4, 4, 16, true), ask('pleiades', 4, 4, 16, false), ask('s2', 4, 4, 4, true), ask('spot', 3, 6, 9, false), ask('planet', 6, 3, 9, true), ask('s2', 2, 1, 1, false)];
+  {
+    const wrong = [], loose = [], ragged = [];
+    for (const q of cases) {
+      const s = suggestBlockDesign(q);
+      const tag = `${q.res} m, ${q.nSpecies} x ${q.nBlocks}, ${q.pixels} px${q.ce90M ? ', CE90' : ''}`;
+      if (!s) { wrong.push(`${tag}: nothing`); continue; }
+      const sensor = { sigmaX: q.sigmaX, sigmaY: q.sigmaY, mixThreshold: q.threshold }, d = s.design;
+      // Every plot of the WHOLE trial, by the engine.
+      const whole = plotPixels(d, q.res, sensor, q.ce90M);
+      const got = whole.held ?? whole.pure;
+      if (got < q.pixels || whole.pure !== s.pure || whole.held !== s.held) wrong.push(`${tag}: the whole trial keeps ${whole.pure}/${whole.held}, said ${s.pure}/${s.held}`);
+      // A plot and its alley are whole pixels, both ways, and the design is what was asked for.
+      const pu = (d.plotLength + d.blockAlley) / q.res, pv = (d.plotWidth + d.plotAlley) / q.res;
+      if (Math.abs(pu - Math.round(pu)) > 1e-9 || Math.abs(pv - Math.round(pv)) > 1e-9 || Math.round(pu) !== s.pitchPx[0] || Math.round(pv) !== s.pitchPx[1]
+        || d.nSpecies !== q.nSpecies || d.nBlocks !== q.nBlocks || d.plotAlley !== 0.5) ragged.push(tag);
+      // Nothing smaller: no pitch of less area, within the same shapes, keeps as many.
+      const [bu, bv] = s.pitchPx;
+      for (let u = 1; u <= bu * 4 && !loose.includes(tag); u++) for (let v = Math.max(1, Math.ceil(u / 4)); v <= u * 4 && u * v < bu * bv; v++) {
+        const m = miniOf(u, v, q.res, d.plotAlley, d.blockAlley);
+        if (!(m.plotLength > 0.2) || !(m.plotWidth > 0.2)) continue;
+        const c = plotCount(m.plotLength, m.plotWidth, q.res, gOf(m, q.res), sensor, q.ce90M, 6);
+        if ((c.held ?? c.pure) >= q.pixels) { loose.push(`${tag}: ${u} x ${v} px would do, it gave ${bu} x ${bv}`); break; }
+      }
+    }
+    ok('every plot of the trial it builds keeps the pixels asked for, by the engine on the whole trial', wrong.length === 0, wrong.length ? wrong.join(' ;; ') : `${cases.length} requests`);
+    ok('a plot and its alley are a whole number of pixels both ways, and the species, the blocks and the plot alley are as asked', ragged.length === 0, ragged.join(' ;; '));
+    ok('and no smaller plot would do', loose.length === 0, loose.join(' ;; '));
+  }
+  // With a geolocation error the count is the pixels that hold, and it costs ground.
+  {
+    const held = suggestBlockDesign(ask('pleiades', 4, 4, 16, true)), plain = suggestBlockDesign(ask('pleiades', 4, 4, 16, false));
+    ok('with a CE90 the pixels asked for are the ones that hold within it, and the plots are larger for it',
+      held.held >= 16 && held.pure > held.held && plain.held === null && plain.pure >= 16
+      && held.design.plotLength * held.design.plotWidth > plain.design.plotLength * plain.design.plotWidth,
+      `${held.design.plotLength} x ${held.design.plotWidth} m against ${plain.design.plotLength} x ${plain.design.plotWidth} m`);
+  }
+  // Alleys are asked for or not at all: with none the plots touch, and the trial takes less ground.
+  {
+    const bare = suggestBlockDesign({ ...ask('spot', 4, 4, 16, true), plotAlley: 0, blockAlley: 0 }), strips = suggestBlockDesign(ask('spot', 4, 4, 16, true));
+    const d = bare.design, sensor = { sigmaX: 0.6, sigmaY: 0.6, mixThreshold: 0.9 };
+    ok('with no alley asked for the plots touch: a plot is its whole pitch, and there is no bare ground in the trial',
+      d.plotAlley === 0 && d.blockAlley === 0 && d.plotLength === bare.pitchPx[0] * 1.5 && d.plotWidth === bare.pitchPx[1] * 1.5
+      && bare.footprint[0] === d.blocksPerRow * d.plotLength, `plots ${d.plotLength} x ${d.plotWidth} m, trial ${bare.footprint.join(' x ')} m`);
+    ok('every plot still keeps what was asked, by the engine on the whole trial', (plotPixels(d, 1.5, sensor, ce90Of(1.5)).held ?? 0) >= 16);
+    ok('and it takes no more ground than the same trial with alleys',
+      bare.footprint[0] * bare.footprint[1] <= strips.footprint[0] * strips.footprint[1],
+      `${Math.round(bare.footprint[0] * bare.footprint[1])} m2 against ${Math.round(strips.footprint[0] * strips.footprint[1])} m2 with 0.5 and 1.5 m alleys`);
+  }
+  // The arrangement: one that fits the field, and compact.
+  {
+    const open = suggestBlockDesign(ask('pleiades', 4, 4, 16, true, { field: null }));
+    ok('with no field to fit it is compact, not a ribbon', open.fits === null && Math.max(...open.footprint) / Math.min(...open.footprint) < 2.5, `${open.footprint.join(' x ')} m`);
+    const narrow = suggestBlockDesign(ask('pleiades', 4, 4, 16, true, { field: { u: 40, v: 2000 } }));
+    ok('a narrow field gets the blocks stacked so that the trial fits it', narrow.fits === true && narrow.footprint[0] <= 40 && narrow.design.blocksPerRow < open.design.blocksPerRow,
+      `${narrow.design.blocksPerRow} per row, ${narrow.footprint.join(' x ')} m`);
+    ok('stacked rows keep every plot in step: the block alley is the plot alley plus whole pixels',
+      narrow.alleyWidened && Math.abs(((narrow.design.blockAlley - narrow.design.plotAlley) / 2) % 1) < 1e-9
+      && (plotPixels(narrow.design, 2, { sigmaX: 1.37, sigmaY: 1.37, mixThreshold: 0.9 }, ce90Of(2)).held ?? 0) >= 16, `block alley ${narrow.design.blockAlley} m`);
+    const small = suggestBlockDesign(ask('s2', 4, 4, 4, true, { field: { u: 60, v: 60 } }));
+    ok('a field too small for any arrangement is told so, and the trial is still the smallest', small.fits === false && small.held >= 4);
+  }
+  ok('what no plot within the design\'s limits can give is answered with nothing, not with a guess',
+    suggestBlockDesign({ ...ask('s2', 4, 4, 400, true), res: 60, ce90M: ce90Of(60) }) === null && suggestBlockDesign({ ...ask('s2', 4, 4, 4, false), res: 0 }) === null);
+  // The staking mesh the suggestion counts on is the one stakeBlockPlan uses.
+  {
+    const design = { nSpecies: 3, nBlocks: 2, plotLength: 14, plotWidth: 8, plotAlley: 1, blockAlley: 2, blocksPerRow: 2, seed: 3 };
+    const sensor = { sigmaX: 0.62, sigmaY: 0.62, mixThreshold: 0.9 };
+    let same = 0, n = 0;
+    for (const [w, h, res] of [[80, 64, 2], [300, 240, 2], [1200, 900, 3]]) {
+      const extent = [0, 0, w, h], mesh = stakeMesh(extent, res);
+      const place = blockPlacement(extent, [0, 0], 0, res, true);
+      const own = stakeBlockPlan(design, place, [0, 0], 0, res, sensor, extent), told = stakeBlockPlan(design, place, [0, 0], 0, res, sensor, extent, mesh.steps);
+      n++;
+      if (own.offset.join() === told.offset.join() && mesh.steps >= 4 && mesh.steps <= 6) same++;
+    }
+    ok('stakeMesh gives the phases stakeBlockPlan tries on a field, small or large', same === n, `${same} of ${n}`);
   }
 }
 

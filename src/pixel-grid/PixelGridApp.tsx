@@ -7,7 +7,13 @@ import { useAoiField, usePlaceSearch } from './use-area';
 import { useFieldGrid } from './use-grid';
 import { useExperiment, usePcaSim, useSimulation } from './use-simulation';
 import { pixelVerdicts } from './pixel-verdicts';
-import { aoiUtmOrigin } from './s2-grid';
+import { aoiUtmOrigin, utmEpsg, utmZoneForLng, type LngLatBounds } from './s2-grid';
+import { stakeMesh, utmEnvelope } from './simulate';
+import { ladderRungs } from './sensors';
+import { ladderStep } from './ladder-step';
+import { suggestBlockDesign } from './suggest-design';
+import type { SuggestAsk, SuggestOutcome } from './steps/SuggestDesign';
+import type { SimSection } from './steps/props';
 import { readDesignFiles } from './design-import';
 import { convexHull } from './imported-plan';
 import { polyBbox, viewShowsField } from './geometry';
@@ -105,7 +111,9 @@ export default function PixelGridApp() {
   // Disclosure / tab state for the step panels. It lives up here because `Step`
   // unmounts a collapsed panel, which would otherwise reset it every time the
   // user folds a step away.
-  const [simAdvOpen, setSimAdvOpen] = usePersistentState('simAdvOpen', false, isBool);
+  // Step 3's folds: one open at a time. The design to begin with, since that is what the step is for.
+  const [simSection, setSimSection] = usePersistentState<SimSection>('simSection', 'design',
+    v => v === null || oneOf('design', 'suggest', 'size', 'curves', 'noise')(v));
   const [blurOpen, setBlurOpen] = usePersistentState('blurOpen', false, isBool);
   const [pcaRetuneOpen, setPcaRetuneOpen] = usePersistentState('pcaRetuneOpen', false, isBool);
   const [compareAligned, setCompareAligned] = usePersistentState('compareAligned', false, isBool);  // rotated vs 0° ladders
@@ -216,7 +224,7 @@ export default function PixelGridApp() {
   }, []);
   useEffect(() => () => { if (stakeTimer.current !== null) clearTimeout(stakeTimer.current); }, []);
   const { setImportedDesign, setImportedCurves, setPattern, setImportedTurn, setImportedShift } = exp;
-  const { setFieldFromTrial, restoreFieldBeforeTrial } = area;
+  const { setFieldFromTrial, restoreFieldBeforeTrial, setFieldBox } = area;
   const onImportFiles = useCallback(async (files: File[]) => {
     setImportBusy(true);
     setImportError(null);
@@ -415,6 +423,148 @@ export default function PixelGridApp() {
    */
   const setAngleByHand = (deg: number) => { setCompareFrom(null); importApi.setAngle(deg); };
 
+  /**
+   * "Suggest a design" (step 3): what the reader asks of a block trial, and the
+   * build that answers it. The request is saved like any other setting; what
+   * was last built is only for the lines under the button.
+   *
+   * A build writes four things at once, which is why it lives here: the block
+   * design, the angle (along the pixel rows, where a trial of whole-pixel plots
+   * keeps the most), the layout, and the satellite the trial was sized for.
+   * The search itself is a few tens of milliseconds (suggest-design.ts); it
+   * runs after a tick so that the button can say it is working.
+   */
+  const [suggestAsk, setSuggestAsk] = usePersistentState<SuggestAsk>('suggestAsk',
+    () => ({ species: 4, reps: 4, sat: '', hold: true, plotAlley: 0, blockAlley: 0 }),
+    v => !!v && typeof v === 'object' && inRange(2, 8)((v as SuggestAsk).species) && inRange(1, 20)((v as SuggestAsk).reps)
+      && typeof (v as SuggestAsk).sat === 'string' && isBool((v as SuggestAsk).hold)
+      && inRange(0, 100)((v as SuggestAsk).plotAlley) && inRange(0, 100)((v as SuggestAsk).blockAlley));
+  const [suggestBusy, setSuggestBusy] = useState(false);
+  const [suggestOutcome, setSuggestOutcome] = useState<SuggestOutcome | null>(null);
+  const buildSuggested = () => {
+    if (suggestBusy) return;
+    const grid = gridApi.build;
+    // The satellites of the table, the one selected taken as it stands in step 2.
+    const sats = ladderRungs({ id: gridApi.sourceId, res: grid?.res ?? gridApi.pxSize, sigmaX, sigmaY });
+    const sat = sats.find(g => g.id === suggestAsk.sat) ?? sats.find(g => g.id === gridApi.sourceId);
+    if (!sat) return;
+    /**
+     * NO EXPERIMENT AREA IS NEEDED. Where there is one and the trial fits it,
+     * the trial goes in the middle of it. Where there is none, or it is too
+     * small for any arrangement, the page makes the area itself, around the
+     * trial: in the middle of the area that was there, or of the map. Building
+     * used to refuse without an area and, with a small one, to tell the reader
+     * to go and draw a larger one, for a trial whose size the page had just
+     * worked out.
+     */
+    const view = mapRef.current?.getCenter();
+    const centre: [number, number] = aoi ? [(aoi[0] + aoi[2]) / 2, (aoi[1] + aoi[3]) / 2]
+      : view ? [view.lng, view.lat] : [initialCenter[1], initialCenter[0]];
+    const epsg = grid?.epsg ?? utmEpsg(utmZoneForLng(centre[0]), centre[1] < 0);
+    const r = sat.res;
+    setSuggestBusy(true);
+    window.setTimeout(() => {
+      const ce90M = suggestAsk.hold ? Math.round(gridApi.ce90At(r) * 100) / 100 : 0;
+      const def = crsToProj4Def(`EPSG:${epsg}`);
+      const toUtm = proj4('EPSG:4326', def), toLngLat = proj4(def, 'EPSG:4326');
+      // An extent as a rung of the table snaps it, so that the staking mesh is the table's own.
+      const stepsOn = (b: LngLatBounds) => {
+        const [e0, n0, e1, n1] = utmEnvelope(b, epsg);
+        return stakeMesh([Math.floor(e0 / r) * r, Math.floor(n0 / r) * r, Math.ceil(e1 / r) * r, Math.ceil(n1 / r) * r], r)?.steps;
+      };
+      const ask = (field: { u: number; v: number } | null, stakeSteps: number | undefined) => suggestBlockDesign({
+        nSpecies: suggestAsk.species, nBlocks: suggestAsk.reps, pixels: wantPure,
+        res: r, sigmaX: sat.sigmaX, sigmaY: sat.sigmaY, threshold: exp.threshold / 100, ce90M,
+        // The alleys asked for in the panel, none by default: NOT the design's
+        // own, which are whatever the layout last had.
+        plotAlley: suggestAsk.plotAlley, blockAlley: suggestAsk.blockAlley,
+        field, stakeSteps, seed: exp.blockDesign.seed,
+      });
+      const had = aoi ? utmEnvelope(aoi, epsg) : null;
+      const field = had ? { u: had[2] - had[0], v: had[3] - had[1] } : { u: 0, v: 0 };
+      const said = { satId: sat.id, sat: sat.name, res: r, pixels: wantPure, ce90M, threshold: exp.threshold, field };
+      try {
+        let ground: LngLatBounds | null = aoi, ring = fieldRing;
+        let area: SuggestOutcome['area'] = null;
+        // In the area there is, when some arrangement fits it.
+        let built = aoi && had ? ask(field, stepsOn(aoi)) : null;
+        if (!built || built.fits === false) {
+          // Otherwise an area of its own: the trial, and a margin that keeps it
+          // clear of the edge wherever the staking then puts it. The mesh the
+          // page will stake on depends on that area's size, which depends on
+          // the trial: asked again until the two agree.
+          const [cE, cN] = toUtm.forward(centre);
+          let steps: number | undefined = 6, own: ReturnType<typeof ask> = null, box: LngLatBounds | null = null;
+          for (let pass = 0; pass < 3; pass++) {
+            own = ask(null, steps);
+            if (!own) break;
+            const margin = Math.max(3 * r, 0.05 * Math.max(own.footprint[0], own.footprint[1]), 5);
+            const hu = own.footprint[0] / 2 + margin, hv = own.footprint[1] / 2 + margin;
+            const corners = ([[cE - hu, cN - hv], [cE + hu, cN - hv], [cE + hu, cN + hv], [cE - hu, cN + hv]] as [number, number][])
+              .map(q => toLngLat.forward(q) as [number, number]);
+            box = [Math.min(...corners.map(q => q[0])), Math.min(...corners.map(q => q[1])), Math.max(...corners.map(q => q[0])), Math.max(...corners.map(q => q[1]))];
+            const need = stepsOn(box);
+            if (need === steps) break;
+            steps = need;
+          }
+          if (own && box) {
+            built = own;
+            ground = box;
+            ring = [[box[0], box[1]], [box[2], box[1]], [box[2], box[3]], [box[0], box[3]]];
+            const [e0, n0, e1, n1] = utmEnvelope(box, epsg);
+            area = { how: aoi ? 'replaced' : 'made', u: e1 - e0, v: n1 - n0 };
+          } else if (!own) {
+            built = null;
+          }
+        }
+        let onField: SuggestOutcome['onField'] = null;
+        if (built && ground) {
+          cancelStake();
+          exp.setPattern('block');
+          exp.setBlockDesign(built.design);
+          exp.setRotation(0);
+          setAdopted(null);
+          if (sat.id !== gridApi.sourceId) gridApi.setSourceId(sat.id);
+          if (area) setFieldBox(ground);
+          // Show what was built: the trial sits in the middle of its area.
+          const [gE0, gN0, gE1, gN1] = utmEnvelope(ground, epsg);
+          const cE = (gE0 + gE1) / 2, cN = (gN0 + gN1) / 2, hu = built.footprint[0] / 2, hv = built.footprint[1] / 2;
+          const [w, so] = toLngLat.forward([cE - hu, cN - hv]), [e, n] = toLngLat.forward([cE + hu, cN + hv]);
+          mapRef.current?.fitBounds([[so, w], [n, e]], { padding: [60, 60], maxZoom: 21 });
+          // What the satellites table will count for it on THIS area, plot by
+          // plot, while the trial is small enough for the table to count so.
+          if ((built.footprint[0] / r) * (built.footprint[1] / r) <= 15_000) {
+            const row = ladderStep({
+              aoi: ground, fieldRing: ring, epsg, threshold: exp.threshold, blockDesign: built.design,
+              layout: { pattern: 'block', width: exp.stripWidth, spacing: exp.spacing, rotationDeg: 0 },
+              importedAngle: 0, importedFileAngle: 0, importedBasePlan: undefined,
+              geoAuto: gridApi.geoAuto, geoManual: gridApi.geoManual,
+            }, 0, sat, true);
+            if (row.plots) onField = { pure: row.plots.min, held: row.plotsRobust?.min ?? null };
+          }
+        }
+        setSuggestOutcome({ ...said, built, onField, area });
+      } catch (e) {
+        setSuggestOutcome({ ...said, built: null, onField: null, area: null, error: e instanceof Error ? e.message : String(e) });
+      } finally {
+        setSuggestBusy(false);
+      }
+    }, 30);
+  };
+  /**
+   * The lines under the button stand only while the page still holds the trial
+   * that was built. A plot-size row applied, a field typed or another satellite
+   * picked afterwards, and they described a trial that was gone: "plots of
+   * 10.5 x 11.5 m" over a design of 8.5 x 9.1.
+   */
+  const builtDesign = suggestOutcome?.built?.design;
+  const outcomeStands = !suggestOutcome || !builtDesign || (
+    exp.pattern === 'block' && exp.rotation === 0 && suggestOutcome.satId === gridApi.sourceId && suggestOutcome.res === gridApi.pxSize
+    && suggestOutcome.threshold === exp.threshold
+    && (['nSpecies', 'nBlocks', 'blocksPerRow', 'plotLength', 'plotWidth', 'plotAlley', 'blockAlley'] as const).every(k => builtDesign[k] === exp.blockDesign[k]));
+  const suggest = { ask: suggestAsk, setAsk: setSuggestAsk,
+                    busy: suggestBusy, outcome: outcomeStands ? suggestOutcome : null, build: buildSuggested };
+
   // Only what `geoKey` needs; the panels read the rest straight off `exp`.
   const { layoutSig, sensorSig, cropSig } = exp;
 
@@ -506,10 +656,10 @@ export default function PixelGridApp() {
 
   const stepProps = { activeStep, toggleStep, area, search, gridApi, exp: shownExp, sim: simApi, pca: pcaApi,
                       areaSummary, gridSummary, simSummary, geoKey, showPsf, setShowPsf,
-                      simAdvOpen, setSimAdvOpen, blurOpen, setBlurOpen, pcaRetuneOpen, setPcaRetuneOpen,
+                      simSection, setSimSection, blurOpen, setBlurOpen, pcaRetuneOpen, setPcaRetuneOpen,
                       compareAligned, setCompareAligned, ladderView, setLadderView, compareFrom, setCompareFrom, setAngleByHand, setActiveStep,
                       pcaColorBy, setPcaColorBy, pcaShapeBy, setPcaShapeBy, importApi, curvesOpen, setCurvesOpen,
-                      wantPure, setWantPure };
+                      wantPure, setWantPure, suggest };
 
   return (
     <div className="flex h-full w-full bg-[#050505] text-neutral-200 font-sans">

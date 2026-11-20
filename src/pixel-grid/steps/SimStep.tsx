@@ -3,8 +3,9 @@ import { Boundary } from '../Boundary';
 import { BlockSummary, ImportedSummary, LayoutFields, LayoutSelect, SpeciesList, SELECT } from './controls';
 import { ImportPanel } from './ImportPanel';
 import { PlotSizeCard } from './PlotSize';
+import { SuggestDesign } from './SuggestDesign';
 import { Suspense, lazy } from 'react';
-import type { StepProps } from './props';
+import type { SimSection, StepProps } from './props';
 import { alignedWithin } from '../imported-rotate';
 
 /**
@@ -21,7 +22,7 @@ const SeasonChart = lazy(() => import('./SeasonChart'));
  * here may hold state. Everything it reads comes from hooks the page shell owns.
  */
 function SimStepBody(p: StepProps) {
-  const { activeStep, toggleStep, simSummary, simAdvOpen, setSimAdvOpen,
+  const { activeStep, toggleStep, simSummary, simSection, setSimSection,
           compareAligned, setCompareAligned, setActiveStep } = p;
   const { aoi } = p.area;
   const { build } = p.gridApi;
@@ -51,14 +52,35 @@ function SimStepBody(p: StepProps) {
 
   const NUM = 'w-full rounded-md border border-white/10 bg-neutral-900 px-2 py-1.5 text-[15px] text-neutral-100 focus:border-sky-500 focus:outline-none';
 
-  return (
-        <Step n={3} title="Simulate experiment" summary={simSummary} open={activeStep === 'sim'} onClick={() => toggleStep('sim')} enabled={!!aoi}>
-        {!aoi ? (
-          <p className="text-[14px] text-neutral-400">Draw an experiment area in step&nbsp;1 first.</p>
-        ) : (
-          <div className="space-y-3">
+  /**
+   * The step is five folds, one open at a time, each named by what it holds
+   * now: the design reads "4 species × 4 blocks · plots 10.5 × 10.5 m" when it
+   * is shut, so nothing has to be open to be read. It was one column of
+   * everything, more than two screens of it.
+   */
+  const at = (id: SimSection) => simSection === id;
+  const fold = (id: SimSection) => () => setSimSection(cur => (cur === id ? null : id));
+  const designLabel = imported
+    ? `Trial file · ${importedDesign ? importedDesign.fileName : 'none yet'}`
+    : pattern === 'block'
+      ? `Design · ${blockDesign.nSpecies} species × ${blockDesign.nBlocks} blocks · plots ${blockDesign.plotLength} × ${blockDesign.plotWidth} m`
+      : `Design · ${stripWidth} m wide${spacing > 0 ? `, ${spacing} m alley` : ''} · ${rotation}°`;
 
-            <LayoutSelect pattern={pattern} setPattern={setPattern} selectClass={SELECT} />
+  return (
+        <Step n={3} title="Simulate experiment" summary={simSummary} open={activeStep === 'sim'} onClick={() => toggleStep('sim')} enabled>
+          {/* The step is open to work in with no experiment area: a design can
+              be typed, and a trial built, before any ground is drawn. Only what
+              is simulated ON an area waits for one, and says so here. */}
+          <div className="space-y-2">
+            {!aoi && (
+              <p className="text-[14px] leading-snug text-neutral-400">
+                No experiment area yet: nothing is simulated. Draw one in step&nbsp;1, or build a trial under Suggest a design, which makes the area around it.
+              </p>
+            )}
+
+            {/* Another layout is another design to fill in: its fold opens. */}
+            <LayoutSelect bare pattern={pattern} setPattern={v => { setPattern(v); setSimSection('design'); }} selectClass={SELECT} />
+            <Disclosure label={designLabel} open={at('design')} onToggle={fold('design')}>
             {/* An imported trial's geometry is the file's: what it has is the
                 file, and the angle the whole trial is turned to. */}
             {imported && <ImportPanel design={importedDesign} varieties={varieties} {...p.importApi} />}
@@ -67,7 +89,9 @@ function SimStepBody(p: StepProps) {
               spacing={spacing} setSpacing={setSpacing}
               pattern={pattern} blockDesign={blockDesign} setBlockDesign={setBlockDesign}
               rotation={angle} setRotation={imported ? p.setAngleByHand : setRotation}
-              rotationLabel={pattern === 'block' || imported ? 'Trial angle' : 'Strip angle'}
+              // "Angle" alone: with "Trial" before it and the comparison button
+              // after, the label broke onto two lines in a narrow panel.
+              rotationLabel="Angle"
               rotationAction={<>
                 {/* Back to the file's own angle, which is rarely a round number to retype. */}
                 {imported && importedTurn !== 0 && (
@@ -99,9 +123,19 @@ function SimStepBody(p: StepProps) {
             {pattern === 'imported' && importedPlan && (
               <ImportedSummary plan={importedPlan} angle={importedAngle} res={build?.res} />
             )}
+            </Disclosure>
+
+            {/* The other way in: say what the trial has to hold, and have it built. */}
+            {pattern === 'block' && (
+              <Disclosure label="Suggest a design" open={at('suggest')} onToggle={fold('suggest')}>
+                <SuggestDesign {...p} />
+              </Disclosure>
+            )}
 
             {/* What the sensor asks of these plots: the size that keeps pure pixels in them. */}
-            <PlotSizeCard {...p} />
+            <Disclosure label="Plot size required" open={at('size')} onToggle={fold('size')}>
+              <PlotSizeCard {...p} />
+            </Disclosure>
 
             {/* The crops and their season, folded for every layout. They are set
                 once, by picking a crop, and then stood between the design and
@@ -113,7 +147,7 @@ function SimStepBody(p: StepProps) {
                 label={pattern === 'imported'
                   ? `Growth curves · ${names.length} ${names.length === 1 ? 'variety' : 'varieties'}`
                   : `Growth curves · ${names.length > 3 ? `${names.length} species` : names.join(', ')}`}
-                open={p.curvesOpen} onToggle={() => p.setCurvesOpen(v => !v)}>
+                open={at('curves')} onToggle={fold('curves')}>
                 <SpeciesList wrapperClass="grid grid-cols-2 gap-2"
                   species={speciesD} presets={presetsActive} colors={colors} names={names}
                   setSpeciesAt={setSpeciesAt} setPresetAt={setPresetAt} />
@@ -133,7 +167,7 @@ function SimStepBody(p: StepProps) {
               </Disclosure>
             )}
 
-            <Disclosure label="Noise & purity threshold" open={simAdvOpen} onToggle={() => setSimAdvOpen(v => !v)}>
+            <Disclosure label={`Noise & purity threshold · ε = ${100 - threshold} %`} open={at('noise')} onToggle={fold('noise')}>
               <div className="grid grid-cols-3 gap-2">
                 {([['mag', magnitude, setMagnitude, 0, 0.15, 0.005], ['α', alpha, setAlpha, 0.1, 10, 0.1], ['β', beta, setBeta, 0.1, 10, 0.1]] as const).map(([lbl, val, set, mn, mx, st]) => (
                   <div key={lbl}>
@@ -157,7 +191,6 @@ function SimStepBody(p: StepProps) {
               </div>
             </Disclosure>
           </div>
-        )}
         </Step>
   );
 }

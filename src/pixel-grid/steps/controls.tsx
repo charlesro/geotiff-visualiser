@@ -29,13 +29,15 @@ const UNIT = 'text-[14px] text-neutral-500';
 /** One select style for the whole page: the old large/small split was cosmetic drift. */
 export const SELECT = 'w-full rounded-md border border-white/10 bg-neutral-900 px-2 py-1.5 text-[15px] text-neutral-100 focus:border-sky-500 focus:outline-none';
 
-export function LayoutSelect({ pattern, setPattern, selectClass }: {
+export function LayoutSelect({ pattern, setPattern, selectClass, bare = false }: {
   pattern: PatternType; setPattern: (p: PatternType) => void; selectClass: string;
+  /** No "Layout" line above it: at the head of step 3 the choices say what they are. */
+  bare?: boolean;
 }) {
   return (
     <div>
-      <label className={LABEL}>Layout</label>
-      <select value={pattern} onChange={e => setPattern(e.target.value as PatternType)} className={selectClass}>
+      {!bare && <label className={LABEL}>Layout</label>}
+      <select value={pattern} onChange={e => setPattern(e.target.value as PatternType)} className={selectClass} aria-label="Layout">
         {PATTERNS.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
       </select>
     </div>
@@ -70,7 +72,7 @@ const NUM_COMMIT_DELAY = 450;
  * committed number back. The draft is dropped once it lands, so a preset or a
  * Reset moves the field immediately rather than being swallowed.
  */
-function NumField({ label, value, onChange, min, max, step = 1, unit, hint, action }: {
+export function NumField({ label, value, onChange, min, max, step = 1, unit, hint, action }: {
   label: string; value: number; onChange: (v: number) => void;
   min: number; max: number; step?: number; unit?: string;
   hint?: React.ReactNode; action?: React.ReactNode;
@@ -167,7 +169,7 @@ export function LayoutFields({ pattern, stripWidth, setStripWidth, spacing, setS
       <div className="space-y-2">
         <div className="grid grid-cols-3 gap-2">
           <NumField label="Species" value={d.nSpecies} onChange={set('nSpecies')} min={2} max={8}
-            hint="How many treatments each block contains. Every block gets all of them, in its own random order." />
+            hint="How many treatments each block contains. Every block gets all of them, in a random order that never puts a species beside itself in the next block." />
           <NumField label="Blocks" value={d.nBlocks} onChange={set('nBlocks')} min={1} max={20}
             hint="Repetitions. Each is a complete set of the species." />
           <NumField label="Per row" value={d.blocksPerRow} onChange={set('blocksPerRow')} min={1} max={20}
@@ -183,7 +185,7 @@ export function LayoutFields({ pattern, stripWidth, setStripWidth, spacing, setS
             hint="Bare soil between plots inside a block, shown in brown." />
           <NumField label="Block alley" value={d.blockAlley} onChange={set('blockAlley')} min={0} max={100} step={0.5} unit="m" />
           <NumField label="Seed" value={d.seed} onChange={set('seed')} min={0} max={9999}
-            hint="Changes the randomisation. The same seed always replays the same layout." />
+            hint="Changes the randomisation. The same seed always replays the same layout. With two species the only layout that keeps them apart is a checkerboard, so the seed only picks which one starts." />
         </div>
       </div>
     );
@@ -216,8 +218,9 @@ export function BlockSummary({ design, plan, res }: {
   const alongPx = res ? design.plotLength / res : null;
 
   return (
-    <div className="rounded-md border border-white/10 bg-white/[0.02] px-2.5 py-2 text-[14px] text-neutral-300">
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+    // One plain line under the fields, not a card of its own: it repeats what the fields say, in other units.
+    <div className="text-[13px] text-neutral-400">
+      <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-0">
         {plan && (
           <span>Trial <span className="font-mono text-neutral-100">{plan.totalU.toFixed(1)} × {plan.totalV.toFixed(1)} m</span></span>
         )}
@@ -264,8 +267,9 @@ export function ImportedSummary({ plan, angle, res }: {
     e0 = Math.min(e0, u); e1 = Math.max(e1, u); n0 = Math.min(n0, v); n1 = Math.max(n1, v);
   }
   return (
-    <div className="rounded-md border border-white/10 bg-white/[0.02] px-2.5 py-2 text-[14px] text-neutral-300">
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+    // One plain line under the fields, not a card of its own: it repeats what the fields say, in other units.
+    <div className="text-[13px] text-neutral-400">
+      <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-0">
         <span>Trial <span className="font-mono text-neutral-100">{(e1 - e0).toFixed(0)} × {(n1 - n0).toFixed(0)} m</span></span>
         <span><span className="font-mono text-neutral-100">{fmt(plan.plots.length)}</span> plots of about <span className="font-mono text-neutral-100">{median.toFixed(0)} m²</span></span>
         {sidePx != null && <span>about <span className="font-mono text-neutral-100">{sidePx.toFixed(1)}</span> px across</span>}

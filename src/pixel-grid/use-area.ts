@@ -125,6 +125,19 @@ export function useAoiField(onDrawComplete: (step: 'grid') => void) {
     onDrawComplete('grid');
   }, []);
 
+  /**
+   * A box the PAGE decided on: a trial built by "Suggest a design" makes its
+   * own area when there is none, or when the one there cannot hold it. A drawn
+   * box in every way but one: it does not send the reader to step 2, since the
+   * reader is in the middle of step 3.
+   */
+  const setFieldBox = useCallback((b: LngLatBounds) => {
+    setAoi(b);
+    setAoiPoly(null);
+    setDrawKind(null);
+    forgetPreTrial();
+  }, []);
+
   const startDraw = (kind: 'rect' | 'poly') => setDrawKind(kind);
   const cancelDraw = () => setDrawKind(null);
   const clearAoi = () => { setAoi(null); setAoiPoly(null); setDrawKind(null); forgetPreTrial(); };
@@ -183,7 +196,7 @@ export function useAoiField(onDrawComplete: (step: 'grid') => void) {
 
   return { aoi, setAoi, aoiPoly, setAoiPoly, fieldRing, drawKind, drawMode, defaultSaved, initialCenter,
            onDrawDone, onPolyDone, startDraw, cancelDraw, clearAoi, saveDefaultField, clearDefaultField,
-           setFieldFromTrial, restoreFieldBeforeTrial };
+           setFieldFromTrial, restoreFieldBeforeTrial, setFieldBox };
 }
 
 /** Type-ahead place lookup. `flyTo` comes from the shell, which owns the map ref. */

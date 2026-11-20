@@ -666,9 +666,9 @@ export function useSimulation({ aoi, gridApi, exp, simOn, showPure, fieldOrigin 
   // wrong when the design carries four: it would report a maize-and-wheat
   // experiment for a trial containing neither in most of its plots.
   const bd = exp.blockDesign;
-  const simSummary = !aoi
-    ? 'needs an area'
-    : pattern === 'imported'
+  // The design, whether or not there is an area to simulate it on: step 3 is
+  // where a trial is designed, and "needs an area" read as a locked door.
+  const simSummary = pattern === 'imported'
       ? (exp.importedDesign
           ? `${exp.varieties.length} varieties · ${exp.importedDesign.plots.length} plots · ${exp.importedDesign.fileName}`
           : 'imported trial: no file yet')
