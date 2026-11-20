@@ -22,11 +22,14 @@ function Step({ n, title, summary, open, enabled = true, onClick, children }: {
 }) {
   return (
     <section className="border-b border-white/5">
-      <button onClick={onClick} className={`flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-white/[0.03] ${!enabled && !open ? 'opacity-55' : ''}`}>
-        <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${open ? 'bg-sky-500/20 text-sky-300' : 'bg-white/10 text-slate-400'}`}>{n}</span>
-        <span className="min-w-0 flex-1">
-          <span className={`block text-sm font-medium ${open ? 'text-slate-100' : 'text-slate-300'}`}>{title}</span>
-          {!open && summary && <span className="block truncate text-xs text-slate-500">{summary}</span>}
+      {/* One line when collapsed: the name, then what the step holds, cut where
+          the panel ends. They were two lines each, so the three steps that are
+          NOT open took 170 px of a 650 px window from the one that is. */}
+      <button onClick={onClick} className={`flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-white/[0.03] ${!enabled && !open ? 'opacity-55' : ''}`}>
+        <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[14px] font-semibold ${open ? 'bg-sky-500/20 text-sky-300' : 'bg-white/10 text-slate-400'}`}>{n}</span>
+        <span className="flex min-w-0 flex-1 items-baseline gap-2">
+          <span className={`shrink-0 text-[15px] font-medium ${open ? 'text-slate-100' : 'text-slate-300'}`}>{title}</span>
+          {!open && summary && <span className="min-w-0 truncate text-[13px] text-slate-500" title={summary}>{summary}</span>}
         </span>
         <ChevronDown className={`h-4 w-4 shrink-0 text-slate-600 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
@@ -71,7 +74,7 @@ const Slider = ({ label, value, min, max, step, fmt, onChange }: {
   const shown = dragged ?? value;
   return (
     <label className="block">
-      <span className="mb-0.5 flex justify-between text-[11px] text-neutral-400">
+      <span className="mb-0.5 flex justify-between text-[14px] text-neutral-400">
         <span>{label}</span><span className="font-mono text-neutral-300">{fmt ? fmt(shown) : shown}</span>
       </span>
       <input type="range" min={min} max={max} step={step} value={shown}
@@ -134,7 +137,7 @@ function CropControl({ label, crop, preset, swatchColor, onCrop, onPreset, onCol
   const shown = swatchColor ?? crop.color;
   return (
     <div>
-      <label className="mb-1 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-neutral-400">
+      <label className="mb-1 flex items-center gap-1.5 text-[14px] font-medium uppercase tracking-wide text-neutral-400">
         {onColor ? (
           <span ref={pickRef} className="relative inline-flex">
             <button type="button" onClick={() => setPick(v => !v)} aria-label={`Colour for ${label}`}
@@ -151,7 +154,7 @@ function CropControl({ label, crop, preset, swatchColor, onCrop, onPreset, onCol
                       style={{ background: c }} />
                   ))}
                 </span>
-                <label className="mt-2 flex items-center gap-1.5 text-[10px] normal-case tracking-normal text-neutral-400">
+                <label className="mt-2 flex items-center gap-1.5 text-[13px] normal-case tracking-normal text-neutral-400">
                   <input type="color" value={crop.color} onChange={e => onColor(e.target.value)}
                     className="h-5 w-6 cursor-pointer rounded border border-white/10 bg-transparent p-0" />
                   custom
@@ -166,21 +169,21 @@ function CropControl({ label, crop, preset, swatchColor, onCrop, onPreset, onCol
       </label>
       <div className="flex gap-1.5">
         <select value={preset} onChange={e => onPreset(e.target.value)}
-          className="min-w-0 flex-1 rounded-md border border-white/10 bg-neutral-900 px-2 py-1.5 text-sm text-neutral-100 focus:border-sky-500 focus:outline-none">
+          className="min-w-0 flex-1 rounded-md border border-white/10 bg-neutral-900 px-2 py-1.5 text-[15px] text-neutral-100 focus:border-sky-500 focus:outline-none">
           {CROP_PRESETS.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
           {preset === 'custom' && <option value="custom">Custom</option>}
         </select>
         <button onClick={() => setOpen(o => !o)} title="Edit the growth curve"
-          className={`rounded-md border px-2 text-xs ${open ? 'border-sky-500 bg-sky-500/15 text-sky-300' : 'border-white/10 bg-neutral-800 text-neutral-300 hover:bg-neutral-700'}`}>
+          className={`rounded-md border px-2 text-[14px] ${open ? 'border-sky-500 bg-sky-500/15 text-sky-300' : 'border-white/10 bg-neutral-800 text-neutral-300 hover:bg-neutral-700'}`}>
           curve ▾
         </button>
       </div>
       {open && (
         <div className="mt-2 space-y-2 rounded-md border border-white/10 bg-black/20 p-2">
           <label className="block">
-            <span className="mb-0.5 block text-[11px] text-neutral-400">Truth type</span>
+            <span className="mb-0.5 block text-[14px] text-neutral-400">Truth type</span>
             <select value={crop.truth} onChange={e => set({ truth: e.target.value as FieldParams['truth'] })}
-              className="w-full rounded-md border border-white/10 bg-neutral-900 px-2 py-1 text-xs text-neutral-100 focus:border-sky-500 focus:outline-none">
+              className="w-full rounded-md border border-white/10 bg-neutral-900 px-2 py-1 text-[14px] text-neutral-100 focus:border-sky-500 focus:outline-none">
               {TRUTH_TYPES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
             </select>
           </label>
@@ -245,7 +248,7 @@ export function Explain({ text, children, align = 'left', below = false }: {
       </button>
       {open && (
         <span role="tooltip"
-          className={`absolute z-[1200] w-64 rounded-md border border-white/10 bg-neutral-900 px-2.5 py-2 text-left text-[11px] font-normal normal-case leading-snug tracking-normal text-neutral-300 shadow-xl ${below ? 'top-full mt-1.5' : 'bottom-full mb-1.5'} ${align === 'right' ? 'right-0' : 'left-0'}`}>
+          className={`absolute z-[1200] w-64 rounded-md border border-white/10 bg-neutral-900 px-2.5 py-2 text-left text-[14px] font-normal normal-case leading-snug tracking-normal text-neutral-300 shadow-xl ${below ? 'top-full mt-1.5' : 'bottom-full mb-1.5'} ${align === 'right' ? 'right-0' : 'left-0'}`}>
           {text}
         </span>
       )}
@@ -271,7 +274,7 @@ export function Disclosure({ label, open, onToggle, children }: {
   return (
     <div className="border-t border-white/5 pt-2">
       <button onClick={onToggle}
-        className="flex w-full items-center gap-1 text-[11px] text-neutral-500 transition-colors hover:text-neutral-300">
+        className="flex w-full items-center gap-1 text-[14px] text-neutral-500 transition-colors hover:text-neutral-300">
         <ChevronDown className={`h-3 w-3 transition-transform ${open ? 'rotate-180' : ''}`} />{label}
       </button>
       {open && <div className="mt-2 space-y-2">{children}</div>}
@@ -287,7 +290,7 @@ export function Tabs<T extends string>({ value, onChange, tabs }: {
     <div className="flex gap-1 rounded-md bg-black/30 p-0.5">
       {tabs.map(t => (
         <button key={t.id} onClick={() => onChange(t.id)}
-          className={`flex-1 rounded px-2 py-1 text-[11px] transition-colors ${value === t.id ? 'bg-sky-500/15 text-sky-300' : 'text-neutral-400 hover:text-neutral-200'}`}>
+          className={`flex-1 rounded px-2 py-1 text-[14px] transition-colors ${value === t.id ? 'bg-sky-500/15 text-sky-300' : 'text-neutral-400 hover:text-neutral-200'}`}>
           {t.label}
         </button>
       ))}
@@ -301,10 +304,10 @@ export function Hero({ value, unit, right, tone = 'text-neutral-50' }: {
 }) {
   return (
     <div className="flex items-baseline justify-between gap-2">
-      <span className={`text-[26px] font-semibold leading-none tabular-nums ${tone}`}>
-        {value}{unit && <span className="ml-1 text-sm font-normal text-neutral-500">{unit}</span>}
+      <span className={`text-[28px] font-semibold leading-none tabular-nums ${tone}`}>
+        {value}{unit && <span className="ml-1 text-[15px] font-normal text-neutral-500">{unit}</span>}
       </span>
-      {right && <span className="text-lg tabular-nums text-neutral-300">{right}</span>}
+      {right && <span className="text-xl tabular-nums text-neutral-300">{right}</span>}
     </div>
   );
 }

@@ -38,6 +38,8 @@ const RES_LADDER = [0.5, 1, 2, 3, 4, 5, 6, 8, 10];
 
 interface Source {
   id: string;
+  /** The name that fits a narrow table: the ladder's row for this satellite. */
+  short: string;
   provider: string;
   resLabel: string;
   res: number;
@@ -101,42 +103,84 @@ const SRC_PLANET = { url: 'https://www.tandfonline.com/doi/full/10.1080/01431161
  */
 const SRC_PHENET = { label: 'measured on PHENET images at Mauguio and Toulouse' };
 const SOURCES: Source[] = [
-  { id: 's2-10', provider: 'Sentinel-2', resLabel: '10 m', res: 10, kind: 'catalog', group: FIXED, offlinePhase0: true, offlineSouth: 'false-northing', psf: 0.59, psfSrc: SRC_PHENET, psfMeasured: true,
-    note: 'Blue, green, red and NIR bands: B02, B03, B04, B08. Measured FWHM 14 m, 1.4x the pixel.',
+  { id: 's2-10', short: 'Sentinel-2', provider: 'Sentinel-2', resLabel: '10 m', res: 10, kind: 'catalog', group: FIXED, offlinePhase0: true, offlineSouth: 'false-northing', psf: 0.59, psfSrc: SRC_PHENET, psfMeasured: true,
+    note: 'Blue, green, red and NIR bands: B02, B03, B04, B08.',
     cfg: { collection: 'sentinel-2-l2a', asset: 'B04', res: 10, gridLabel: s2Label, alt: esS2(10) } },
-  { id: 's2-20', provider: 'Sentinel-2', resLabel: '20 m', res: 20, kind: 'catalog', group: FIXED, offlinePhase0: true, offlineSouth: 'false-northing', psf: 0.62, psfSrc: SRC_S2,
+  { id: 's2-20', short: 'Sentinel-2', provider: 'Sentinel-2', resLabel: '20 m', res: 20, kind: 'catalog', group: FIXED, offlinePhase0: true, offlineSouth: 'false-northing', psf: 0.62, psfSrc: SRC_S2,
     note: 'Red-edge and SWIR bands: B05 to B07, B8A, B11, B12.',
     cfg: { collection: 'sentinel-2-l2a', asset: 'B04', res: 20, gridLabel: s2Label, alt: esS2(20) } },
-  { id: 's2-60', provider: 'Sentinel-2', resLabel: '60 m', res: 60, kind: 'catalog', group: FIXED, offlinePhase0: true, offlineSouth: 'false-northing', psf: 0.62, psfSrc: SRC_S2,
+  { id: 's2-60', short: 'Sentinel-2', provider: 'Sentinel-2', resLabel: '60 m', res: 60, kind: 'catalog', group: FIXED, offlinePhase0: true, offlineSouth: 'false-northing', psf: 0.62, psfSrc: SRC_S2,
     note: 'Aerosol and cirrus bands: B01, B09, B10.',
     cfg: { collection: 'sentinel-2-l2a', asset: 'B04', res: 60, gridLabel: s2Label, alt: esS2(60) } },
-  { id: 'hls-30', provider: 'Landsat · HLS', resLabel: '30 m', res: 30, kind: 'catalog', group: FIXED, offlinePhase0: true, offlineSouth: 'north-crs', psf: 0.55, psfSrc: SRC_LS,
+  { id: 'hls-30', short: 'Landsat HLS', provider: 'Landsat · HLS', resLabel: '30 m', res: 30, kind: 'catalog', group: FIXED, offlinePhase0: true, offlineSouth: 'north-crs', psf: 0.55, psfSrc: SRC_LS,
     note: 'Landsat and Sentinel-2 on one shared 30 m grid.',
     cfg: { collection: 'hls2-s30', asset: null, res: 30,
       gridLabel: it => (it.id?.split('.')?.[2] ?? '').replace(/^T/, '') } },
-  { id: 'ls-30', provider: 'Landsat C2', resLabel: '30 m', res: 30, kind: 'catalog', group: FIXED, offlinePhase0: false, psf: 0.55, psfSrc: SRC_LS,
+  { id: 'ls-30', short: 'Landsat C2', provider: 'Landsat C2', resLabel: '30 m', res: 30, kind: 'catalog', group: FIXED, offlinePhase0: false, psf: 0.55, psfSrc: SRC_LS,
     note: 'Native Landsat 8/9 grid, offset half a pixel from Sentinel-2.',
     cfg: { collection: 'landsat-c2-l2', asset: null, res: 30, gridLabel: lsLabel,
       alt: { collection: 'landsat-c2-l2', asset: null, res: 30, gridLabel: lsLabel, url: EARTH_SEARCH_URL } } },
-  { id: 'wv', provider: 'WorldView-2 · native MS', resLabel: '1.6 m', res: 1.6, kind: 'custom', group: TASK, psf: 0.50, psfSrc: SRC_PHENET, psfMeasured: true,
-    note: 'The bands an index is computed on. Measured FWHM 1.9 m. This is the row to design a trial against.' },
-  { id: 'wv-ps', provider: 'WorldView-2 · pansharpened', resLabel: '0.4 m', res: 0.4, kind: 'custom', group: TASK, psf: 1.17, psfSrc: SRC_PHENET, psfMeasured: true,
-    note: 'Measured FWHM 1.1 m, so nearly 3 pixels across: the fine grid is not a fine resolution.' },
-  { id: 'pleiades', provider: 'Pléiades · native MS', resLabel: '2 m', res: 2, kind: 'custom', group: TASK, psf: 1.06, psfSrc: SRC_PHENET, psfMeasured: true,
-    note: 'Measured FWHM 5 m, far softer than the 2 m pixel suggests.' },
-  { id: 'pleiades-ps', provider: 'Pléiades · pansharpened', resLabel: '0.5 m', res: 0.5, kind: 'custom', group: TASK, psf: 2.55, psfSrc: SRC_PHENET, psfMeasured: true,
-    note: 'Measured FWHM 3 m, six pixels across. Sharp to look at, not to measure with.' },
-  { id: 'skysat', provider: 'SkySat', resLabel: '0.5 m', res: 0.5, kind: 'custom', group: TASK, psf: 0.62, psfSrc: eo('skysat'),
+  { id: 'wv', short: 'WV-2 MS', provider: 'WorldView-2 · native MS', resLabel: '1.6 m', res: 1.6, kind: 'custom', group: TASK, psf: 0.50, psfSrc: SRC_PHENET, psfMeasured: true,
+    note: 'Native multispectral. Measured FWHM 1.9 m.' },
+  { id: 'wv-ps', short: 'WV-2 pan', provider: 'WorldView-2 · pansharpened', resLabel: '0.4 m', res: 0.4, kind: 'custom', group: TASK, psf: 1.17, psfSrc: SRC_PHENET, psfMeasured: true,
+    note: 'Pansharpened. Measured FWHM 1.1 m.' },
+  { id: 'pleiades', short: 'Pléiades MS', provider: 'Pléiades · native MS', resLabel: '2 m', res: 2, kind: 'custom', group: TASK, psf: 1.06, psfSrc: SRC_PHENET, psfMeasured: true,
+    note: 'Native multispectral. Measured FWHM 5 m.' },
+  { id: 'pleiades-ps', short: 'Pléiades pan', provider: 'Pléiades · pansharpened', resLabel: '0.5 m', res: 0.5, kind: 'custom', group: TASK, psf: 2.55, psfSrc: SRC_PHENET, psfMeasured: true,
+    note: 'Pansharpened. Measured FWHM 3 m.' },
+  { id: 'skysat', short: 'SkySat', provider: 'SkySat', resLabel: '0.5 m', res: 0.5, kind: 'custom', group: TASK, psf: 0.62, psfSrc: eo('skysat'),
     note: 'Planet tasking, softer than its pixel size suggests.' },
-  { id: 'spot', provider: 'SPOT 6/7', resLabel: '1.5 m', res: 1.5, kind: 'custom', group: TASK, psf: 0.60, psfSrc: eo('spot-6-7'),
+  { id: 'spot', short: 'SPOT 6/7', provider: 'SPOT 6/7', resLabel: '1.5 m', res: 1.5, kind: 'custom', group: TASK, psf: 0.60, psfSrc: eo('spot-6-7'),
     note: 'Airbus tasking, no fixed grid.' },
-  { id: 'planet', provider: 'PlanetScope', resLabel: '3 m', res: 3, kind: 'custom', group: TASK, psf: 1.37, psfSrc: SRC_PHENET, psfMeasured: true,
-    note: 'Measured FWHM 9.7 m, over three pixels across. Daily revisit, but it cannot resolve a small plot.' },
-  { id: 'custom', provider: 'Custom', resLabel: '', res: 1, kind: 'custom', group: TASK, psf: 0.55,
+  { id: 'planet', short: 'PlanetScope', provider: 'PlanetScope', resLabel: '3 m', res: 3, kind: 'custom', group: TASK, psf: 1.37, psfSrc: SRC_PHENET, psfMeasured: true,
+    note: 'Measured FWHM 9.7 m.' },
+  { id: 'custom', short: 'Custom', provider: 'Custom', resLabel: '', res: 1, kind: 'custom', group: TASK, psf: 0.55,
     note: 'Any sensor: pick the pixel size and where the grid starts.' },
 ];
 
 const GSD_PRESETS = [0.3, 0.5, 1, 1.5, 2, 3, 5];
 
-export { PCA_SAMPLE, RES_LADDER, FIXED, TASK, s2Label, SRC_S2, SRC_LS, eo, SRC_PLANET, SOURCES, GSD_PRESETS };
-export type { Source };
+/**
+ * One row of the ladder: a satellite, with the pixel size and the blur its
+ * rung is computed at.
+ */
+interface Rung {
+  /** The source's id: what a click on the row selects. */
+  id: string;
+  name: string;
+  res: number;
+  /** Gaussian sigma of the blur, in pixels, per axis. */
+  sigmaX: number;
+  sigmaY: number;
+}
+
+/**
+ * The ladder's rows: every satellite of the list, finest pixels first.
+ *
+ * It used to be nine pixel sizes, all under the blur of whichever sensor was
+ * selected: "3 m" was then PlanetScope's pixel under Sentinel-2's optics, or
+ * the other way round, a sensor nobody can task. A trial is read by a
+ * satellite, which brings its pixel size AND its blur, and the two do not go
+ * together the way a ladder of sizes assumed (Pléiades pansharpened has 0.5 m
+ * pixels under a blur 2.5 pixels wide, SkySat the same pixels under 0.6).
+ *
+ * Each satellite is taken at its own figures, except the one selected, which
+ * is taken as it stands on the page (its pixel size and blur can be edited
+ * there), so that its row is the trial on the map. A custom sensor is no
+ * satellite and has a row only while it is the one in use.
+ */
+function ladderRungs(current: { id: string; res: number; sigmaX: number; sigmaY: number }): Rung[] {
+  const rungs: Rung[] = [];
+  for (const src of SOURCES) {
+    const here = src.id === current.id;
+    if (src.id === 'custom' && !here) continue;
+    rungs.push(here && current.res > 0
+      ? { id: src.id, name: src.short, res: current.res, sigmaX: current.sigmaX, sigmaY: current.sigmaY }
+      : { id: src.id, name: src.short, res: src.res, sigmaX: src.psf, sigmaY: src.psf });
+  }
+  // Stable: two satellites with the same pixels keep the order of the list.
+  return rungs.map((r, k) => ({ r, k })).sort((a, b) => a.r.res - b.r.res || a.k - b.k).map(x => x.r);
+}
+
+export { PCA_SAMPLE, RES_LADDER, FIXED, TASK, s2Label, SRC_S2, SRC_LS, eo, SRC_PLANET, SOURCES, GSD_PRESETS, ladderRungs };
+export type { Source, Rung };

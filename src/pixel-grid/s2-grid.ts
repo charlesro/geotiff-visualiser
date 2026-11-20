@@ -309,6 +309,29 @@ export function buildS2Grid(bounds: LngLatBounds, opts: BuildOptions = {}): Buil
   };
 }
 
+/**
+ * The centre of the lattice pixel a point falls in, as [lat, lng], or null when
+ * the point is outside the grid's extent.
+ *
+ * The lattice is `res` metres from the grid's own south-west corner in its UTM
+ * CRS, which is how buildS2Grid lays its cells: the pixel is two divisions and
+ * its centre half a pixel in. Used to put the blur overlays on the pixel that
+ * was clicked rather than wherever the pointer happened to be inside it.
+ */
+export function pixelCentreAt(
+  lng: number, lat: number, epsg: number, utmBounds: [number, number, number, number], res: number,
+): [number, number] | null {
+  if (!(res > 0)) return null;
+  const def = crsToProj4Def(`EPSG:${epsg}`);
+  const [E, N] = proj4('EPSG:4326', def).forward([lng, lat]);
+  const [e0, n0, e1, n1] = utmBounds;
+  if (!(E >= e0 && E < e1 && N >= n0 && N < n1)) return null;
+  const cE = e0 + (Math.floor((E - e0) / res) + 0.5) * res;
+  const cN = n0 + (Math.floor((N - n0) / res) + 0.5) * res;
+  const [cLng, cLat] = proj4(def, 'EPSG:4326').forward([cE, cN]);
+  return [cLat, cLng];
+}
+
 /** Lower-left UTM corner (min easting/northing) of a WGS84 area in a CRS. */
 export function aoiUtmOrigin(bounds: LngLatBounds, epsg: number): [number, number] {
   const to = proj4('EPSG:4326', crsToProj4Def(`EPSG:${epsg}`));
@@ -332,6 +355,48 @@ export function gridToGeoJson(grid: S2Grid): GeoJSON.FeatureCollection {
       geometry: { type: 'Polygon' as const, coordinates: [c.ring] },
     })),
   };
+}
+
+/**
+ * Pixels that share a look, as a few map features instead of one per pixel.
+ *
+ * The map draws a feature as one path, filled and stroked once. A feature per
+ * pixel is an object per pixel to build, restyle and project, and two canvas
+ * calls per pixel at every redraw: on a 2 m grid over a few hectares that is
+ * thirty thousand calls to draw squares that all look alike.
+ *
+ * OUTLINES are one feature, a MultiLineString with each square as a closed
+ * line: the whole lattice is then one stroke. As lines and not as polygons,
+ * because a polygon's ring is ended with closePath, and the browser's
+ * closePath slows with every sub-path already in the path: fifteen thousand
+ * squares in one polygon held a pan for three seconds in that one call,
+ * measured, where the stroke itself is a few milliseconds.
+ *
+ * FILLS have to be polygons, so they come in sets of CELLS_PER_FILL: small
+ * enough for closePath to stay cheap, and a fill has no line to double where
+ * two sets meet.
+ */
+export const CELLS_PER_FILL = 64;
+
+/** Every square's outline, as one feature. `properties` carries what the style reads. */
+export function cellLines<P extends object>(properties: P, rings: [number, number][][]): GeoJSON.Feature<GeoJSON.MultiLineString, P> {
+  return { type: 'Feature', properties, geometry: { type: 'MultiLineString', coordinates: rings } };
+}
+
+/** The squares as filled polygons, CELLS_PER_FILL to a feature. */
+export function cellFills<P extends object>(properties: P, rings: [number, number][][]): GeoJSON.Feature<GeoJSON.MultiPolygon, P>[] {
+  const out: GeoJSON.Feature<GeoJSON.MultiPolygon, P>[] = [];
+  for (let i = 0; i < rings.length; i += CELLS_PER_FILL) {
+    out.push({ type: 'Feature', properties, geometry: { type: 'MultiPolygon', coordinates: rings.slice(i, i + CELLS_PER_FILL).map(ring => [ring]) } });
+  }
+  return out;
+}
+
+/** The outlines of a grid's cells, those `keep` marks when it is given, as one feature for the map. */
+export function gridOutline(grid: S2Grid, keep?: ArrayLike<number> | null): GeoJSON.FeatureCollection<GeoJSON.MultiLineString> {
+  const rings: [number, number][][] = [];
+  for (let k = 0; k < grid.cells.length; k++) if (!keep || keep[k]) rings.push(grid.cells[k].ring);
+  return { type: 'FeatureCollection', features: [cellLines({}, rings)] };
 }
 
 // ----- authoritative grid lookup ----------------------------------------------
@@ -469,33 +534,75 @@ async function searchLattices(
   // The deadline covers reading the body as well as opening the connection: a
   // socket that accepts the request and then stops sending stalls on .json().
   const deadline = withDeadline(signal, timeoutMs);
-  let data: any;
-  try {
+  /** One request: the items' few fields a lattice is read from (`trimmed`), or the items whole. Null when the catalogue refuses the trimmed request. */
+  const ask = async (trimmed: boolean): Promise<any | null> => {
     const r = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify(trimmed ? { ...body, fields: latticeFields(cfg) } : body),
       signal: deadline.signal,
     });
+    // A catalogue that does not know `fields` may reject the request outright.
+    if (trimmed && r.status >= 400 && r.status < 500) return null;
     if (!r.ok) throw new Error(`STAC search failed (${r.status})`);
-    data = await r.json();
+    return r.json();
+  };
+  const read = (data: any): CoveringGrid[] => {
+    const byLattice = new Map<string, CoveringGrid>();
+    for (const it of data.features ?? []) {
+      const t = projTransform(it, cfg.asset);
+      const epsg = projEpsg(it, cfg.asset);
+      if (!t || !epsg) continue;
+      const ulx = t[2];
+      const uly = t[5];
+      const key = `${epsg}|${phase(ulx, cfg.res)}|${phase(uly, cfg.res)}`;
+      if (!byLattice.has(key)) {
+        let label = '';
+        try { label = cfg.gridLabel(it) || ''; } catch { /* keep '' */ }
+        byLattice.set(key, { label, epsg, ulx, uly, tile: label, catalog: CATALOG_NAMES[url] ?? new URL(url).hostname });
+      }
+    }
+    return [...byLattice.values()].sort((a, b) => a.epsg - b.epsg || a.label.localeCompare(b.label));
+  };
+  try {
+    /**
+     * The trimmed request first. An item is 16 kB of links, footprints and
+     * every band's asset, of which three numbers are read here: a hundred of
+     * them are 1.5 MB, which Planetary Computer sends uncompressed. On a
+     * 1.6 Mbit/s line that does not arrive within the deadline at all, so the
+     * lookup always fell through to the second catalogue, 8 s later; trimmed,
+     * the same answer is 20 kB.
+     *
+     * The whole items are still asked for when the trimmed answer cannot be
+     * used: the catalogue refused the request, or it answered with items that
+     * hold no lattice, which is what trimming one field too many would look
+     * like. So this can cost a second request, and never an answer.
+     */
+    const lean = await ask(true);
+    const found = lean ? read(lean) : null;
+    if (found && (found.length || !(lean.features ?? []).length)) return found;
+    return read(await ask(false));
   } finally {
     deadline.done();
   }
+}
 
-  const byLattice = new Map<string, CoveringGrid>();
-  for (const it of data.features ?? []) {
-    const t = projTransform(it, cfg.asset);
-    const epsg = projEpsg(it, cfg.asset);
-    if (!t || !epsg) continue;
-    const ulx = t[2];
-    const uly = t[5];
-    const key = `${epsg}|${phase(ulx, cfg.res)}|${phase(uly, cfg.res)}`;
-    if (!byLattice.has(key)) {
-      let label = '';
-      try { label = cfg.gridLabel(it) || ''; } catch { /* keep '' */ }
-      byLattice.set(key, { label, epsg, ulx, uly, tile: label, catalog: CATALOG_NAMES[url] ?? new URL(url).hostname });
-    }
-  }
-  return [...byLattice.values()].sort((a, b) => a.epsg - b.epsg || a.label.localeCompare(b.label));
+/**
+ * The fields of a catalogue item a lattice is read from, as a STAC `fields`
+ * request: the CRS and the pixel origin (on the item or on one band's asset),
+ * and what the grid labels are made of. Everything a `gridLabel` in sensors.ts
+ * reads has to be listed here, which the suite checks source by source.
+ *
+ * `assets` is NOT excluded, although it is most of an item's weight: Earth
+ * Search then drops the one band's transform with the rest. Planetary Computer
+ * returns only the included asset fields either way.
+ */
+export function latticeFields(cfg: Pick<SourceConfig, 'asset'>): { include: string[]; exclude: string[] } {
+  return {
+    include: [
+      'id', 'properties.proj:epsg', 'properties.proj:transform', 'properties.s2:mgrs_tile', 'properties.grid:code',
+      ...(cfg.asset ? [`assets.${cfg.asset}.proj:transform`, `assets.${cfg.asset}.proj:epsg`] : []),
+    ],
+    exclude: ['geometry', 'bbox', 'links', 'stac_extensions', 'stac_version', 'collection'],
+  };
 }

@@ -2,10 +2,17 @@ import { Disclosure, Explain, InfoDot, Step } from '../ui';
 import { Boundary } from '../Boundary';
 import { BlockSummary, ImportedSummary, LayoutFields, LayoutSelect, SpeciesList, SELECT } from './controls';
 import { ImportPanel } from './ImportPanel';
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
-import { BARE } from '../simulate';
+import { PlotSizeCard } from './PlotSize';
+import { Suspense, lazy } from 'react';
 import type { StepProps } from './props';
 import { alignedWithin } from '../imported-rotate';
+
+/**
+ * The season chart, fetched when the fold that holds it is first opened: it is
+ * the only thing in this step drawn with the charting library, which is a
+ * quarter of the page's script and has no business in its first download.
+ */
+const SeasonChart = lazy(() => import('./SeasonChart'));
 
 /**
  * Step 3: lay out the planting pattern and see the season a mixed pixel records.
@@ -22,7 +29,9 @@ function SimStepBody(p: StepProps) {
   // The angle the controls show and edit: the trial's own for an imported one.
   const imported = pattern === 'imported';
   const angle = imported ? importedAngle : rotation;
-  const aligned = alignedWithin(angle, 0.05);
+  // An imported trial is compared with its best placement, at whatever angle
+  // that is: there is no angle at which the comparison has nothing to say.
+  const aligned = !imported && alignedWithin(angle, 0.05);
   const { ndviSeries } = p.sim;
   /**
    * One line per distinct growth CURVE, not per species. An imported trial can
@@ -40,12 +49,12 @@ function SimStepBody(p: StepProps) {
     return [...groups.values()];
   })();
 
-  const NUM = 'w-full rounded-md border border-white/10 bg-neutral-900 px-2 py-1.5 text-sm text-neutral-100 focus:border-sky-500 focus:outline-none';
+  const NUM = 'w-full rounded-md border border-white/10 bg-neutral-900 px-2 py-1.5 text-[15px] text-neutral-100 focus:border-sky-500 focus:outline-none';
 
   return (
         <Step n={3} title="Simulate experiment" summary={simSummary} open={activeStep === 'sim'} onClick={() => toggleStep('sim')} enabled={!!aoi}>
         {!aoi ? (
-          <p className="text-xs text-neutral-400">Draw an experiment area in step&nbsp;1 first.</p>
+          <p className="text-[14px] text-neutral-400">Draw an experiment area in step&nbsp;1 first.</p>
         ) : (
           <div className="space-y-3">
 
@@ -64,7 +73,7 @@ function SimStepBody(p: StepProps) {
                 {imported && importedTurn !== 0 && (
                   <button type="button" onClick={() => p.setAngleByHand(importedFileAngle)}
                     title={`Back to the file's angle, ${importedFileAngle.toFixed(1)}°`}
-                    className="ml-auto rounded px-1.5 py-0.5 text-[10px] font-normal normal-case tracking-normal text-neutral-500 transition-colors hover:text-neutral-300">
+                    className="ml-auto rounded px-1.5 py-0.5 text-[13px] font-normal normal-case tracking-normal text-neutral-500 transition-colors hover:text-neutral-300">
                     as in file
                   </button>
                 )}
@@ -72,9 +81,9 @@ function SimStepBody(p: StepProps) {
                   onClick={() => { setCompareAligned(true); setActiveStep('pca'); }}
                   title={aligned
                     ? 'Already aligned with the pixels'
-                    : imported ? 'Compare with the trial turned to the pixel rows' : 'Compare with strips aligned to the pixels'}
-                  className={`${imported && importedTurn !== 0 ? '' : 'ml-auto'} rounded px-1.5 py-0.5 text-[10px] font-normal normal-case tracking-normal transition-colors disabled:opacity-30 ${compareAligned ? 'bg-sky-500/15 text-sky-300' : 'text-neutral-500 hover:text-neutral-300'}`}>
-                  vs aligned
+                    : imported ? 'Compare with the angle and position that keep the most pure pixels at each pixel size' : 'Compare with strips aligned to the pixels'}
+                  className={`${imported && importedTurn !== 0 ? '' : 'ml-auto'} rounded px-1.5 py-0.5 text-[13px] font-normal normal-case tracking-normal transition-colors disabled:opacity-30 ${compareAligned ? 'bg-sky-500/15 text-sky-300' : 'text-neutral-500 hover:text-neutral-300'}`}>
+                  {imported ? 'vs best' : 'vs aligned'}
                 </button>
               </>}
               spacingHint="Bare soil between strips, shown in brown."
@@ -91,60 +100,44 @@ function SimStepBody(p: StepProps) {
               <ImportedSummary plan={importedPlan} angle={importedAngle} res={build?.res} />
             )}
 
-            {/* Dozens of varieties would bury the rest of the step, so an imported
-                trial folds its curve editors away; they open on demand. */}
-            {pattern === 'imported' ? (
-              varieties.length > 0 && (
-                <Disclosure label={`Growth curves · ${names.length} ${names.length === 1 ? 'variety' : 'varieties'}`}
-                  open={p.curvesOpen} onToggle={() => p.setCurvesOpen(v => !v)}>
-                  <SpeciesList wrapperClass="grid grid-cols-2 gap-2"
-                    species={speciesD} presets={presetsActive} colors={colors} names={names}
-                    setSpeciesAt={setSpeciesAt} setPresetAt={setPresetAt} />
-                </Disclosure>
-              )
-            ) : (
-              <SpeciesList wrapperClass="grid grid-cols-2 gap-2"
-                species={speciesD} presets={presetsActive} colors={colors} names={names}
-                setSpeciesAt={setSpeciesAt} setPresetAt={setPresetAt} />
-            )}
+            {/* What the sensor asks of these plots: the size that keeps pure pixels in them. */}
+            <PlotSizeCard {...p} />
 
-            {ndviSeries && (
-              <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <span className="flex-1 text-[11px] text-neutral-400">NDVI season</span>
-                  <Explain align="right" text={<>Dashed: what a mixed pixel records{magnitude > 0 ? '; grey band: noise (±σ)' : ''}.</>}><InfoDot /></Explain>
-                </div>
-                <div style={{ height: 150 }}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={ndviSeries} margin={{ top: 5, right: 6, bottom: 0, left: -24 }}>
-                      <XAxis dataKey="day" tick={{ fontSize: 9, fill: '#888' }} ticks={[0, 90, 180, 270, 365]} />
-                      <YAxis domain={[0, 1]} tick={{ fontSize: 9, fill: '#888' }} />
-                      <Tooltip contentStyle={{ background: '#111', border: '1px solid #333', fontSize: 11 }} labelFormatter={d => `day ${d}`} />
-                      {magnitude > 0 && <Line type="monotone" dataKey="hi" stroke="#64748b" dot={false} strokeWidth={0.75} name="noise +σ" />}
-                      {magnitude > 0 && <Line type="monotone" dataKey="lo" stroke="#64748b" dot={false} strokeWidth={0.75} name="noise −σ" />}
-                      {/* One line per species. Two hardcoded series plotted
-                          maize and wheat for a four-species trial and simply
-                          omitted the rest, with nothing to show it had. */}
-                      {curveLines.map(({ i, n }) => (
-                        <Line key={i} type="monotone" dataKey={`s${i}`} stroke={colors[i]}
-                          dot={false} strokeWidth={1.5} name={n > 1 ? `${names[i]} and ${n - 1} more` : names[i]} />
-                      ))}
-                      {/* Bare soil drawn like a crop: its own season, flat because
-                          soil has no phenology. It is a real part of every pixel
-                          that touches an alley, and the mixed curve weights it in. */}
-                      <Line type="monotone" dataKey="soil" stroke={BARE.color} dot={false} strokeWidth={1.5} name="Bare soil" />
-                      <Line type="monotone" dataKey="mix" stroke="#e5e7eb" strokeDasharray="4 3" dot={false} strokeWidth={1.5} name="Mixed pixel" />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
+            {/* The crops and their season, folded for every layout. They are set
+                once, by picking a crop, and then stood between the design and
+                everything below it: two rows of editors and a chart on a panel
+                whose subject is the plots. An imported trial had its own fold
+                for the same reason, and the fold is the same one. */}
+            {(pattern !== 'imported' || varieties.length > 0) && (
+              <Disclosure
+                label={pattern === 'imported'
+                  ? `Growth curves · ${names.length} ${names.length === 1 ? 'variety' : 'varieties'}`
+                  : `Growth curves · ${names.length > 3 ? `${names.length} species` : names.join(', ')}`}
+                open={p.curvesOpen} onToggle={() => p.setCurvesOpen(v => !v)}>
+                <SpeciesList wrapperClass="grid grid-cols-2 gap-2"
+                  species={speciesD} presets={presetsActive} colors={colors} names={names}
+                  setSpeciesAt={setSpeciesAt} setPresetAt={setPresetAt} />
+                {ndviSeries && (
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="flex-1 text-[14px] text-neutral-400">NDVI season</span>
+                      <Explain align="right" text={<>Dashed: what a mixed pixel records{magnitude > 0 ? '; grey band: noise (±σ)' : ''}.</>}><InfoDot /></Explain>
+                    </div>
+                    <div style={{ height: 150 }}>
+                      <Suspense fallback={null}>
+                        <SeasonChart series={ndviSeries} lines={curveLines} colors={colors} names={names} noise={magnitude > 0} />
+                      </Suspense>
+                    </div>
+                  </div>
+                )}
+              </Disclosure>
             )}
 
             <Disclosure label="Noise & purity threshold" open={simAdvOpen} onToggle={() => setSimAdvOpen(v => !v)}>
               <div className="grid grid-cols-3 gap-2">
                 {([['mag', magnitude, setMagnitude, 0, 0.15, 0.005], ['α', alpha, setAlpha, 0.1, 10, 0.1], ['β', beta, setBeta, 0.1, 10, 0.1]] as const).map(([lbl, val, set, mn, mx, st]) => (
                   <div key={lbl}>
-                    <span className="mb-0.5 block text-[11px] text-neutral-500">{lbl}</span>
+                    <span className="mb-0.5 block text-[14px] text-neutral-500">{lbl}</span>
                     <input type="number" min={mn} max={mx} step={st} value={val}
                       onChange={e => set(Math.max(mn, Math.min(mx, parseFloat(e.target.value) || 0)))} className={NUM} />
                   </div>
@@ -154,7 +147,11 @@ function SimStepBody(p: StepProps) {
                 {/* 90 % is the PHENET note's pure pixel. 100 is not offered: a
                     Gaussian never reaches zero, so at 100 % the answer was set by
                     where the kernel is cut off, not by the trial. */}
-                <span className="mb-1 block text-[11px] text-neutral-500">Pure ≥ {threshold}% of its signal from one plot{threshold === 90 ? ' (the PHENET note\'s threshold)' : ''}</span>
+                <span className="mb-1 block text-[14px] text-neutral-500">
+                  <Explain text="A pixel is pure when its contamination, the share of its signal that comes from other plots, is at most ε. The note uses 10 %, and 5 % as a stricter case.">
+                    <span className="underline decoration-neutral-700 decoration-dotted underline-offset-2">Threshold ε = {100 - threshold} %</span>
+                  </Explain>{' '}(pure ≥ {threshold} %)
+                </span>
                 <input type="range" min="50" max="99" step="1" value={threshold}
                   onChange={e => setThreshold(parseInt(e.target.value))} className="w-full accent-sky-500" />
               </div>

@@ -4,10 +4,25 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Pixel Grid Designer</title>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    <!-- The fonts are fetched without holding the page: with them in the
+         stylesheet's own @import, nothing could paint until Google had
+         answered, and on a slow line that is seconds. System fonts stand in
+         until they land (display=swap). Leaflet's stylesheet is bundled with
+         the page's own (main.tsx), so no third party stands before the first
+         paint at all. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" media="print" onload="this.media='all'" />
+    <!-- What the page shows until its script has arrived: 280 kB, which is
+         six seconds on a slow 3G line and used to be six seconds of nothing. -->
+    <style>
+      html, body, #root { height: 100%; margin: 0; background: #050505; }
+      .boot { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; font: 15px/1.4 system-ui, sans-serif; color: #94a3b8; }
+      .boot b { color: #fff; font-weight: 600; }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root"><div class="boot"><b>Pixel Grid Designer</b><span>Loading</span></div></div>
     <script type="module" src="/src/pixel-grid/main.tsx"></script>
   </body>
 </html>

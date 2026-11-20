@@ -30,7 +30,14 @@ export interface StepProps {
    * so a collapsed step unmounts its subtree and any state held there is lost.
    */
   simAdvOpen: boolean; setSimAdvOpen: (v: boolean | ((p: boolean) => boolean)) => void;
+  /** Step 2's blur and geolocation section: the two inputs and the budget they add up to. */
+  blurOpen: boolean; setBlurOpen: (v: boolean | ((p: boolean) => boolean)) => void;
   pcaRetuneOpen: boolean; setPcaRetuneOpen: (v: boolean | ((p: boolean) => boolean)) => void;
+  /**
+   * How the resolution ladder is laid out: a table of its figures, or the small
+   * scatter plots they used to be the captions of.
+   */
+  ladderView: 'table' | 'charts'; setLadderView: (v: 'table' | 'charts') => void;
   /** Show the resolution ladder twice: at the current rotation and at 0°. */
   compareAligned: boolean; setCompareAligned: (v: boolean | ((p: boolean) => boolean)) => void;
   /**
@@ -42,12 +49,14 @@ export interface StepProps {
   /** Reading a trial file: owned by the shell, since a read can outlast a collapsed step. */
   /** See PixelGridApp: the angle the comparison's left ladder is pinned to. */
   compareFrom: number | null;
-  setCompareFrom: (deg: number | null) => void;
+  /** `to`: the angle of the placement being adopted, the pixel rows when left out. */
+  setCompareFrom: (deg: number | null, to?: number) => void;
   /**
    * Turning the trial from a CONTROL rather than from the ladder. It forgets any
-   * adopted placement, because a hand-set angle is the design's own again and
-   * there is nothing to step back to. The ladder uses importApi.setAngle
-   * directly so that it can remember one.
+   * remembered angle, because a hand-set angle is the design's own again. (An
+   * imported trial set to 0 this way is still compared with the file's angle,
+   * which needs no remembering.) The ladder uses importApi.setAngle directly
+   * so that it can remember one.
    */
   setAngleByHand: (deg: number) => void;
   importApi: {
@@ -59,7 +68,15 @@ export interface StepProps {
     setNameColumn: (column: string) => void;
     /** Turn the imported trial to this angle from the pixel rows, in degrees. */
     setAngle: (deg: number) => void;
+    /** Put the trial where a rung of the best-placement ladder has it: turned, then moved. */
+    setPlacement: (turn: number, shift: [number, number]) => void;
   };
+  /**
+   * How many pure pixels the last row of the plot-size card asks for: in every
+   * plot, or across a strip. In the shell because the card is shown in two
+   * steps and a collapsed step forgets what it held.
+   */
+  wantPure: number; setWantPure: (n: number) => void;
   /** The per-variety growth-curve editors of an imported trial, folded by default. */
   curvesOpen: boolean; setCurvesOpen: (v: boolean | ((p: boolean) => boolean)) => void;
   /** So the compare button in step 3 can jump to where the ladders are drawn. */

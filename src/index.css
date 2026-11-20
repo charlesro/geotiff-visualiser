@@ -1,4 +1,5 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+/* The fonts are linked from the two HTML pages, not imported here: an @import
+   is fetched before anything can paint, from a third party. */
 @import "tailwindcss";
 
 @theme {

@@ -25,6 +25,9 @@ import type { PlotTally } from './resolving';
 const LADDER_POINTS = 500;
 
 export interface SweepStep extends CoverSource {
+  /** The satellite this rung is: its source id, which a click selects, and the name its row carries. */
+  id: string;
+  name: string;
   res: number;
   purePct: number;
   /**
@@ -52,6 +55,8 @@ export interface SweepStep extends CoverSource {
   geoRobustPure?: number;
   geoMean?: number;
   geoMeanPure?: number;
+  /** The CE90 this rung was computed with, in metres. */
+  ce90M?: number;
   /** Pure pixels plot by plot, at the nominal placement and over the robust set. */
   plots?: PlotTally;
   plotsRobust?: PlotTally;
@@ -68,6 +73,14 @@ export interface SweepStep extends CoverSource {
    * own simulation, so the ladder does not compute it a second time.
    */
   current?: boolean;
+  /**
+   * On the best-placement ladder of an imported trial: where this rung puts
+   * the trial (the file's trial turned by `turn` degrees, then moved by
+   * `shift` metres), the angle to the pixel rows that leaves it at, and
+   * whether a search ran or the trial is simply as the file has it. A click
+   * on the rung puts the trial exactly there.
+   */
+  placement?: { turn: number; shift: [number, number]; angle: number; searched: boolean };
 }
 
 interface Dot { x: number; y: number; color: string }
@@ -113,7 +126,7 @@ function DotCanvas({ pts, height }: { pts: Dot[]; height: number }) {
   return <canvas ref={ref} style={{ width: '100%', height, display: 'block' }} />;
 }
 
-function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, threshold, colorBy, activeRes, activeSim, onPick, onPickPair, geoErrM = 0 }: {
+function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, threshold, colorBy, activeId, activeSim, onPick, onPickPair, geoErrM = 0 }: {
   steps: SweepStep[];
   /**
    * A second ladder over the same resolutions (e.g. the rows laid along the
@@ -128,7 +141,8 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
   threshold: number;
   /** The big scatter's colour encoding, so a pixel is the same colour in both. */
   colorBy: ColorBy;
-  activeRes?: number;
+  /** The satellite selected: its rung is the one on the map. */
+  activeId?: string;
   /**
    * The big scatter's own simulation, drawn for the current resolution. Only
    * passed when it IS at that resolution: for a moment after a click the chart
@@ -142,7 +156,7 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
    * of one trial cover the same area but not the same number of edge pixels, so
    * their percentages have different denominators and can rank them backwards.
    */
-  onPick?: (res: number) => void;
+  onPick?: (id: string) => void;
   /**
    * Clicking a panel of the PAIRED ladder. That ladder draws a DIFFERENT
    * placement of the design, not merely a different pixel size, so picking one
@@ -150,7 +164,7 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
    * the aligned panel showed the size it asked for underneath the design as
    * drawn, which is a third thing that is neither panel.
    */
-  onPickPair?: (res: number) => void;
+  onPickPair?: (id: string) => void;
   /** Step 2's geolocation error in metres, to label each panel's range. 0 = off. */
   geoErrM?: number;
 }) {
@@ -158,10 +172,10 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
 
   const toCharts = (list: SweepStep[], mayUseActive: boolean) =>
     list.map(s => {
-      const isActive = mayUseActive && !!activeSim && activeRes != null && Math.abs(activeRes - s.res) < 1e-6;
+      const isActive = mayUseActive && !!activeSim && activeId === s.id;
       if (!isActive && s.current) {
         // Waiting for the big chart's simulation, which this panel will draw.
-        return { res: s.res, purePct: NaN, pureCount: NaN, trialCount: NaN, partial: false, pts: [] as Dot[], tooFew: 0, waiting: true };
+        return { id: s.id, name: s.name, res: s.res, purePct: NaN, pureCount: NaN, trialCount: NaN, partial: false, pts: [] as Dot[], tooFew: 0, waiting: true };
       }
       const src: CoverSource = isActive ? activeSim! : s;
       // Every rung is fitted on ALL its trial pixels, exactly as the big chart
@@ -194,11 +208,11 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
        * The current rung's own figure arrives with the idle pass, so until then
        * the panel shows no number rather than the big chart's.
        */
-      return { res: s.res, purePct: s.purePct,
+      return { id: s.id, name: s.name, res: s.res, purePct: s.purePct,
                resolvingPct: s.current ? undefined : s.resolvingPct, nEff: s.current ? undefined : s.nEff,
                plantCount: s.plantCount, contrastDead: s.contrastDead,
                geoRobust: s.current ? undefined : s.geoRobust, geoRobustPure: s.current ? undefined : s.geoRobustPure,
-               geoMean: s.current ? undefined : s.geoMean,
+               geoMean: s.current ? undefined : s.geoMean, ce90M: s.ce90M,
                plots: s.current ? undefined : s.plots, plotsRobust: s.current ? undefined : s.plotsRobust,
                minPlotM: s.minPlotM, plotSideM: s.plotSideM,
                pureCount: s.current ? NaN : (s.pureCount ?? NaN), trialCount: s.trialCount ?? NaN,
@@ -207,25 +221,30 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
   // The rotated ladder may substitute the big scatter; the 0° comparison ladder
   // is a different design and never does.
   const charts = useMemo(() => toCharts(steps, true),
-    [steps, speciesSig, magnitude, threshold, colorBy, colors.join(','), activeRes, activeSim]); // eslint-disable-line react-hooks/exhaustive-deps
+    [steps, speciesSig, magnitude, threshold, colorBy, colors.join(','), activeId, activeSim]); // eslint-disable-line react-hooks/exhaustive-deps
   const pairCharts = useMemo(() => (pairWith ? toCharts(pairWith, false) : null),
     [pairWith, speciesSig, magnitude, threshold, colorBy, colors.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
   const pc = (v: number) => (v >= 70 ? 'text-emerald-400' : v >= 40 ? 'text-amber-400' : 'text-rose-400');
 
   const panel = (c: ReturnType<typeof toCharts>[number], key: string, paired = false) => {
-    const active = activeRes != null && Math.abs(activeRes - c.res) < 1e-6;
+    const active = activeId === c.id;
     const sampled = c.partial ? ' (sampled over the central part of a large field)' : '';
+    // A rung of an imported trial's best-placement ladder says where it puts the trial.
+    const place = paired ? pairWith?.find(s => s.id === c.id)?.placement : undefined;
     return (
       <button
         key={key}
         type="button"
-        onClick={() => (paired ? onPickPair : onPick)?.(c.res)}
+        onClick={() => (paired ? onPickPair : onPick)?.(c.id)}
         title={paired
-          ? `Turn the design along the pixel rows and show it at ${c.res} m${sampled}`
-          : `Show the field at ${c.res} m${sampled}`}
+          ? place
+            ? `Put the trial where it keeps the most pure pixels for ${c.name}, ${c.res} m (${+place.angle.toFixed(2)}° to the pixel rows), and show it${sampled}`
+            : `Turn the design along the pixel rows and show it as ${c.name} sees it, ${c.res} m${sampled}`
+          : `Show the field as ${c.name} sees it, ${c.res} m${sampled}`}
         className={`rounded-md border p-1 text-left transition-colors ${active ? 'border-sky-400 bg-sky-500/10 ring-1 ring-sky-400/40' : 'border-white/10 bg-black/30 hover:border-sky-500/40 hover:bg-white/[0.04]'}`}
       >
-        <div className="flex items-baseline justify-between px-0.5 text-[10px]">
+        <div className="truncate px-0.5 text-[12px] leading-tight text-neutral-400">{c.name}</div>
+        <div className="flex items-baseline justify-between px-0.5 text-[13px]">
           <span className="font-mono text-neutral-300">{c.res} m{active ? ' ·' : ''}{c.partial ? ' ◦' : ''}</span>
           {/* TWO numbers, never one. The SHARE is how many of the pixels that
               are ON THE CROP come out clean; a pixel of nothing but alley soil
@@ -251,56 +270,47 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
                 {c.resolvingPct === null ? 'n/a' : `${c.resolvingPct.toFixed(0)}%`}
               </span>
               {Number.isFinite(c.pureCount) && (
-                <span className="font-mono text-[9px] text-neutral-500">{fmt(c.pureCount)}px</span>
+                <span className="font-mono text-[12px] text-neutral-500">{fmt(c.pureCount)}px</span>
               )}
             </span>
           )}
         </div>
-        {/* Geolocation, as what SURVIVES it. This line used to print the range
-            of the pure-pixel COUNT over a few placements, and a count hides the
-            damage: on a 15 m plot at a 3.5 m CE90 the count stays 64 to 77
-            wherever the image lands, while only 16 of the 64 pixels flagged at
-            the nominal position are pure at every placement. A pixel is picked
-            by its coordinates, so the set has to survive, not its size. */}
-        {geoErrM > 0 && c.geoRobust !== undefined && (
-          <div className="px-0.5 font-mono text-[9px] leading-tight text-neutral-500"
-            title={[
-              `${fmt(c.geoRobustPure ?? 0)} of these pixels are pure, for the same plot, wherever the image lands within its ${geoErrM} m CE90 (9 images in 10). These are the ones a pixel list chosen by coordinates can rely on`,
-              c.geoMean !== undefined
-                ? `Averaged over images instead, as the PHENET note does (one effective spot, sigma_geo = CE90 / 2.146), the share is ${pct0(c.geoMean)}`
-                : 'The across-image mean is not computed here: the effective spot is wider than 5 pixels',
-            ].join('. ')}>
-            <span className={c.geoRobust < 0.5 ? 'text-rose-400' : 'text-amber-300/80'}>{pct0(c.geoRobust)}</span> stay pure within {geoErrM} m
+        {/* Two short lines under the headline, each one figure, neither wrapping
+            in a panel a third of the sidebar wide. They were four, of up to
+            thirty-five characters, in a panel that holds seventeen: six or seven
+            lines of caption over each small chart, nine times, or eighteen.
+            What they left out is in their tooltips. */}
+        {/* What survives the geolocation error: pixels pure for the same plot at
+            every image position within the CE90. A count range hid this (64 to
+            77 pure at every position, 16 of them the same pixels). */}
+        {c.geoRobust !== undefined && (
+          <div className="whitespace-nowrap px-0.5 font-mono text-[12px] leading-tight tracking-tight text-neutral-500"
+            title={`Pixels that stay pure, for the same plot, for any geolocation error within the CE90 (${c.ce90M ?? geoErrM} m): ${fmt(c.geoRobustPure ?? 0)} px.${c.geoMean !== undefined ? ` Pure share computed with σeff instead: ${pct0(c.geoMean)}.` : ''}`}>
+            within CE90 <span className={c.geoRobust < 0.5 ? 'text-rose-400' : 'text-neutral-300'}>{pct0(c.geoRobust)}</span>
           </div>
         )}
-        {/* The plot is what a variety trial is read by: a rung can carry a fine
-            share and still leave whole plots with nothing to follow. Counted
-            over the robust set when a geolocation error is set. */}
+        {/* Pure pixels per plot, over the robust set when there is one: the
+            fewest any plot holds, or how many plots hold none. The note's
+            closed-form minimum plot side is in the tooltip; the plot-size card
+            of step 3 gives the size a design needs. */}
         {(() => {
-          const t = geoErrM > 0 && c.plotsRobust ? c.plotsRobust : c.plots;
+          const t = c.plotsRobust ?? c.plots;
           if (!t) return null;
+          const small = c.minPlotM !== undefined && c.plotSideM !== undefined && c.plotSideM < c.minPlotM;
           return (
-            <div className="px-0.5 font-mono text-[9px] leading-tight text-neutral-500"
-              title={`Pure pixels per plot${geoErrM > 0 && c.plotsRobust ? `, counting only those that stay pure within the ${geoErrM} m CE90` : ''}: fewest ${t.min}, median ${t.median}. ${t.none} of the ${t.plots} plots have none and cannot be followed at this pixel size`}>
-              plots: min {t.min} · med {t.median}
-              {t.none > 0 && <span className="text-rose-400"> · {t.none}/{t.plots} none</span>}
+            <div className={`whitespace-nowrap px-0.5 font-mono text-[12px] leading-tight tracking-tight ${small && t.none === 0 ? 'text-amber-300/80' : 'text-neutral-500'}`}
+              title={`Number of pure pixels in each plot: minimum ${t.min}, median ${t.median}. A plot without any pure pixel is unusable: ${t.none} of ${t.plots}.${c.minPlotM !== undefined ? ` The note's closed form asks for a plot side of at least ${c.minPlotM.toFixed(1)} m at this pixel size (GSD + 2 z σeff, ε = ${100 - threshold} %)${c.plotSideM !== undefined ? `; here L = ${c.plotSideM} m` : ''}.` : ''}`}>
+              {t.none > 0
+                ? <span className="text-rose-400">{t.none}/{t.plots} plots empty</span>
+                : <>min <span className="text-neutral-300">{t.min}</span> px / plot</>}
             </div>
           );
         })()}
-        {/* The PHENET note's closed form, so a reader sees what the simulation
-            should find before reading what it found. Amber when the design's
-            own plots are narrower than it asks for. */}
-        {c.minPlotM !== undefined && (
-          <div className={`px-0.5 font-mono text-[9px] leading-tight ${c.plotSideM !== undefined && c.plotSideM < c.minPlotM ? 'text-amber-300/80' : 'text-neutral-600'}`}
-            title={`Smallest plot side that keeps a pure pixel wherever the grid falls, by the PHENET note's closed form: pixel + 2 x z x effective sigma, with z from the ${threshold}% threshold${c.plotSideM !== undefined ? `. This design's plots are ${c.plotSideM} m on their short side` : ''}`}>
-            needs ≥ {c.minPlotM.toFixed(1)} m plots
-          </div>
-        )}
         <div className="pointer-events-none">
           {c.waiting
-            ? <div className="flex items-center justify-center text-[9px] text-neutral-600" style={{ height: 92 }}>…</div>
+            ? <div className="flex items-center justify-center text-[12px] text-neutral-600" style={{ height: 92 }}>…</div>
             : c.tooFew > 0 || !c.pts.length
-            ? <div className="flex items-center justify-center text-center text-[9px] leading-tight text-neutral-500" style={{ height: 92 }}>{c.tooFew} trial px</div>
+            ? <div className="flex items-center justify-center text-center text-[12px] leading-tight text-neutral-500" style={{ height: 92 }}>{c.tooFew} trial px</div>
             : <DotCanvas pts={c.pts} height={92} />}
         </div>
       </button>
@@ -311,17 +321,17 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
     return (
       <div className="grid grid-cols-2 gap-2">
         {pairLabels && (<>
-          <p className="text-[10px] uppercase tracking-wide text-sky-300/80">{pairLabels[0]}</p>
-          <p className="text-[10px] uppercase tracking-wide text-neutral-500">{pairLabels[1]}</p>
+          <p className="text-[13px] uppercase tracking-wide text-sky-300/80">{pairLabels[0]}</p>
+          <p className="text-[13px] uppercase tracking-wide text-neutral-500">{pairLabels[1]}</p>
         </>)}
         {charts.map(c => {
-          // Matched by resolution, not by position, so a missing size can never
+          // Matched by satellite, not by position, so a missing one can never
           // shift every later row out of step.
-          const twin = pairCharts.find(p => Math.abs(p.res - c.res) < 1e-9);
+          const twin = pairCharts.find(p => p.id === c.id);
           return (
-            <Fragment key={c.res}>
-              {panel(c, `a-${c.res}`)}
-              {twin ? panel(twin, `b-${c.res}`, true) : <div />}
+            <Fragment key={c.id}>
+              {panel(c, `a-${c.id}`)}
+              {twin ? panel(twin, `b-${c.id}`, true) : <div />}
             </Fragment>
           );
         })}
@@ -329,7 +339,7 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
     );
   }
 
-  return <div className="grid grid-cols-3 gap-2">{charts.map(c => panel(c, String(c.res)))}</div>;
+  return <div className="grid grid-cols-3 gap-2">{charts.map(c => panel(c, c.id))}</div>;
 }
 
 // Memoised: a parameter change re-renders the whole page, and without this every

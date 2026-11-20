@@ -177,18 +177,24 @@ export function contrastInfo(args: {
   const ZtZ: number[][] = Array.from({ length: NZ }, () => new Array(NZ).fill(0));
   const zMass = new Array(NZ).fill(0);
   const t = new Float64Array(S), z = new Float64Array(NZ);
+  /** The species present in the pixel in hand: one inside a plot, two or three on a border. */
+  const present = new Int32Array(S);
   let total = 0;
 
   for (let k = 0; k < count; k++) {
     const off = offTrial ? offTrial[k] : 0;
     if (off > 0.5) continue;                       // the same rule coverStats uses
     total++;
-    for (let s = 0; s < S; s++) t[s] = species[k * S + s];
+    let m = 0;
+    for (let s = 0; s < S; s++) { const v = species[k * S + s]; t[s] = v; if (v !== 0) present[m++] = s; }
     z[0] = 1; z[1] = bare[k]; z[2] = off;
     for (let i = 0; i < NZ; i++) zMass[i] += Math.abs(z[i]);
-    for (let i = 0; i < S; i++) {
-      for (let j = 0; j < S; j++) TtT[i][j] += t[i] * t[j];
-      for (let j = 0; j < NZ; j++) TtZ[i][j] += t[i] * z[j];
+    // Only the species that are there: a share of 0 adds 0 to every sum it is
+    // in, and with forty varieties that was 1,600 additions of 0 per pixel.
+    for (let a = 0; a < m; a++) {
+      const i = present[a], ti = t[i], rowT = TtT[i], rowZ = TtZ[i];
+      for (let b = 0; b < m; b++) { const j = present[b]; rowT[j] += ti * t[j]; }
+      for (let j = 0; j < NZ; j++) rowZ[j] += ti * z[j];
     }
     for (let i = 0; i < NZ; i++) for (let j = 0; j < NZ; j++) ZtZ[i][j] += z[i] * z[j];
   }
@@ -389,6 +395,14 @@ export function pureEfficiency(sim: FieldSim, plantedPx: number | null): Resolvi
  */
 export const CE90_TO_SIGMA = 2.1460;
 
+/**
+ * The CE90 in force at one pixel size, in metres: the PHENET note's default
+ * while no figure is typed (sigma_geo = GSD / 3, so CE90 = 2.146 GSD / 3, which
+ * follows the pixel size), else the figure typed, the same at every size. One
+ * definition for the page (use-grid) and for a rung computed away from it.
+ */
+export const ce90For = (auto: boolean, manualM: number, res: number): number => (auto ? (CE90_TO_SIGMA * res) / 3 : manualM);
+
 /** Cover ids at or below this are plots or species; above it are the sentinels. */
 const MAX_CROP_COVER = 252;
 
@@ -468,6 +482,42 @@ export function robustMask(nominal: ArrayLike<number>, shifted: ArrayLike<number
     out[k] = ok;
   }
   return out;
+}
+
+/**
+ * `robustMask`, asked a placement at a time, and asking each placement only
+ * about the pixels still standing.
+ *
+ * A pixel that is not pure where the image is meant to be has nothing to lose,
+ * and one that has already changed at an earlier placement is settled: neither
+ * needs simulating again. On a trial where a third of the pixels are pure and
+ * half of those hold, that is most of eight simulations not run. `alive` is
+ * what to ask the next placement about (see fieldVerdicts' `need`), `take`
+ * hands back its verdicts, and once nothing is `left` the rest can be skipped.
+ * When every placement has been taken, `alive` IS robustMask's answer.
+ */
+export function holdTracker(nominal: ArrayLike<number>): {
+  alive: Uint8Array; left: () => number; take: (verdict: ArrayLike<number>) => void;
+} {
+  const alive = new Uint8Array(nominal.length);
+  let left = 0;
+  for (let k = 0; k < nominal.length; k++) if (nominal[k] <= MAX_CROP_COVER) { alive[k] = 1; left++; }
+  return {
+    alive,
+    left: () => left,
+    take: verdict => {
+      for (let k = 0; k < alive.length; k++) if (alive[k] && verdict[k] !== nominal[k]) { alive[k] = 0; left--; }
+    },
+  };
+}
+
+/** The whole of it in one call: `verdictAt(s, need)` is placement s, asked about the pixels `need` marks. */
+export function heldMask(
+  nominal: ArrayLike<number>, placements: number, verdictAt: (s: number, need: Uint8Array) => ArrayLike<number>,
+): Uint8Array {
+  const hold = holdTracker(nominal);
+  for (let s = 0; s < placements && hold.left() > 0; s++) hold.take(verdictAt(s, hold.alive));
+  return hold.alive;
 }
 
 /** Pure pixels per plot: what a variety trial is actually read by. */

@@ -25,9 +25,9 @@ function AreaStepBody(p: StepProps) {
             onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
             placeholder="Find a place…"
             autoComplete="off"
-            className="min-w-0 flex-1 rounded-md border border-white/10 bg-neutral-900 px-3 py-2 text-sm text-neutral-100 placeholder:text-neutral-500 focus:border-sky-500 focus:outline-none"
+            className="min-w-0 flex-1 rounded-md border border-white/10 bg-neutral-900 px-3 py-2 text-[15px] text-neutral-100 placeholder:text-neutral-500 focus:border-sky-500 focus:outline-none"
           />
-          <button type="submit" className="rounded-md border border-white/10 bg-neutral-800 px-3 py-2 text-sm text-neutral-200 hover:bg-neutral-700">
+          <button type="submit" className="rounded-md border border-white/10 bg-neutral-800 px-3 py-2 text-[15px] text-neutral-200 hover:bg-neutral-700">
             Go
           </button>
           {showSuggestions && suggestions.length > 0 && (
@@ -38,7 +38,7 @@ function AreaStepBody(p: StepProps) {
                     type="button"
                     onMouseDown={e => { e.preventDefault(); pickSuggestion(s); }}
                     onMouseEnter={() => setActiveSuggestion(i)}
-                    className={`block w-full px-3 py-2 text-left text-sm ${
+                    className={`block w-full px-3 py-2 text-left text-[15px] ${
                       i === activeSuggestion ? 'bg-sky-500/15 text-sky-200' : 'text-neutral-300 hover:bg-neutral-800'
                     }`}
                   >
@@ -55,7 +55,7 @@ function AreaStepBody(p: StepProps) {
           {drawMode ? (
             <button
               onClick={cancelDraw}
-              className="flex-1 rounded-md border border-white/15 bg-neutral-800 px-3 py-2 text-sm font-medium text-neutral-200 hover:bg-neutral-700"
+              className="flex-1 rounded-md border border-white/15 bg-neutral-800 px-3 py-2 text-[15px] font-medium text-neutral-200 hover:bg-neutral-700"
             >
               Cancel drawing
             </button>
@@ -63,18 +63,18 @@ function AreaStepBody(p: StepProps) {
             <>
               <button
                 onClick={() => startDraw('rect')}
-                className="flex-1 rounded-md bg-sky-500 px-3 py-2 text-sm font-medium text-white hover:bg-sky-400"
+                className="flex-1 rounded-md bg-sky-500 px-3 py-2 text-[15px] font-medium text-white hover:bg-sky-400"
               >
                 {aoi ? 'Box' : 'Draw a box'}
               </button>
               <button
                 onClick={() => startDraw('poly')}
-                className="flex-1 rounded-md border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-sm font-medium text-sky-300 hover:bg-sky-500/20"
+                className="flex-1 rounded-md border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-[15px] font-medium text-sky-300 hover:bg-sky-500/20"
               >
                 {aoi ? 'Shape' : 'Trace field shape'}
               </button>
               {aoi && (
-                <button onClick={clearAoi} className="rounded-md border border-white/10 bg-neutral-800 px-3 py-2 text-sm text-neutral-300 hover:bg-neutral-700">
+                <button onClick={clearAoi} className="rounded-md border border-white/10 bg-neutral-800 px-3 py-2 text-[15px] text-neutral-300 hover:bg-neutral-700">
                   Clear
                 </button>
               )}
@@ -83,7 +83,7 @@ function AreaStepBody(p: StepProps) {
         </div>
 
         {aoi && !drawMode && (
-          <div className="flex items-center gap-2 text-[11px]">
+          <div className="flex items-center gap-2 text-[14px]">
             <button
               onClick={saveDefaultField}
               className="rounded-md border border-sky-500/40 bg-sky-500/10 px-2.5 py-1 font-medium text-sky-300 transition-colors hover:bg-sky-500/20"
@@ -100,7 +100,7 @@ function AreaStepBody(p: StepProps) {
         )}
 
         {!aoi && (
-          <p className="text-[11px] leading-relaxed text-neutral-400">
+          <p className="text-[14px] leading-relaxed text-neutral-400">
             Find your area in <span className="text-neutral-200">Satellite</span> view (top-right), then
             <span className="text-neutral-200"> Draw a box</span> for a quick rectangle, or
             <span className="text-neutral-200"> Trace field shape</span> to click around an irregular field.

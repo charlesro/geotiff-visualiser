@@ -60,11 +60,11 @@ export function ImportPanel({ design, varieties, busy, error, onFiles, onRemove,
           onDragOver={e => { e.preventDefault(); setOver(true); }}
           onDragLeave={() => setOver(false)}
           onDrop={e => { e.preventDefault(); setOver(false); take(e.dataTransfer.files); }}
-          className={`flex w-full flex-col items-center gap-1 rounded-md border border-dashed px-3 py-4 text-center text-[11px] transition-colors ${over ? 'border-sky-400 bg-sky-500/10 text-sky-200' : 'border-white/15 text-neutral-400 hover:border-sky-500/50 hover:text-neutral-200'}`}>
+          className={`flex w-full flex-col items-center gap-1 rounded-md border border-dashed px-3 py-4 text-center text-[14px] transition-colors ${over ? 'border-sky-400 bg-sky-500/10 text-sky-200' : 'border-white/15 text-neutral-400 hover:border-sky-500/50 hover:text-neutral-200'}`}>
           {busy
             ? <span className="flex items-center gap-1.5 text-sky-300"><Spinner className="h-3 w-3" /> Reading the plots…</span>
             : <>
-                <span className="text-xs text-neutral-200">Drop your trial's plot file, or click to choose</span>
+                <span className="text-[14px] text-neutral-200">Drop your trial's plot file, or click to choose</span>
                 <span className="text-neutral-500">Zipped shapefile, its .shp .dbf .prj parts, GeoJSON, KML or KMZ</span>
               </>}
         </button>
@@ -76,17 +76,17 @@ export function ImportPanel({ design, varieties, busy, error, onFiles, onRemove,
           onDragOver={e => { e.preventDefault(); setOver(true); }}
           onDragLeave={() => setOver(false)}
           onDrop={e => { e.preventDefault(); setOver(false); take(e.dataTransfer.files); }}
-          className={`rounded-md border px-2.5 py-2 text-[11px] text-neutral-300 transition-colors ${over ? 'border-sky-400 bg-sky-500/10' : 'border-white/10 bg-white/[0.02]'}`}>
+          className={`rounded-md border px-2.5 py-2 text-[14px] text-neutral-300 transition-colors ${over ? 'border-sky-400 bg-sky-500/10' : 'border-white/10 bg-white/[0.02]'}`}>
           <div className="flex items-center gap-2">
             <span className="min-w-0 flex-1 truncate font-mono text-neutral-100" title={design.fileName}>{design.fileName}</span>
             <button type="button" onClick={pick} disabled={busy}
               title="Import another file, or drop one on this card"
-              className="flex shrink-0 items-center gap-1 rounded border border-white/15 px-1.5 py-0.5 text-[10px] text-neutral-200 transition-colors hover:border-sky-500/60 hover:text-sky-200 disabled:opacity-40">
+              className="flex shrink-0 items-center gap-1 rounded border border-white/15 px-1.5 py-0.5 text-[13px] text-neutral-200 transition-colors hover:border-sky-500/60 hover:text-sky-200 disabled:opacity-40">
               {busy ? <Spinner className="h-3 w-3" /> : <Upload className="h-3 w-3" />} Replace file
             </button>
             <button type="button" onClick={onRemove}
               title="Drop the trial and put your own field back"
-              className="shrink-0 rounded px-1.5 py-0.5 text-[10px] text-neutral-400 hover:text-rose-300">Remove</button>
+              className="shrink-0 rounded px-1.5 py-0.5 text-[13px] text-neutral-400 hover:text-rose-300">Remove</button>
           </div>
           <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
             <span><span className="font-mono text-neutral-100">{fmt(design.plots.length)}</span> plots</span>
@@ -130,7 +130,7 @@ export function ImportPanel({ design, varieties, busy, error, onFiles, onRemove,
               was read, and it moves again on every turn of the trial. Saying so
               here is the only place the user finds out why their drawn field is
               gone, and that Remove is what gives it back. */}
-          <p className="mt-2 text-[10px] leading-snug text-neutral-500">
+          <p className="mt-2 text-[13px] leading-snug text-neutral-500">
             The area measured is now the trial's outline, not the field you drew. Remove puts yours back.
           </p>
           {warnings.length > 0 && (
@@ -141,8 +141,8 @@ export function ImportPanel({ design, varieties, busy, error, onFiles, onRemove,
         </div>
       )}
 
-      {error && <p className="text-[11px] leading-snug text-rose-300">{error}</p>}
-      <p className="text-[10px] text-neutral-600">Read in your browser. The file is not sent anywhere.</p>
+      {error && <p className="text-[14px] leading-snug text-rose-300">{error}</p>}
+      <p className="text-[13px] text-neutral-600">Read in your browser. The file is not sent anywhere.</p>
     </div>
   );
 }

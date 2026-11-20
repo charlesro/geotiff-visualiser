@@ -7,7 +7,8 @@ import { PcaScatterCanvas, SymbolIcon } from './PcaScatterCanvas';
 import { BARE, OFF_TRIAL, type FieldParams, type FieldSim } from './simulate';
 import { coverShares, fmt } from './util';
 import { DR_METHODS, type DrMethod } from '../lib/projections';
-import { oneOf, usePersistentState } from './persist';
+import { isBool, oneOf, usePersistentState } from './persist';
+import { Disclosure } from './ui';
 import { SYMS, axisSigns, fitCover, pointStyle, type ColorBy, type ShapeBy } from './pca-field';
 
 /**
@@ -19,11 +20,11 @@ import { SYMS, axisSigns, fitCover, pointStyle, type ColorBy, type ShapeBy } fro
  */
 
 /** Most species keys listed under the scatter before the rest are summarised. */
-const LEGEND_MAX = 12;
+const LEGEND_MAX = 6;
 
 const AXIS_ABBR: Partial<Record<DrMethod, string>> = { pca: 'PC', whitened: 'PC', ica: 'IC', mnf: 'MNF', random: 'RP', kpca: 'KPC', isomap: 'Iso', diffusion: 'DC', tsne: 'tSNE' };
 
-const selectClass = 'rounded-md border border-white/10 bg-neutral-900 px-2 py-1 text-xs text-neutral-200 focus:border-sky-500 focus:outline-none';
+const selectClass = 'rounded-md border border-white/10 bg-neutral-900 px-2 py-1 text-[14px] text-neutral-200 focus:border-sky-500 focus:outline-none';
 
 function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, planted, onSelect, busy, colorBy, setColorBy, shapeBy, setShapeBy }: {
   sim: FieldSim;
@@ -65,6 +66,9 @@ function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, plant
   // Pixel selection (→ highlighted on the map). Click one, or lasso many.
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [lassoOn, setLassoOn] = useState(false);
+  // The five selects under the chart, folded: they are set once and then read
+  // as five more things between the chart and the ladder it is compared with.
+  const [controlsOpen, setControlsOpen] = usePersistentState('pcaControlsOpen', false, isBool);
   const pick = (ids: number[]) => { setSelected(new Set(ids)); onSelect?.(ids); };
   // Clear the selection whenever the underlying data changes.
   useEffect(() => { setSelected(new Set()); onSelect?.([]); }, [sim]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -123,7 +127,7 @@ function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, plant
   }, [sim, names.join('|'), colors.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
   const pctOf = (n: number) => (purity.total ? `${((100 * n) / purity.total).toFixed(0)}%` : '');
   const purityRow = (key: string, label: string, color: string, count: number, muted = false) => (
-    <div key={key} className="grid grid-cols-[minmax(0,8rem)_1fr_4.5rem] items-center gap-2 text-[11px]">
+    <div key={key} className="grid grid-cols-[minmax(0,8rem)_1fr_4.5rem] items-center gap-2 text-[14px]">
       <span className={`flex min-w-0 items-center gap-1.5 ${muted ? 'text-neutral-500' : 'text-neutral-300'}`}>
         <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: color }} />
         <span className="truncate" title={label}>{label}</span>
@@ -138,29 +142,21 @@ function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, plant
   );
 
   return (
-    // Fragment (not a wrapper div) so the sticky chart's containing block is the
-    // whole step: it stays pinned while the parameters below it scroll.
     <>
-      {/* Chart stays pinned at the top so you keep an eye on it while editing the
-          field / plant parameters that scroll underneath it. */}
-      <div className="sticky top-0 z-20 -mx-4 space-y-2 bg-[#11151a] px-4 pb-2 pt-1 shadow-[0_10px_12px_-8px_rgba(0,0,0,0.8)]">
-        <div className="flex items-center gap-1 border-b border-white/10 text-xs">
+      {/* The chart is NOT pinned any more. It used to stay at the top of the
+          step while the rest scrolled under it, so that it could be watched
+          while retuning the design; in a window 650 px tall the pinned block
+          was 400 of them, and what scrolled under it, the resolution ladder,
+          was read through a slot a few lines high. */}
+      <div className="space-y-2">
+        {/* Four tabs across the panel and nothing else on their row: the pixel
+            count and the lasso were on it too, and wrapped it in a narrow panel. */}
+        <div className="flex items-center border-b border-white/10 text-[14px]">
           {(['scatter', 'variance', 'loadings', 'purity'] as const).map(t => (
             <button key={t} onClick={() => setTab(t)}
-              className={`px-2.5 py-1 capitalize ${tab === t ? 'border-b-2 border-sky-500 text-sky-300' : 'text-neutral-500 hover:text-neutral-300'}`}>{t}</button>
+              className={`flex-1 px-1 py-1 text-center capitalize ${tab === t ? 'border-b-2 border-sky-500 text-sky-300' : 'text-neutral-500 hover:text-neutral-300'}`}>{t}</button>
           ))}
-          {working && (
-            <span className="ml-auto flex items-center gap-1 text-[10px] text-sky-300">
-              <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-sky-400/25 border-t-sky-400" /> updating…
-            </span>
-          )}
-          {hasSel
-            ? <button onClick={() => pick([])} className={`rounded border border-yellow-400/40 bg-yellow-400/10 px-2 py-0.5 text-[10px] text-yellow-300 hover:bg-yellow-400/20 ${working ? '' : 'ml-auto'}`}>{selected.size} selected · clear</button>
-            : <span className={`text-[11px] text-neutral-500 ${working ? '' : 'ml-auto'}`}>{points.length} px</span>}
-          <button onClick={() => setLassoOn(v => !v)} title="Draw a lasso to select pixels"
-            className={`rounded border px-2 py-0.5 text-[10px] ${lassoOn ? 'border-sky-400/50 bg-sky-500/15 text-sky-300' : 'border-white/10 text-neutral-400 hover:text-neutral-200'}`}>
-            {lassoOn ? '✓ Lasso' : 'Lasso'}
-          </button>
+          {working && <span title="Updating" className="ml-1 inline-block h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-sky-400/25 border-t-sky-400" />}
         </div>
 
         {tab === 'scatter' && (
@@ -172,7 +168,7 @@ function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, plant
                   only a handful of pixels in a large drawn area, and ground
                   outside it is not a sample of the experiment. */}
               {fit.tooFew > 0 && (
-                <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-1 px-8 text-center text-[11px] leading-snug text-neutral-400">
+                <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-1 px-8 text-center text-[14px] leading-snug text-neutral-400">
                   <span className="text-neutral-300">
                     Only {fit.tooFew} pixel{fit.tooFew === 1 ? '' : 's'} sample{fit.tooFew === 1 ? 's' : ''} the trial here.
                   </span>
@@ -180,7 +176,7 @@ function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, plant
                 </div>
               )}
               <div style={{ opacity: working ? 0.45 : 1, transition: 'opacity 0.15s' }}>
-                <PcaScatterCanvas points={points} selected={selected} height={280}
+                <PcaScatterCanvas points={points} selected={selected} height={200}
                   xLabel={axLabel(cx)} yLabel={axLabel(cy)} lassoOn={lassoOn} onPick={pick}
                   renderTooltip={p => {
                     const c = coverShares(p.fr, p.bare, p.off);
@@ -197,10 +193,21 @@ function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, plant
               </div>
             </div>
 
+            {/* What is on the chart and the one tool that acts on it. */}
+            <div className="flex items-center justify-between gap-2 text-[13px]">
+              {hasSel
+                ? <button onClick={() => pick([])} className="rounded border border-yellow-400/40 bg-yellow-400/10 px-2 py-0.5 text-yellow-300 hover:bg-yellow-400/20">{selected.size} selected · clear</button>
+                : <span className="text-neutral-500">{fmt(points.length)} px</span>}
+              <button onClick={() => setLassoOn(v => !v)} title="Draw a lasso on the chart to select pixels; they are highlighted on the map"
+                className={`rounded border px-2 py-0.5 ${lassoOn ? 'border-sky-400/50 bg-sky-500/15 text-sky-300' : 'border-white/10 text-neutral-400 hover:text-neutral-200'}`}>
+                {lassoOn ? '✓ Lasso' : 'Lasso'}
+              </button>
+            </div>
+
             {/* One entry per species. The old key was a fixed triangle and
                 square over two names, and a two-stop gradient: with four
                 species it described a mixture that does not exist. */}
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-neutral-400">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-neutral-400">
               {/* With shapes on, each key shows that species' SHAPE too: in the
                   pure/mixed colour mode the dots are green and red, and the shape
                   is the only thing left saying which species a dot is. */}
@@ -218,7 +225,9 @@ function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, plant
                   soil and off-trial ground too, so brown and grey dots appear
                   there as well. One swatch per kind actually on the chart. */}
               {names.length > LEGEND_MAX && (
-                <button type="button" onClick={() => setTab('purity')} className="text-neutral-500 underline-offset-2 hover:text-neutral-300 hover:underline">
+                <button type="button" onClick={() => setTab('purity')}
+                  title={`The Purity tab lists every one.${names.length > SYMS.length && shapeBy === 'species' ? ` Shapes repeat past ${SYMS.length} species; colour is the key.` : ''}`}
+                  className="text-neutral-500 underline-offset-2 hover:text-neutral-300 hover:underline">
                   + {names.length - (LEGEND_MAX - 1)} more
                 </button>
               )}
@@ -234,7 +243,9 @@ function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, plant
                   mostly outside the trial
                 </span>
               )}
-              {names.length > SYMS.length && shapeBy === 'species' && (
+              {/* Past the key's own length the note about repeating shapes is on
+                  the "+ n more" link; below it, it is said here, once. */}
+              {names.length > SYMS.length && names.length <= LEGEND_MAX && shapeBy === 'species' && (
                 <span className="text-neutral-500">shapes repeat past {SYMS.length} species; colour is the key</span>
               )}
             </div>
@@ -247,14 +258,14 @@ function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, plant
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={varData} margin={{ top: 8, right: 8, bottom: 0, left: -20 }}>
                   <CartesianGrid stroke="#ffffff0a" strokeDasharray="3 6" />
-                  <XAxis dataKey="pc" tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={{ stroke: '#ffffff14' }} tickLine={false} />
-                  <YAxis tick={{ fill: '#64748b', fontSize: 10 }} axisLine={{ stroke: '#ffffff14' }} tickLine={false} unit="%" />
-                  <Tooltip contentStyle={{ background: '#11151a', border: '1px solid #ffffff1a', fontSize: 11 }} formatter={(v: number) => `${v}%`} />
+                  <XAxis dataKey="pc" tick={{ fill: '#94a3b8', fontSize: 13 }} axisLine={{ stroke: '#ffffff14' }} tickLine={false} />
+                  <YAxis tick={{ fill: '#64748b', fontSize: 12 }} axisLine={{ stroke: '#ffffff14' }} tickLine={false} unit="%" />
+                  <Tooltip contentStyle={{ background: '#11151a', border: '1px solid #ffffff1a', fontSize: 13 }} formatter={(v: number) => `${v}%`} />
                   <Bar dataKey="explained" fill="#38bdf8" />
                 </BarChart>
               </ResponsiveContainer>
             </div>
-            <p className="mt-1 text-[11px] text-neutral-500">Variance carried by each axis.</p>
+            <p className="mt-1 text-[14px] text-neutral-500">Variance carried by each axis.</p>
           </div>
         )}
 
@@ -266,17 +277,17 @@ function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, plant
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={loadData} margin={{ top: 8, right: 8, bottom: 0, left: -20 }}>
                       <CartesianGrid stroke="#ffffff0a" strokeDasharray="3 6" />
-                      <XAxis dataKey="t" tick={{ fill: '#64748b', fontSize: 10 }} axisLine={{ stroke: '#ffffff14' }} tickLine={false} />
-                      <YAxis tick={{ fill: '#64748b', fontSize: 10 }} axisLine={{ stroke: '#ffffff14' }} tickLine={false} />
-                      <Tooltip contentStyle={{ background: '#11151a', border: '1px solid #ffffff1a', fontSize: 11 }} labelFormatter={(t) => `t ${t}`} />
+                      <XAxis dataKey="t" tick={{ fill: '#64748b', fontSize: 12 }} axisLine={{ stroke: '#ffffff14' }} tickLine={false} />
+                      <YAxis tick={{ fill: '#64748b', fontSize: 12 }} axisLine={{ stroke: '#ffffff14' }} tickLine={false} />
+                      <Tooltip contentStyle={{ background: '#11151a', border: '1px solid #ffffff1a', fontSize: 13 }} labelFormatter={(t) => `t ${t}`} />
                       {fit.loadings.map((_, i) => <Line key={i} type="monotone" dataKey={ax(i)} stroke={loadColors[i % loadColors.length]} dot={false} strokeWidth={1.4} />)}
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
-                <p className="mt-1 text-[11px] text-neutral-500">How each season time-step weights into the components.</p>
+                <p className="mt-1 text-[14px] text-neutral-500">How each season time-step weights into the components.</p>
               </>
             ) : (
-              <p className="text-[11px] text-neutral-500">Loadings aren’t defined for {DR_METHODS.find(m => m.id === method)?.label}.</p>
+              <p className="text-[14px] text-neutral-500">Loadings aren’t defined for {DR_METHODS.find(m => m.id === method)?.label}.</p>
             )}
           </div>
         )}
@@ -305,7 +316,7 @@ function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, plant
                     The same 1,096 pixels were reading 62% on the ladder and 47%
                     here, with nothing on screen to say why. The headline number
                     leads, and the breakdown's own total follows it. */}
-                <p className="mt-2 text-[11px] text-neutral-500">
+                <p className="mt-2 text-[14px] text-neutral-500">
                   <span className="text-neutral-300">{fmt(purity.pureCrop)}</span>
                   {planted != null && planted >= 1
                     ? <> of the {fmt(Math.round(planted))} pixels of crop this design plants are one pure species
@@ -316,16 +327,18 @@ function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, plant
                 </p>
               </>
             ) : (
-              <p className="text-[11px] text-neutral-500">No pixel samples the trial at this size.</p>
+              <p className="text-[14px] text-neutral-500">No pixel samples the trial at this size.</p>
             )}
           </div>
         )}
       </div>
 
-      {/* Chart controls, scrolling under the pinned chart. */}
+      {/* Chart controls, folded under the chart: the fold names what is drawn. */}
       {tab === 'scatter' && (
-        <>
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px] text-neutral-400">
+        <Disclosure
+          label={`Chart settings · ${DR_METHODS.find(m => m.id === method)?.label ?? method} · ${ax(cx)} × ${ax(cy)}`}
+          open={controlsOpen} onToggle={() => setControlsOpen(v => !v)}>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[14px] text-neutral-400">
             <label className="flex items-center gap-1">Method
               <select className={selectClass} value={method} onChange={e => setMethod(e.target.value as DrMethod)}>
                 {DR_METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
@@ -356,7 +369,7 @@ function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, plant
               </select>
             </label>
           </div>
-        </>
+        </Disclosure>
       )}
     </>
   );

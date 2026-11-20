@@ -30,7 +30,7 @@ export interface ScatterPoint {
 }
 
 /** Room for the axes, matching the recharts layout this replaces. */
-const M = { top: 10, right: 12, bottom: 42, left: 42 };
+const M = { top: 10, right: 12, bottom: 46, left: 50 };
 /** Symbol AREA in px², as recharts' <Symbols size>. */
 const AREA = 34;
 /** Hit radius for hover and click, in CSS px. */
@@ -324,10 +324,10 @@ export function PcaScatterCanvas<T extends ScatterPoint>({ points, selected, xLa
         <line x1={M.left} x2={M.left + plotW} y1={M.top + plotH} y2={M.top + plotH} stroke="#ffffff14" />
         <line x1={M.left} x2={M.left} y1={M.top} y2={M.top + plotH} stroke="#ffffff14" />
         {axes.x.ticks.map(t => (
-          <text key={`tx${t}`} x={sx(t)} y={M.top + plotH + 14} textAnchor="middle" fill="#64748b" fontSize={10}>{t.toFixed(2)}</text>
+          <text key={`tx${t}`} x={sx(t)} y={M.top + plotH + 14} textAnchor="middle" fill="#64748b" fontSize={12}>{t.toFixed(2)}</text>
         ))}
         {axes.y.ticks.map(t => (
-          <text key={`ty${t}`} x={M.left - 5} y={sy(t) + 3} textAnchor="end" fill="#64748b" fontSize={10}>{t.toFixed(2)}</text>
+          <text key={`ty${t}`} x={M.left - 5} y={sy(t) + 3} textAnchor="end" fill="#64748b" fontSize={12}>{t.toFixed(2)}</text>
         ))}
         {hovered && hover && (
           <>
@@ -335,12 +335,12 @@ export function PcaScatterCanvas<T extends ScatterPoint>({ points, selected, xLa
             <line x1={M.left} x2={M.left + plotW} y1={layout.py[hover.i]} y2={layout.py[hover.i]} stroke="#475569" strokeDasharray="3 3" />
           </>
         )}
-        <text x={M.left + plotW / 2} y={height - 6} textAnchor="middle" fill="#94a3b8" fontSize={11}>{xLabel}</text>
-        <text transform={`translate(11 ${M.top + plotH / 2}) rotate(-90)`} textAnchor="middle" fill="#94a3b8" fontSize={11}>{yLabel}</text>
+        <text x={M.left + plotW / 2} y={height - 6} textAnchor="middle" fill="#94a3b8" fontSize={13}>{xLabel}</text>
+        <text transform={`translate(11 ${M.top + plotH / 2}) rotate(-90)`} textAnchor="middle" fill="#94a3b8" fontSize={13}>{yLabel}</text>
       </svg>
       <canvas ref={canvasRef} className="pointer-events-none absolute inset-0" style={{ width: '100%', height }} />
       {hovered && (
-        <div ref={tipRef} className="pointer-events-none absolute z-10 max-w-full whitespace-nowrap rounded-md border border-white/10 bg-[#11151a] px-2 py-1 text-[11px] text-slate-300 shadow-lg"
+        <div ref={tipRef} className="pointer-events-none absolute z-10 max-w-full whitespace-nowrap rounded-md border border-white/10 bg-[#11151a] px-2 py-1 text-[14px] text-slate-300 shadow-lg"
           style={{ left: 0, top: 0, visibility: 'hidden' }}>
           {renderTooltip(hovered)}
         </div>

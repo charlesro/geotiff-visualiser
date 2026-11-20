@@ -1,6 +1,6 @@
-import { MAX_COVER, simulateField, type SensorParams, type SimLayout } from './simulate';
+import { MAX_COVER, fieldVerdicts, type SensorParams, type SimLayout } from './simulate';
 import { shiftImportedPlan } from './imported-rotate';
-import { ce90Shifts, robustMask } from './resolving';
+import { ce90Shifts, heldMask } from './resolving';
 import type { S2Grid } from './s2-grid';
 
 /**
@@ -23,23 +23,43 @@ export interface PixelVerdicts {
   robust: Uint8Array | null;
 }
 
+/**
+ * The verdict of every pixel when the image lands (dx, dy) metres from where
+ * its coordinates say.
+ *
+ * The trial moves under a fixed lattice, the same relative displacement as the
+ * image landing elsewhere, and it keeps index k on the same pixel. An imported
+ * plan has no origin to move, so the plan itself is shifted.
+ *
+ * One placement per call, because each is a simulation of the field: the
+ * export runs the eight in a row, the map asks for them one at a time so that
+ * the page stays alive in between.
+ *
+ * `need` marks the pixels the caller will read (the ones still pure at every
+ * placement so far, see holdTracker): the others are not worked out and read
+ * mixed. Without it, every pixel.
+ */
+export function shiftedVerdict(
+  grid: S2Grid, origin: [number, number], layout: SimLayout, sensor: SensorParams, [dx, dy]: [number, number],
+  need: ArrayLike<number> | null = null,
+): Uint8Array {
+  const imported = layout.pattern === 'imported' ? layout.imported : undefined;
+  return imported
+    ? fieldVerdicts(grid, origin, { ...layout, imported: shiftImportedPlan(imported, -dx, -dy) }, sensor, need)
+    : fieldVerdicts(grid, [origin[0] - dx, origin[1] - dy], layout, sensor, need);
+}
+
 export function pixelVerdicts(
   grid: S2Grid, origin: [number, number], layout: SimLayout, sensor: SensorParams, ce90M: number,
 ): PixelVerdicts {
-  const nominal = simulateField(grid, origin, layout, sensor).mixed;
+  const nominal = fieldVerdicts(grid, origin, layout, sensor);
   const n = nominal.length;
   const pure = new Uint8Array(n), cover = new Uint16Array(n);
   for (let k = 0; k < n; k++) if (nominal[k] <= MAX_COVER) { pure[k] = 1; cover[k] = nominal[k] + 1; }
   let robust: Uint8Array | null = null;
   if (ce90M > 0) {
-    // The trial moves under a fixed lattice, the same relative displacement as
-    // the image landing elsewhere, and it keeps index k on the same pixel. An
-    // imported plan has no origin to move, so the plan itself is shifted.
-    const imported = layout.pattern === 'imported' ? layout.imported : undefined;
-    const shifted = ce90Shifts(ce90M).map(([dx, dy]) => (imported
-      ? simulateField(grid, origin, { ...layout, imported: shiftImportedPlan(imported, -dx, -dy) }, sensor).mixed
-      : simulateField(grid, [origin[0] - dx, origin[1] - dy], layout, sensor).mixed));
-    robust = robustMask(nominal, shifted);
+    const shifts = ce90Shifts(ce90M);
+    robust = heldMask(nominal, shifts.length, (s, need) => shiftedVerdict(grid, origin, layout, sensor, shifts[s], need));
   }
   return { pure, cover, robust };
 }

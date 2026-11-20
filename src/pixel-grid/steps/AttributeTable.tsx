@@ -60,7 +60,7 @@ export function AttributeTable({ design, setVarietyColumn }: {
   }, [open, plots, columns]);
 
   if (!columns.length) {
-    return <p className="text-[10px] text-neutral-600">This file carries no attributes, so there is no table to show.</p>;
+    return <p className="text-[13px] text-neutral-600">This file carries no attributes, so there is no table to show.</p>;
   }
 
   const rows = Math.min(plots.length, MAX_ROWS);
@@ -69,7 +69,7 @@ export function AttributeTable({ design, setVarietyColumn }: {
     <div>
       <button type="button" onClick={() => setOpen(v => !v)}
         aria-expanded={open}
-        className="flex items-center gap-1 text-[10px] text-neutral-400 transition-colors hover:text-sky-200">
+        className="flex items-center gap-1 text-[13px] text-neutral-400 transition-colors hover:text-sky-200">
         <Table2 className="h-3 w-3" />
         {open ? 'Hide' : 'Show'} attributes
         <span className="text-neutral-600">
@@ -80,7 +80,7 @@ export function AttributeTable({ design, setVarietyColumn }: {
       {open && distinct && (
         <>
           <div className="mt-1.5 max-h-56 overflow-auto rounded border border-white/10 bg-black/20">
-            <table className="w-max min-w-full border-collapse text-[10px]">
+            <table className="w-max min-w-full border-collapse text-[13px]">
               <thead className="sticky top-0 z-10 bg-[#11151a]">
                 <tr>
                   {/* Not a column of the file: the reader numbers the plots in the
@@ -123,7 +123,7 @@ export function AttributeTable({ design, setVarietyColumn }: {
               </tbody>
             </table>
           </div>
-          <p className="mt-1 text-[10px] text-neutral-600">
+          <p className="mt-1 text-[13px] text-neutral-600">
             {rows < plots.length
               ? <>First {fmt(rows)} of {fmt(plots.length)} rows. The counts in the header are over all {fmt(plots.length)}.</>
               : <>All {fmt(plots.length)} {plots.length === 1 ? 'row' : 'rows'}.</>}

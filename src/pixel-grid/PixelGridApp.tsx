@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import { Layers } from 'lucide-react';
 import { BASEMAPS, type BasemapKey } from './map-layers';
-import { inRange, isBool, isLngLat, oneOf, readSaved, resetSavedState, saveRefusal, usePersistentState, writeSaved } from './persist';
+import { inRange, isBool, isLngLat, isNum, oneOf, readSaved, resetSavedState, saveRefusal, usePersistentState, writeSaved } from './persist';
 import { useAoiField, usePlaceSearch } from './use-area';
 import { useFieldGrid } from './use-grid';
 import { useExperiment, usePcaSim, useSimulation } from './use-simulation';
@@ -11,7 +11,7 @@ import { aoiUtmOrigin } from './s2-grid';
 import { readDesignFiles } from './design-import';
 import { convexHull } from './imported-plan';
 import { polyBbox, viewShowsField } from './geometry';
-import { isAligned, nearestTurn, rotateImportedPlan, stakeOnGrid } from './imported-rotate';
+import { alignedWithin, isAligned, nearestTurn, rotateImportedPlan, shiftImportedPlan, stakeOnGrid } from './imported-rotate';
 import proj4 from 'proj4';
 import { crsToProj4Def } from '../lib/geo';
 import type { ColorBy, ShapeBy } from './pca-field';
@@ -66,7 +66,14 @@ export default function PixelGridApp() {
   const [activeStep, setActiveStep] = usePersistentState<'area' | 'grid' | 'sim' | 'pca' | null>('activeStep', 'grid',
     v => v === null || oneOf('area', 'grid', 'sim', 'pca')(v));
   const toggleStep = (s: 'area' | 'grid' | 'sim' | 'pca') => setActiveStep(cur => (cur === s ? null : s));
-  const simOn = activeStep === 'sim' || activeStep === 'pca';
+  // The simulation is drawn in every step while the map's Simulation button is
+  // on, so a sensor or CE90 typed in step 2 can be watched on the map. Steps 3
+  // and 4 read its result, so there it runs whatever the button says.
+  const [showSim, setShowSim] = usePersistentState('showSim', true, isBool);
+  const simTabOpen = activeStep === 'sim' || activeStep === 'pca';
+  const simOn = showSim || simTabOpen;
+  // Outline the pure pixels of the simulation on the map and dim the others.
+  const [showPure, setShowPure] = usePersistentState('showPure', false, isBool);
 
   // Step 1, the field. `setActiveStep` is passed straight through (never wrapped
   // in an arrow): the drawers reset in-progress geometry when `onDone`'s identity
@@ -91,14 +98,20 @@ export default function PixelGridApp() {
   // toggle, and stays persisted, so turning it off is remembered.
   const [showField, setShowField] = usePersistentState('showField', true, isBool);
   const [showPsf, setShowPsf] = usePersistentState('showPsf', false, isBool);        // draw the sensor PSF footprint on the map
+  const [showSigmas, setShowSigmas] = usePersistentState('showSigmas', false, isBool);  // the three sigmas of the blur budget, as rings
+  const [showSources, setShowSources] = usePersistentState('showSources', false, isBool);  // one pixel's signal as dots, with the share of each cover
   const [fieldOnly, setFieldOnly] = usePersistentState('fieldOnly', false, isBool);  // trim the grid to the traced field
 
   // Disclosure / tab state for the step panels. It lives up here because `Step`
   // unmounts a collapsed panel, which would otherwise reset it every time the
   // user folds a step away.
   const [simAdvOpen, setSimAdvOpen] = usePersistentState('simAdvOpen', false, isBool);
+  const [blurOpen, setBlurOpen] = usePersistentState('blurOpen', false, isBool);
   const [pcaRetuneOpen, setPcaRetuneOpen] = usePersistentState('pcaRetuneOpen', false, isBool);
   const [compareAligned, setCompareAligned] = usePersistentState('compareAligned', false, isBool);  // rotated vs 0° ladders
+  const [ladderView, setLadderView] = usePersistentState<'table' | 'charts'>('ladderView', 'table', oneOf('table', 'charts'));
+  // The count the plot-size card's typed row asks for (steps 2 and 3 show the same card).
+  const [wantPure, setWantPure] = usePersistentState('wantPure', 16, v => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 400);
   /**
    * Where the design was before the aligned placement was adopted from the
    * ladder, so the comparison outlives the choice made with it.
@@ -106,12 +119,19 @@ export default function PixelGridApp() {
    * Picking the aligned panel turns the design to 0, which left the two ladders
    * describing the same thing: the comparison disappeared at the moment it was
    * used, with no way back to the placement it had just been weighed against.
-   * Held here, deliberately NOT persisted: it is about the click just made, and
-   * a refresh is a fresh look at whatever the design is now. Cleared the moment
-   * the angle is set any other way, since then there is no adopted placement to
-   * step back from.
+   *
+   * SAVED, with the kind of design it was adopted for. It was held in memory
+   * only, on the grounds that a refresh is a fresh look at whatever the design
+   * is now; but the turn itself is saved, so a refresh brought back a trial
+   * turned to the pixel rows with nothing left saying where it had been turned
+   * from: one ladder, "vs aligned" greyed out, the original angle gone. What
+   * is read from it is `compareFrom`, further down, which holds only while the
+   * design still sits at the aligned placement. Forgotten the moment the angle
+   * is set any other way, or another trial is read.
    */
-  const [compareFrom, setCompareFrom] = useState<number | null>(null);
+  const [adopted, setAdopted] = usePersistentState<{ deg: number; imported: boolean; to?: number } | null>('compareFrom', null,
+    v => v === null || (typeof v === 'object' && isNum((v as { deg?: unknown }).deg) && isBool((v as { imported?: unknown }).imported)
+      && ((v as { to?: unknown }).to === undefined || isNum((v as { to?: unknown }).to))));
   // PCA point encodings: shared by the big scatter and the ladder thumbnails.
   const [pcaColorBy, setPcaColorBy] = usePersistentState<ColorBy>('pcaColorBy', 'mixing', oneOf('mixing', 'species', 'purity'));
   const [pcaShapeBy, setPcaShapeBy] = usePersistentState<ShapeBy>('pcaShapeBy', 'species', oneOf('species', 'purity', 'none'));
@@ -128,8 +148,8 @@ export default function PixelGridApp() {
     // a state initialiser, where every other saved value fails softly.
     try {
       const v = Number(localStorage.getItem('pgrid_panel_w'));
-      return v >= 320 && v <= 4000 ? clampPanelW(v) : 380;
-    } catch { return 380; }
+      return v >= 320 && v <= 4000 ? clampPanelW(v) : 460;
+    } catch { return 460; }
   });
 
   // Steps 3 and 4: the planting design, the sensor's view of it, and the PCA.
@@ -218,6 +238,8 @@ export default function PixelGridApp() {
       setImportedCurves({});
       setImportedTurn(0);
       setImportedShift([0, 0]);
+      // The angle remembered for the trial this one replaces is not this one's.
+      setAdopted(null);
       setPattern('imported');
       setFieldFromTrial(hull);
       // Someone who has just handed the page their own trial wants to SEE it.
@@ -231,7 +253,7 @@ export default function PixelGridApp() {
     } finally {
       setImportBusy(false);
     }
-  }, [cancelStake, setImportedDesign, setImportedCurves, setImportedTurn, setImportedShift, setPattern, setFieldFromTrial, setShowField]);
+  }, [cancelStake, setImportedDesign, setImportedCurves, setImportedTurn, setImportedShift, setPattern, setFieldFromTrial, setShowField, setAdopted]);
 
   /**
    * The trial is loaded but will not survive a refresh, and WHICH refusal it was
@@ -258,6 +280,30 @@ export default function PixelGridApp() {
       : 'This trial is too large for the browser to remember: it is loaded now, but a refresh will open with no trial.');
   }, [trialUnsaved]);
 
+  /**
+   * The angle the design was turned from, while it still sits where that turn
+   * put it, for the same kind of design: along the pixel rows for the strips
+   * and the block trial, at the angle of the best placement that was picked
+   * for an imported one (`to`). Anything else (a pattern picked since, an
+   * angle typed in a box) and there is no adopted placement to step back
+   * from, whatever is saved. Read against the angle ON SCREEN, so that it
+   * holds from the click and not from the moment a stake lands a little later.
+   *
+   * An imported trial found along the pixel rows with nothing remembered was
+   * turned there before the angle was kept, or by a 0 typed in the box: the
+   * angle it was drawn at is in the file, so it is compared with that, and the
+   * original rotation is never the one thing the page cannot show.
+   */
+  const importedNow = exp.pattern === 'imported';
+  const angleShown = importedNow ? (pendingAngle ?? exp.importedAngle) : exp.rotation;
+  /** Two angles to the pixel rows that are the same one: square pixels look alike a quarter turn round. */
+  const sameAngle = (p: number, q: number) => alignedWithin(p - q, 0.05);
+  const fileFrom = importedNow && exp.importedTurn !== 0 ? { deg: exp.importedFileAngle, to: 0 } : null;
+  const turnedFrom = adopted && adopted.imported === importedNow ? { deg: adopted.deg, to: adopted.to ?? 0 } : fileFrom;
+  const compareFrom = turnedFrom && sameAngle(angleShown, turnedFrom.to) && !sameAngle(turnedFrom.deg, turnedFrom.to) ? turnedFrom.deg : null;
+  /** `to`: the angle of the placement being adopted; the pixel rows when it is not said. */
+  const setCompareFrom = (deg: number | null, to = 0) => setAdopted(deg === null ? null : { deg, imported: importedNow, to });
+
   const importApi = {
     // Reading a file, or staking the trial after a turn: both are the page
     // working on the trial, and both are shown by the panel's own spinner.
@@ -270,10 +316,36 @@ export default function PixelGridApp() {
     onRemove: () => {
       cancelStake();
       setImportedDesign(null); setImportedCurves({}); setImportedTurn(0); setImportedShift([0, 0]);
+      setAdopted(null);
       setImportError(null); setPattern('block');
       // The field the trial took over comes back, so removing a file is not a
       // silent way of losing the shape the user traced.
       restoreFieldBeforeTrial();
+    },
+    /**
+     * Put the trial exactly where a rung of the best-placement ladder has it:
+     * the file's trial turned by `turn` degrees, then moved by `shift` metres.
+     * Nothing is searched or staked here, which is the point: the rung was
+     * measured at that placement, and what lands on the map has to be the
+     * rung that was clicked. The turn, the shift and the field's outline land
+     * together or not at all, as in setAngle.
+     */
+    setPlacement: (turn: number, shift: [number, number]) => {
+      const base = exp.importedBasePlan, build = gridApi.build;
+      if (!base || !build?.epsg) return;
+      cancelStake();
+      try {
+        const plan = shiftImportedPlan(rotateImportedPlan(base, turn), shift[0], shift[1]);
+        const toLngLat = proj4(crsToProj4Def(`EPSG:${build.epsg}`), 'EPSG:4326');
+        const ring = plan.footprint.map(q => toLngLat.forward(q) as [number, number]);
+        if (ring.length < 3) throw new Error('Turning this trial left it with no outline.');
+        setImportError(null);
+        setImportedTurn(turn);
+        setImportedShift(shift);
+        setFieldFromTrial(ring);
+      } catch (e) {
+        setImportError(e instanceof Error ? e.message : String(e));
+      }
     },
     /**
      * Turn the trial to `deg` degrees from the pixel rows. The field follows it:
@@ -346,7 +418,7 @@ export default function PixelGridApp() {
   // Only what `geoKey` needs; the panels read the rest straight off `exp`.
   const { layoutSig, sensorSig, cropSig } = exp;
 
-  const simApi = useSimulation({ aoi, gridApi, exp, simOn, fieldOrigin });
+  const simApi = useSimulation({ aoi, gridApi, exp, simOn, showPure, fieldOrigin });
   /**
    * What the export says about each pixel. Assigned here, each render, because
    * only the shell holds both halves: the grid hook that writes the file and
@@ -360,7 +432,7 @@ export default function PixelGridApp() {
     return [
       { name: 'PURE', values: v.pure },
       { name: 'COVER', values: v.cover },
-      ...(v.robust ? [{ name: 'ROBUST', values: v.robust }] : []),
+      ...(v.robust ? [{ name: 'PURE_CE90', values: v.robust }] : []),
     ];
   };
   const { patternOrigin, simSummary } = simApi;
@@ -434,9 +506,10 @@ export default function PixelGridApp() {
 
   const stepProps = { activeStep, toggleStep, area, search, gridApi, exp: shownExp, sim: simApi, pca: pcaApi,
                       areaSummary, gridSummary, simSummary, geoKey, showPsf, setShowPsf,
-                      simAdvOpen, setSimAdvOpen, pcaRetuneOpen, setPcaRetuneOpen,
-                      compareAligned, setCompareAligned, compareFrom, setCompareFrom, setAngleByHand, setActiveStep,
-                      pcaColorBy, setPcaColorBy, pcaShapeBy, setPcaShapeBy, importApi, curvesOpen, setCurvesOpen };
+                      simAdvOpen, setSimAdvOpen, blurOpen, setBlurOpen, pcaRetuneOpen, setPcaRetuneOpen,
+                      compareAligned, setCompareAligned, ladderView, setLadderView, compareFrom, setCompareFrom, setAngleByHand, setActiveStep,
+                      pcaColorBy, setPcaColorBy, pcaShapeBy, setPcaShapeBy, importApi, curvesOpen, setCurvesOpen,
+                      wantPure, setWantPure };
 
   return (
     <div className="flex h-full w-full bg-[#050505] text-neutral-200 font-sans">
@@ -446,7 +519,11 @@ export default function PixelGridApp() {
         basemap={basemap} setBasemap={setBasemap}
         showField={showField} setShowField={setShowField}
         showPsf={showPsf} setShowPsf={setShowPsf}
+        showSigmas={showSigmas} setShowSigmas={setShowSigmas}
+        showSources={showSources} setShowSources={setShowSources}
         fieldOnly={fieldOnly} setFieldOnly={setFieldOnly}
+        showSim={showSim} setShowSim={setShowSim} simLocked={simTabOpen}
+        showPure={showPure} setShowPure={setShowPure}
         simOn={simOn} geoKey={geoKey}
         area={area} gridApi={gridApi} exp={exp} sim={simApi} pca={pcaApi}
       />
@@ -458,19 +535,19 @@ export default function PixelGridApp() {
           className="absolute inset-y-0 -left-1 z-[1200] w-2 cursor-col-resize hover:bg-sky-500/40" />
         <header className="shrink-0 border-b border-white/10 px-4 py-3">
           <div className="flex items-center justify-between gap-2">
-            <h1 className="text-sm font-semibold text-white">Pixel Grid Designer</h1>
+            <h1 className="text-[15px] font-semibold text-white">Pixel Grid Designer</h1>
             <div className="flex shrink-0 items-center gap-1.5">
             <button type="button"
               onClick={() => (confirmReset ? resetSavedState() : setConfirmReset(true))}
               title="Clear the field and all settings (your pinned field stays)"
-              className={`rounded-md border px-2 py-1 text-xs transition-colors ${confirmReset ? 'border-amber-400/60 bg-amber-500/15 text-amber-200' : 'border-white/10 text-slate-400 hover:border-white/25 hover:text-slate-200'}`}>
+              className={`rounded-md border px-2 py-1 text-[14px] transition-colors ${confirmReset ? 'border-amber-400/60 bg-amber-500/15 text-amber-200' : 'border-white/10 text-slate-400 hover:border-white/25 hover:text-slate-200'}`}>
               {confirmReset ? 'Click again to reset' : 'Reset'}
             </button>
             {!STANDALONE && (
               <a
                 href="./"
                 title="Back to the Polygon Time-Series PCA app"
-                className="flex shrink-0 items-center gap-1.5 rounded-md border border-sky-500/40 bg-sky-500/10 px-2.5 py-1 text-xs text-sky-300 transition-colors hover:bg-sky-500/20"
+                className="flex shrink-0 items-center gap-1.5 rounded-md border border-sky-500/40 bg-sky-500/10 px-2.5 py-1 text-[14px] text-sky-300 transition-colors hover:bg-sky-500/20"
               >
                 <Layers className="h-3 w-3" /> Polygon PCA
               </a>
@@ -490,11 +567,6 @@ export default function PixelGridApp() {
 
         </div>
 
-        {!STANDALONE && (
-          <div className="shrink-0 border-t border-white/10 px-4 py-2 text-[11px] text-slate-500">
-            <a href="./" className="text-sky-400 hover:underline">← Polygon Time-Series PCA</a>
-          </div>
-        )}
       </aside>
     </div>
   );

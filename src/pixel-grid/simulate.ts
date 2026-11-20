@@ -242,6 +242,13 @@ export interface AggregateResult {
   cropMapCenter: Uint8Array;
   cropMapProportionA: Float32Array;
   cropMapProportionBare: Float32Array;
+  /**
+   * Share of the pixel's signal held by its dominant cover: the figure the
+   * mixed threshold is compared with. It was computed for every pixel and then
+   * dropped, so a pixel could say whether it passed but not by how much. 0
+   * where the pixel saw nothing at all.
+   */
+  cropMapPurity: Float32Array;
   simsGrid: Float64Array[];
   /**
    * Per-species composition, present only when the caller passes nSpecies > 0.
@@ -410,7 +417,7 @@ function resolvePixels(
   coverSpecies: Uint8Array | null,
   centreCover: (gr: number, gc: number) => number,
 ): void {
-  const { rowsAgg, colsAgg, cropMapCenter, cropMapMajority, cropMapMixed, cropMapProportionA, cropMapProportionBare,
+  const { rowsAgg, colsAgg, cropMapCenter, cropMapMajority, cropMapMixed, cropMapProportionA, cropMapProportionBare, cropMapPurity,
     cropMapSpecies, cropMapDominant, cropMapDominantFrac, cropMapDominantPlot, cropMapProportionOffTrial } = out;
   const outGrid = out.simsGrid;
   const { T, means, hasValid, pairStart, pairSlot, pairW, slots } = pc;
@@ -551,6 +558,7 @@ function resolvePixels(
       cropMapCenter[idx] = centerCrop;
       cropMapMajority[idx] = dominantCrop;
       cropMapMixed[idx] = isMixed ? MIXED : dominantCrop;
+      cropMapPurity[idx] = totalCropWeight > 0 ? maxWeight / totalCropWeight : 0;
       cropMapProportionA[idx] = totalCropWeight > 0 ? finWeight(slots, seen, fin, stamp, 0) / totalCropWeight : 0;
       cropMapProportionBare[idx] = totalCropWeight > 0 ? finWeight(slots, seen, fin, stamp, BARE.id) / totalCropWeight : 0;
     }
@@ -612,6 +620,7 @@ export function aggregate(
   const cropMapMixed = new Uint8Array(rowsAgg * colsAgg);
   const cropMapProportionA = new Float32Array(rowsAgg * colsAgg);
   const cropMapProportionBare = new Float32Array(rowsAgg * colsAgg);
+  const cropMapPurity = new Float32Array(rowsAgg * colsAgg);
   // Allocated only when asked for, so the two-species path is unchanged.
   const nSp = Math.max(0, nSpecies | 0);
   const cells = rowsAgg * colsAgg;
@@ -797,7 +806,7 @@ export function aggregate(
     return centerCrop;
   };
 
-  const result: AggregateResult = { rowsAgg, colsAgg, cropMapMixed, cropMapMajority, cropMapCenter, cropMapProportionA, cropMapProportionBare,
+  const result: AggregateResult = { rowsAgg, colsAgg, cropMapMixed, cropMapMajority, cropMapCenter, cropMapProportionA, cropMapProportionBare, cropMapPurity,
                                     simsGrid: outGrid, cropMapSpecies, cropMapDominant, cropMapDominantFrac, cropMapDominantPlot, cropMapProportionOffTrial };
   resolvePixels(result, { T, means, hasValid, pairStart, pairSlot, pairW, slots }, nSp, spScratch,
                 sigmaX, sigmaY, includeOutside, mixThreshold, offX, offY, coverSpecies, centre);
@@ -1106,8 +1115,9 @@ export function stakeBlockPlan(
       // Shifting u0/v0 IS the phase: the plan's geometry is unchanged and only
       // where it sits against the lattice moves, so no plan is rebuilt.
       const cand: BlockPlan = { ...base, u0: base.u0 + du, v0: base.v0 + dv };
-      const sim = simulateField(box, origin, { pattern: 'block', width: 2, spacing: 0, rotationDeg, block: cand }, sensor);
-      if (sim.pureCrop > bestScore) { bestScore = sim.pureCrop; best = cand; bestOff = [du, dv]; }
+      // Only the count is read, so only the verdicts are worked out.
+      const pure = pureVerdictCount(fieldVerdicts(box, origin, { pattern: 'block', width: 2, spacing: 0, rotationDeg, block: cand }, sensor));
+      if (pure > bestScore) { bestScore = pure; best = cand; bestOff = [du, dv]; }
     }
   }
   return { plan: best, offset: bestOff, staked: true };
@@ -2262,6 +2272,7 @@ function aggregateImported(
   const cropMapMixed = new Uint8Array(cells);
   const cropMapProportionA = new Float32Array(cells);
   const cropMapProportionBare = new Float32Array(cells);
+  const cropMapPurity = new Float32Array(cells);
   const nSp = Math.max(0, nSpecies | 0);
   const cropMapSpecies = nSp > 0 ? new Float32Array(cells * nSp) : null;
   const cropMapDominant = nSp > 0 ? new Uint8Array(cells) : null;
@@ -2287,7 +2298,7 @@ function aggregateImported(
     centre = new Uint8Array(cells);
   }
 
-  const result: AggregateResult = { rowsAgg, colsAgg, cropMapMixed, cropMapMajority, cropMapCenter, cropMapProportionA, cropMapProportionBare,
+  const result: AggregateResult = { rowsAgg, colsAgg, cropMapMixed, cropMapMajority, cropMapCenter, cropMapProportionA, cropMapProportionBare, cropMapPurity,
                                     simsGrid: outGrid, cropMapSpecies, cropMapDominant, cropMapDominantFrac, cropMapDominantPlot, cropMapProportionOffTrial };
   resolvePixels(result, pc, nSp, spScratch, sensor.sigmaX, sensor.sigmaY, true, sensor.mixThreshold, sensor.offX ?? 0, sensor.offY ?? 0,
                 coverSpecies, (gr, gc) => centre[gr * colsAgg + gc]);
@@ -2426,14 +2437,95 @@ function buildCropMap(
   }
   const t = (layout.rotationDeg * Math.PI) / 180;
   const cos = Math.cos(t), sin = Math.sin(t);
+  const pattern = layout.pattern;
+  // Every cell is patternCultureUV(u, v) with
+  //   u = dx * cos + dy * sin,  v = -dx * sin + dy * cos,
+  // and what follows only avoids working that out a cell at a time where the
+  // answer is known sooner. The map is the same byte for byte (the suite checks
+  // it against the cell-by-cell definition).
+  if (sin === 0 && rows > 0 && cols > 0) {
+    // Along the pixel rows u is the column's and v is the row's: dy * 0 and
+    // dx * 0 are zeros, and adding a zero changes nothing but, at most, the
+    // sign of a zero, which no comparison, floor or remainder below can see.
+    // So each axis is classified once, and a cell is a lookup in the two.
+    const uCol = new Float64Array(cols), vRow = new Float64Array(rows);
+    const dy0 = minN + 0.5 * fineRes - patternOy, dx0 = minE + 0.5 * fineRes - patternOx;
+    for (let c = 0; c < cols; c++) { const dx = minE + (c + 0.5) * fineRes - patternOx; uCol[c] = dx * cos + dy0 * sin; }
+    for (let r = 0; r < rows; r++) { const dy = minN + (r + 0.5) * fineRes - patternOy; vRow[r] = -dx0 * sin + dy * cos; }
+    if (pattern === 'row' || pattern === 'strip-row-2') {
+      for (let r = 0; r < rows; r++) map.fill(patternCultureUV(uCol[0], vRow[r], layout), r * cols, (r + 1) * cols);
+      return map;
+    }
+    if (pattern === 'col' || pattern === 'strip-col-2') {
+      const first = map.subarray(0, cols);
+      for (let c = 0; c < cols; c++) first[c] = patternCultureUV(uCol[c], vRow[0], layout);
+      for (let r = 1; r < rows; r++) map.copyWithin(r * cols, 0, cols);
+      return map;
+    }
+    if (pattern === 'checker') {
+      const W = layout.width, P = W + Math.max(0, layout.spacing || 0);
+      const inU = new Uint8Array(cols), iU = new Float64Array(cols);
+      for (let c = 0; c < cols; c++) { const u = uCol[c]; inU[c] = (((u % P) + P) % P) < W ? 1 : 0; iU[c] = Math.floor(u / P); }
+      for (let r = 0; r < rows; r++) {
+        const v = vRow[r], base = r * cols;
+        if (!((((v % P) + P) % P) < W)) { map.fill(BARE.id, base, base + cols); continue; }
+        const iV = Math.floor(v / P);
+        for (let c = 0; c < cols; c++) map[base + c] = inU[c] ? (((iU[c] + iV) % 2) + 2) % 2 : BARE.id;
+      }
+      return map;
+    }
+    if (pattern === 'block') {
+      const p = layout.block;
+      if (!p) { map.fill(OFF_TRIAL.id); return map; }
+      // blockCoverUV, one axis at a time: its tests on u, then its tests on v.
+      const colOff = new Uint8Array(cols), colAlley = new Uint8Array(cols), colI = new Float64Array(cols);
+      for (let c = 0; c < cols; c++) {
+        const du = uCol[c] - p.u0;
+        if (du < 0 || du >= p.totalU) { colOff[c] = 1; continue; }
+        const ci = Math.floor(du / p.pitchU);
+        colI[c] = ci;
+        if (du - ci * p.pitchU >= p.blockU) colAlley[c] = 1;
+      }
+      const pitch = p.design.plotWidth + p.design.plotAlley, nSp = p.design.nSpecies, nBlocks = p.design.nBlocks;
+      for (let r = 0; r < rows; r++) {
+        const base = r * cols, dv = vRow[r] - p.v0;
+        if (dv < 0 || dv >= p.totalV) { map.fill(OFF_TRIAL.id, base, base + cols); continue; }
+        const ri = Math.floor(dv / p.pitchV), vIn = dv - ri * p.pitchV;
+        const k = Math.floor(vIn / pitch);
+        const rowBare = vIn >= p.blockV || k >= nSp || vIn - k * pitch >= p.design.plotWidth;
+        for (let c = 0; c < cols; c++) {
+          if (colOff[c]) { map[base + c] = OFF_TRIAL.id; continue; }
+          const b = ri * p.cols + colI[c];
+          map[base + c] = b >= nBlocks ? OFF_TRIAL.id : colAlley[c] || rowBare ? BARE.id : b * nSp + k;
+        }
+      }
+      return map;
+    }
+  }
+  // Turned: every cell on its own. The two terms that hold along a row are
+  // taken out of the inner loop (the same products, added in the same order),
+  // and the periodic patterns are written out so that no closure is made per cell.
+  const W = layout.width, P = W + Math.max(0, layout.spacing || 0);
+  const rowKind = pattern === 'row' || pattern === 'strip-row-2';
+  const colKind = pattern === 'col' || pattern === 'strip-col-2';
+  const two = pattern === 'strip-row-2' || pattern === 'strip-col-2';
   for (let r = 0; r < rows; r++) {
-    const N = minN + (r + 0.5) * fineRes;
-    for (let c = 0; c < cols; c++) {
-      const E = minE + (c + 0.5) * fineRes;
-      const dx = E - patternOx, dy = N - patternOy;
-      const u = dx * cos + dy * sin;
-      const v = -dx * sin + dy * cos;
-      map[r * cols + c] = patternCultureUV(u, v, layout);
+    const dy = minN + (r + 0.5) * fineRes - patternOy;
+    const dySin = dy * sin, dyCos = dy * cos, base = r * cols;
+    if (rowKind || colKind) {
+      for (let c = 0; c < cols; c++) {
+        const dx = minE + (c + 0.5) * fineRes - patternOx;
+        const x = rowKind ? -dx * sin + dyCos : dx * cos + dySin;
+        if (!((((x % P) + P) % P) < W)) { map[base + c] = BARE.id; continue; }
+        let i = Math.floor(x / P);
+        if (two) i = Math.floor(i / 2);
+        map[base + c] = ((i % 2) + 2) % 2;
+      }
+    } else {
+      for (let c = 0; c < cols; c++) {
+        const dx = minE + (c + 0.5) * fineRes - patternOx;
+        map[base + c] = patternCultureUV(dx * cos + dySin, -dx * sin + dyCos, layout);
+      }
     }
   }
   return map;
@@ -2443,6 +2535,14 @@ export interface FieldSim {
   proportionA: Float32Array;    // per sensor pixel, aligned to grid.cells order
   proportionBare: Float32Array; // fraction of bare-soil gap in the pixel
   mixed: Uint8Array;            // MIXED, a sentinel, else the dominant cover id
+  /**
+   * Per pixel, the share of its signal held by its dominant cover, and that
+   * cover's id whether or not it clears the threshold: what the map says about
+   * the pixel under the pointer. Present on a simulation of a whole grid
+   * (simulateField); the subsets cut from one for the PCA do not carry them.
+   */
+  purity?: Float32Array;
+  dominant?: Uint8Array;
   purePct: number;              // % of TRIAL pixels that are a pure single crop
   /** The count behind purePct: pure single-crop pixels. */
   pureCrop: number;
@@ -2569,8 +2669,411 @@ export function meanPerSpecies(
   return out;
 }
 
-/** Run the repo aggregate over the real grid's sensor cells. */
+// ===== the driver's own path through the engine ==============================
+//
+// `aggregate` is the port of the repo's engine and stays exactly as it is: it
+// takes any series, any rotation and any cover map, and the suite pins it value
+// for value. The page never asks it for any of that. Every simulation the page
+// runs has no series (T = 0), no rotation of the fine grid, a cover map it built
+// itself and weights the outside in, and reads seven arrays of the result.
+//
+// What follows is that one case written on its own: the same sums, of the same
+// numbers, in the same order, so every figure is the one `aggregate` gives, to
+// the last bit (simulateFieldReference is the proof, and the suite compares the
+// two pixel by pixel). It is faster for what it does not do:
+//
+//  - a fine cell is read once, not once per sub-sample (16 reads of one byte);
+//  - nothing is allocated per pixel, and nothing is computed that no caller
+//    reads (the cover at the centre, the dominant species, the dominant plot);
+//  - a pixel whose whole kernel window is one cover is settled without summing:
+//    its shares are w / w and 0 / w whatever the sum comes to;
+//  - a caller that only needs some pixels says which (`need`), and one that
+//    only needs the verdict byte says so (`verdictOnly`).
+
+/** What the driver keeps of a simulation. The arrays past `mixed` are null in a verdict-only run. */
+interface LeanOut {
+  mixed: Uint8Array;
+  majority: Uint8Array | null;
+  purity: Float32Array | null;
+  proportionA: Float32Array | null;
+  proportionBare: Float32Array | null;
+  species: Float32Array | null;
+  offTrial: Float32Array | null;
+}
+
+/**
+ * Phase 1 of `aggregate` for the grid the driver hands it: no rotation, a fine
+ * grid that is a whole number of cells per pixel, no series. All sixteen
+ * sub-samples of a fine cell land on that cell, so a cell counts for sixteen at
+ * once. The pairs come out in first-seen order, as `aggregate` leaves them.
+ */
+function sampledCovers(cropMap: Uint8Array, ny: number, nx: number, g: number): PixelCovers {
+  const cells = ny * nx, cols = nx * g, SS = 16;
+  const pairStart = new Int32Array(cells + 1);
+  let pairCap = cells + 16;
+  let pairSlot = new Int32Array(pairCap);
+  let pairW = new Float64Array(pairCap);
+  let pairLen = 0;
+  const cnt = new Float64Array(256), ord = new Int32Array(256);
+  for (let gr = 0; gr < ny; gr++) {
+    for (let gc = 0; gc < nx; gc++) {
+      let n = 0, runId = 0, run = 0;
+      for (let sy = 0; sy < g; sy++) {
+        const rowBase = (gr * g + sy) * cols + gc * g;
+        for (let sx = 0; sx < g; sx++) {
+          const id = cropMap[rowBase + sx];
+          if (id === runId) { run += SS; continue; }
+          if (run > 0) { if (cnt[runId] === 0) ord[n++] = runId; cnt[runId] += run; }
+          runId = id;
+          run = SS;
+        }
+      }
+      if (run > 0) { if (cnt[runId] === 0) ord[n++] = runId; cnt[runId] += run; }
+      if (pairLen + n > pairCap) {
+        pairCap = Math.max(pairCap * 2, pairLen + n);
+        const nextSlot = new Int32Array(pairCap); nextSlot.set(pairSlot); pairSlot = nextSlot;
+        const nextW = new Float64Array(pairCap); nextW.set(pairW); pairW = nextW;
+      }
+      pairStart[gr * nx + gc] = pairLen;
+      for (let i = 0; i < n; i++) {
+        const slot = ord[i];
+        pairSlot[pairLen] = slot;
+        pairW[pairLen++] = cnt[slot];
+        cnt[slot] = 0;
+      }
+    }
+  }
+  pairStart[cells] = pairLen;
+  return { T: 0, means: [], hasValid: new Uint8Array(0), pairStart, pairSlot, pairW,
+           slots: { cnt, ord, keys: [], index: new Map() } };
+}
+
+/**
+ * 1 for each pixel whose kernel window, cut at the grid's edge, holds one cover
+ * and nothing else: every pixel in it is a single cover (`one`), the same one.
+ * Two passes of runs, along the rows and then down the columns.
+ */
+function uniformWindows(one: Int16Array, rows: number, cols: number, wx: number, wy: number): Uint8Array {
+  const rowOk = new Uint8Array(rows * cols);
+  for (let r = 0; r < rows; r++) {
+    const base = r * cols;
+    let c = 0;
+    while (c < cols) {
+      const s = one[base + c];
+      let e = c + 1;
+      while (e < cols && one[base + e] === s) e++;
+      if (s >= 0) {
+        for (let q = c; q < e; q++) {
+          const c0 = q - wx < 0 ? 0 : q - wx, c1 = q + wx > cols - 1 ? cols - 1 : q + wx;
+          if (c0 >= c && c1 < e) rowOk[base + q] = 1;
+        }
+      }
+      c = e;
+    }
+  }
+  const flat = new Uint8Array(rows * cols);
+  for (let c = 0; c < cols; c++) {
+    let r = 0;
+    while (r < rows) {
+      const k = r * cols + c;
+      if (!rowOk[k]) { r++; continue; }
+      const s = one[k];
+      let e = r + 1;
+      while (e < rows && rowOk[e * cols + c] && one[e * cols + c] === s) e++;
+      for (let q = r; q < e; q++) {
+        const r0 = q - wy < 0 ? 0 : q - wy, r1 = q + wy > rows - 1 ? rows - 1 : q + wy;
+        if (r0 >= r && r1 < e) flat[q * cols + c] = 1;
+      }
+      r = e;
+    }
+  }
+  return flat;
+}
+
+/**
+ * Phase 2 for the driver: `resolvePixels` with no series, the outside weighed
+ * in, and plain numbers for the blur. Each sum is the one resolvePixels makes,
+ * term for term and in its order; see the banner above for what is left out.
+ *
+ * `need`, when given, marks the pixels to answer for: the others are written
+ * MIXED and nothing else, a verdict no caller can mistake for a pure pixel.
+ */
+function leanResolve(
+  pc: PixelCovers, rowsAgg: number, colsAgg: number, nSp: number,
+  sigmaX: number, sigmaY: number, mixThreshold: number, offX: number, offY: number,
+  coverSpecies: Uint8Array | null, need: ArrayLike<number> | null, verdictOnly: boolean,
+): LeanOut {
+  const cells = rowsAgg * colsAgg;
+  const { pairStart, pairSlot, pairW, slots } = pc;
+  const keys = slots.keys;
+  const full = !verdictOnly;
+  const mixed = new Uint8Array(cells);
+  const majority = full ? new Uint8Array(cells) : null;
+  const purity = full ? new Float32Array(cells) : null;
+  const proportionA = full ? new Float32Array(cells) : null;
+  const proportionBare = full ? new Float32Array(cells) : null;
+  const species = full && nSp > 0 ? new Float32Array(cells * nSp) : null;
+  const offTrial = full && nSp > 0 ? new Float32Array(cells) : null;
+  const spScratch = new Float64Array(Math.max(1, nSp));
+
+  const windowX = Math.max(0, Math.ceil(3 * sigmaX + Math.abs(offX)));
+  const windowY = Math.max(0, Math.ceil(3 * sigmaY + Math.abs(offY)));
+  const eY = Math.min(windowY, rowsAgg - 1);
+  const eX = Math.min(windowX, colsAgg - 1);
+  const kW = 2 * eX + 1;
+  const kernel = new Float64Array((2 * eY + 1) * kW);
+  for (let i = 0; i <= 2 * eY; i++) {
+    for (let j = 0; j <= 2 * eX; j++) {
+      const dy = i - eY - offY;
+      const dx = j - eX - offX;
+      kernel[i * kW + j] = Math.exp(-0.5 * ((dx / (sigmaX || 0.5)) ** 2 + (dy / (sigmaY || 0.5)) ** 2));
+    }
+  }
+
+  // The pixels that are one cover from edge to edge, which is most of them:
+  // their one (slot, weight) pair is read from two flat arrays, not through the
+  // pair list. A slot past the byte range is left to the pair list.
+  const one = new Int16Array(cells);
+  const oneW = new Float64Array(cells);
+  for (let k = 0; k < cells; k++) {
+    const p = pairStart[k];
+    if (pairStart[k + 1] - p === 1 && pairSlot[p] < 256) { one[k] = pairSlot[p]; oneW[k] = pairW[p]; }
+    else one[k] = -1;
+  }
+  // A window of one cover sums to that cover's weight alone, and every share is
+  // then w / w or 0 / w: no sum is needed to know them. Only where w cannot be
+  // 0, which the pixel's own weight guarantees when the kernel is not pushed so
+  // far off centre that it underflows there.
+  const flat = kernel[eY * kW + eX] > 0 ? uniformWindows(one, rowsAgg, colsAgg, windowX, windowY) : null;
+  const sharpMixed = 1 < mixThreshold;
+  // run[k]: how many pixels from k on, along its row, are that same single
+  // cover with that same weight (0 when k is not a single cover). Inside a plot
+  // that is every pixel of a window's row, and the sum over them is then one
+  // table read and one addition each, kept in a register instead of written to
+  // the slot's cell and read back. A lower bound is enough, so it stops at 65535.
+  const run = new Uint16Array(cells);
+  for (let r = 0; r < rowsAgg; r++) {
+    for (let k = (r + 1) * colsAgg - 1, first = r * colsAgg, next = 0; k >= first; k--) {
+      if (one[k] < 0) { next = 0; continue; }
+      next = next > 0 && one[k + 1] === one[k] && oneW[k + 1] === oneW[k] ? Math.min(65535, next + 1) : 1;
+      run[k] = next;
+    }
+  }
+
+  const nSlots = slots.cnt.length;
+  const fin = new Float64Array(nSlots);
+  const seen = new Int32Array(nSlots);
+  const finOrd = new Int32Array(nSlots);
+
+  for (let gr = 0; gr < rowsAgg; gr++) {
+    const r0 = Math.max(0, gr - windowY);
+    const r1 = Math.min(rowsAgg - 1, gr + windowY);
+    for (let gc = 0; gc < colsAgg; gc++) {
+      const idx = gr * colsAgg + gc;
+      if (need && !need[idx]) { mixed[idx] = MIXED; continue; }
+
+      if (flat && flat[idx]) {
+        const cover = one[idx];
+        mixed[idx] = sharpMixed ? MIXED : cover;
+        if (full) {
+          majority![idx] = cover;
+          purity![idx] = 1;
+          if (cover === 0) proportionA![idx] = 1;
+          if (cover === BARE.id) proportionBare![idx] = 1;
+          if (species) {
+            if (cover === OFF_TRIAL.id) offTrial![idx] = 1;
+            else if (cover <= MAX_COVER) {
+              const s = coverSpecies ? coverSpecies[cover] : cover;
+              if (s < nSp) species[idx * nSp + s] = 1;
+            }
+          }
+        }
+        continue;
+      }
+
+      // Each cover's weight is the sum resolvePixels makes: its terms, in raster
+      // order, added one at a time from 0. `sum` is the running total of the
+      // cover in hand (`cur`), written to its cell only when another cover
+      // takes over. resolvePixels reads the total as `fin || 0`, which changes
+      // nothing here: every term is a finite weight times a finite, positive
+      // share, so a total is never NaN nor a negative zero.
+      const stamp = idx + 1;
+      let n = 0, cur = -1, sum = 0;
+      const c0 = Math.max(0, gc - windowX);
+      const c1 = Math.min(colsAgg - 1, gc + windowX);
+      for (let nr = r0; nr <= r1; nr++) {
+        const kRow = (nr - gr + eY) * kW + eX - gc;
+        const rowBase = nr * colsAgg;
+        let nc = c0;
+        while (nc <= c1) {
+          const nIdx = rowBase + nc;
+          const len = run[nIdx];
+          if (len > 0) {
+            const s1 = one[nIdx];
+            if (s1 !== cur) {
+              if (cur >= 0) fin[cur] = sum;
+              if (seen[s1] !== stamp) { seen[s1] = stamp; finOrd[n++] = s1; sum = 0; } else sum = fin[s1];
+              cur = s1;
+            }
+            const w1 = oneW[nIdx];
+            const end = nc + len - 1 < c1 ? nc + len - 1 : c1;
+            for (let q = kRow + nc, qEnd = kRow + end; q <= qEnd; q++) sum += w1 * kernel[q];
+            nc = end + 1;
+          } else {
+            const weight = kernel[kRow + nc];
+            const pEnd = pairStart[nIdx + 1];
+            for (let p = pairStart[nIdx]; p < pEnd; p++) {
+              const slot = pairSlot[p];
+              if (slot !== cur) {
+                if (cur >= 0) fin[cur] = sum;
+                if (seen[slot] !== stamp) { seen[slot] = stamp; finOrd[n++] = slot; sum = 0; } else sum = fin[slot];
+                cur = slot;
+              }
+              sum += pairW[p] * weight;
+            }
+            nc++;
+          }
+        }
+      }
+      if (cur >= 0) fin[cur] = sum;
+
+      let dominantCrop = 0;
+      let maxWeight = 0;
+      let totalCropWeight = 0;
+      for (let i = 0; i < n; i++) {
+        const slot = finOrd[i];
+        const w = fin[slot];
+        totalCropWeight += w;
+        if (w > maxWeight) { maxWeight = w; dominantCrop = slot < 256 ? slot : keys[slot - 256]; }
+      }
+      const isMixed = totalCropWeight > 0 && maxWeight / totalCropWeight < mixThreshold;
+      mixed[idx] = isMixed ? MIXED : dominantCrop;
+      if (!full) continue;
+
+      if (species) {
+        const base = idx * nSp;
+        let offW = 0;
+        spScratch.fill(0, 0, nSp);
+        for (let i = 0; i < n; i++) {
+          const slot = finOrd[i];
+          const coverId = slot < 256 ? slot : keys[slot - 256];
+          const w = fin[slot];
+          if (coverId === OFF_TRIAL.id) { offW += w; continue; }
+          if (coverId > MAX_COVER) continue;                 // BARE
+          const s = coverSpecies ? coverSpecies[coverId] : coverId;
+          if (s < nSp) spScratch[s] += w;
+        }
+        if (totalCropWeight > 0) for (let s = 0; s < nSp; s++) species[base + s] = spScratch[s] / totalCropWeight;
+        offTrial![idx] = totalCropWeight > 0 ? offW / totalCropWeight : 0;
+      }
+      majority![idx] = dominantCrop;
+      purity![idx] = totalCropWeight > 0 ? maxWeight / totalCropWeight : 0;
+      proportionA![idx] = totalCropWeight > 0 ? (seen[0] === stamp ? fin[0] || 0 : 0) / totalCropWeight : 0;
+      proportionBare![idx] = totalCropWeight > 0 ? (seen[BARE.id] === stamp ? fin[BARE.id] || 0 : 0) / totalCropWeight : 0;
+    }
+  }
+  return { mixed, majority, purity, proportionA, proportionBare, species, offTrial };
+}
+
+/**
+ * The driver's simulation of a grid, or null when it is not the plain case
+ * written above (a blur that is not a finite number, an extent with no pixel):
+ * the caller then goes through `aggregate`, which is defined for anything.
+ */
+function leanAggregate(
+  grid: S2Grid, patternOrigin: [number, number], layout: SimLayout, sensor: SensorParams,
+  need: ArrayLike<number> | null, verdictOnly: boolean,
+): LeanOut | null {
+  const { sigmaX, sigmaY } = sensor;
+  const offX = sensor.offX ?? 0, offY = sensor.offY ?? 0;
+  if (!Number.isFinite(sigmaX) || !Number.isFinite(sigmaY) || !Number.isFinite(offX) || !Number.isFinite(offY)) return null;
+  if (typeof sigmaX !== 'number' || typeof sigmaY !== 'number' || typeof offX !== 'number' || typeof offY !== 'number') return null;
+  const res = grid.res;
+  const [minE, minN, maxE, maxN] = grid.utmBounds;
+  const nx = Math.round((maxE - minE) / res);
+  const ny = Math.round((maxN - minN) / res);
+  if (!(nx >= 1) || !(ny >= 1) || !Number.isFinite(nx * ny)) return null;
+  const { coverSpecies, nSpecies } = speciesChannel(layout);
+  const imported = importedOf(layout);
+  let pc: PixelCovers;
+  if (imported) {
+    pc = importedPixelCovers(imported, minE, minN, nx, ny, res).pc;
+  } else {
+    const g = strideFor(res, minFeatureM(layout));
+    const cropMap = buildCropMap(minE, minN, ny * g, nx * g, res / g, patternOrigin[0], patternOrigin[1], layout);
+    pc = sampledCovers(cropMap, ny, nx, g);
+  }
+  const out = leanResolve(pc, ny, nx, Math.max(0, nSpecies | 0), sigmaX, sigmaY, sensor.mixThreshold, offX, offY, coverSpecies, need, verdictOnly);
+  const blind = psfBlindPixels(ny, nx, sensor);
+  if (blind) {
+    for (let k = 0; k < blind.length; k++) {
+      if (!blind[k]) continue;
+      out.mixed[k] = OFF_TRIAL.id;
+      if (out.offTrial) out.offTrial[k] = 1;
+    }
+  }
+  return out;
+}
+
+/**
+ * The verdict byte of each pixel of a grid and nothing else: MIXED, a sentinel,
+ * or the cover the pixel is pure for. It is `simulateField(...).mixed`, for the
+ * callers that read no other array (a placement search counting pure pixels,
+ * the pixels that hold under a shift).
+ *
+ * With `need`, only the pixels it marks are answered for, and the others read
+ * MIXED: a pixel's verdict comes from the ground around it and from nothing
+ * about its neighbours' verdicts, so the ones asked for are exactly what a
+ * simulation of the whole grid gives them.
+ */
+export function fieldVerdicts(
+  grid: S2Grid, patternOrigin: [number, number], layout: SimLayout, sensor: SensorParams, need: ArrayLike<number> | null = null,
+): Uint8Array {
+  const lean = leanAggregate(grid, patternOrigin, layout, sensor, need, true);
+  return lean ? lean.mixed : simulateFieldReference(grid, patternOrigin, layout, sensor).mixed;
+}
+
+/**
+ * Pure crop pixels in a set of verdicts: `simulateField(...).pureCrop` without
+ * the simulation's other arrays. coverStats also leaves out a pixel more than
+ * half off the trial, and such a pixel is never pure for a crop: the ground
+ * outside outweighs any one cover in it, so its verdict is off-trial or mixed.
+ */
+export function pureVerdictCount(verdicts: ArrayLike<number>): number {
+  let pure = 0;
+  for (let k = 0; k < verdicts.length; k++) if (verdicts[k] <= MAX_COVER) pure++;
+  return pure;
+}
+
+/** Run the engine over the real grid's sensor cells. */
 export function simulateField(grid: S2Grid, patternOrigin: [number, number], layout: SimLayout, sensor: SensorParams): FieldSim {
+  const lean = leanAggregate(grid, patternOrigin, layout, sensor, null, false);
+  if (!lean) return simulateFieldReference(grid, patternOrigin, layout, sensor);
+  const { coverSpecies, nSpecies } = speciesChannel(layout);
+  const mixed = lean.mixed;
+  const proportionA = lean.proportionA!;
+  let sumP = 0;
+  for (let k = 0; k < mixed.length; k++) sumP += proportionA[k];
+  const st = coverStats({ mixed, coverSpecies, nSpecies, offTrial: lean.offTrial });
+  return {
+    proportionA, proportionBare: lean.proportionBare!, mixed,
+    purity: lean.purity!, dominant: lean.majority!,
+    purePct: st.purePct, pureCrop: st.pureCrop, pureBare: st.pureBare,
+    total: st.total, meanPropA: mixed.length ? sumP / mixed.length : 0.5,
+    nSpecies, pureBySpecies: st.pureBySpecies,
+    meanBySpecies: meanPerSpecies(lean.species, nSpecies, mixed.length, lean.offTrial),
+    proportionBySpecies: lean.species,
+    proportionOffTrial: lean.offTrial,
+    pureA: st.pureBySpecies[0], pureB: st.pureBySpecies[1],
+  };
+}
+
+/**
+ * The same simulation through `aggregate`, as the driver ran it before it had a
+ * path of its own. What simulateField must equal, array for array (the suite
+ * compares them), and what it falls back to outside the plain case.
+ */
+export function simulateFieldReference(grid: S2Grid, patternOrigin: [number, number], layout: SimLayout, sensor: SensorParams): FieldSim {
   const res = grid.res;
   const [minE, minN, maxE, maxN] = grid.utmBounds;
   const nx = Math.round((maxE - minE) / res);
@@ -2598,6 +3101,7 @@ export function simulateField(grid: S2Grid, patternOrigin: [number, number], lay
   const st = coverStats({ mixed, coverSpecies, nSpecies, offTrial: agg.cropMapProportionOffTrial });
   return {
     proportionA, proportionBare, mixed,
+    purity: agg.cropMapPurity, dominant: agg.cropMapMajority,
     purePct: st.purePct, pureCrop: st.pureCrop, pureBare: st.pureBare,
     total: st.total, meanPropA: mixed.length ? sumP / mixed.length : 0.5,
     nSpecies, pureBySpecies: st.pureBySpecies,
@@ -2806,6 +3310,154 @@ export function cultureAt(E: number, N: number, layout: SimLayout, ox: number, o
 }
 
 /**
+ * Where one pixel's signal lands, cover by cover: what its purity is made of.
+ */
+export interface PixelSources {
+  /**
+   * What the signal lands on, largest share first: a cover id (a plot or a
+   * species, BARE.id, OFF_TRIAL.id) and its share of the signal. The shares add
+   * up to 1 and the first one IS the pixel's purity.
+   */
+  covers: { id: number; share: number }[];
+  /**
+   * The same signal as dots of equal weight, for the map: where each one sits
+   * (metres of the grid's CRS) and the cover under it.
+   */
+  dotE: Float64Array;
+  dotN: Float64Array;
+  dotCover: Uint8Array;
+  /** Ground between two dots where they are densest, in metres. */
+  spacingM: number;
+}
+
+// The R2 sequence: additive, so any run of it is spread as evenly as its start.
+const R2_A = 0.7548776662466927, R2_B = 0.5698402909980532;
+
+/**
+ * The arithmetic of `aggregate` and `aggregateImported` for ONE pixel, with
+ * the covers kept apart instead of folded into the largest of them: phase 1
+ * over the pixels its PSF window reaches (exact areas on an imported trial,
+ * the fine grid on every other layout), then the window's weights. The same
+ * window, the same bounds (the PSF does not reach past the grid), the same
+ * weight expression and the same order, so the first share is the purity
+ * `simulateField` gives that pixel and its cover the dominant one, ties
+ * included. Suite section H28 holds the two together.
+ *
+ * The dots are a picture of those shares, not the shares themselves. Each
+ * pixel of the window gets dots in proportion to its weight (largest
+ * remainder, so they add up to `nDots`), spread evenly over its own square,
+ * which is how the engine reads it: one weight per neighbouring pixel, and
+ * inside a pixel every square metre counts the same. A dot takes the cover
+ * found under it, so counting the dots of a cover lands within a few dots of
+ * its share and never exactly on it. Print the shares.
+ *
+ * `i` and `j` are the pixel's column and row in the grid, from its south-west
+ * corner. Null for a pixel that is not in the grid, or whose PSF puts no
+ * weight on it at all (see psfBlindPixels).
+ */
+export function pixelSources(
+  grid: Pick<S2Grid, 'res' | 'utmBounds'>, patternOrigin: [number, number], layout: SimLayout, sensor: SensorParams,
+  i: number, j: number, nDots = 1000,
+): PixelSources | null {
+  const res = grid.res;
+  const [minE, minN, maxE, maxN] = grid.utmBounds;
+  const nx = Math.round((maxE - minE) / res), ny = Math.round((maxN - minN) / res);
+  if (!(Number.isInteger(i) && Number.isInteger(j) && i >= 0 && i < nx && j >= 0 && j < ny)) return null;
+  const { sigmaX, sigmaY } = sensor;
+  const offX = sensor.offX ?? 0, offY = sensor.offY ?? 0;
+  const windowX = Math.max(0, Math.ceil(3 * sigmaX + Math.abs(offX)));
+  const windowY = Math.max(0, Math.ceil(3 * sigmaY + Math.abs(offY)));
+  const c0 = Math.max(0, i - windowX), c1 = Math.min(nx - 1, i + windowX);
+  const r0 = Math.max(0, j - windowY), r1 = Math.min(ny - 1, j + windowY);
+  const wx = c1 - c0 + 1, wy = r1 - r0 + 1;
+  const wE = minE + c0 * res, wN = minN + r0 * res;
+
+  const kernel = new Float64Array(wx * wy);
+  let kSum = 0;
+  for (let jj = 0; jj < wy; jj++) {
+    for (let ii = 0; ii < wx; ii++) {
+      const dy = r0 + jj - j - offY;
+      const dx = c0 + ii - i - offX;
+      const w = Math.exp(-0.5 * ((dx / (sigmaX || 0.5)) ** 2 + (dy / (sigmaY || 0.5)) ** 2));
+      kernel[jj * wx + ii] = w;
+      kSum += w;
+    }
+  }
+  if (!(kSum > 0)) return null;
+
+  // Covers in the order the engine first meets them, which is what settles a
+  // tie between two shares there.
+  const fin = new Float64Array(256);
+  const met = new Uint8Array(256);
+  const order: number[] = [];
+  const add = (id: number, w: number) => { if (!met[id]) { met[id] = 1; order.push(id); } fin[id] += w; };
+  const imported = importedOf(layout);
+  if (imported) {
+    const { pc } = importedPixelCovers(imported, wE, wN, wx, wy, res);
+    for (let k = 0; k < wx * wy; k++) {
+      for (let p = pc.pairStart[k]; p < pc.pairStart[k + 1]; p++) add(pc.pairSlot[p], pc.pairW[p] * kernel[k]);
+    }
+  } else {
+    const g = strideFor(res, minFeatureM(layout));
+    const cols = wx * g;
+    const map = buildCropMap(wE, wN, wy * g, cols, res / g, patternOrigin[0], patternOrigin[1], layout);
+    const tally = new Float64Array(256);
+    const first: number[] = [];
+    for (let jj = 0; jj < wy; jj++) {
+      for (let ii = 0; ii < wx; ii++) {
+        first.length = 0;
+        for (let sy = 0; sy < g; sy++) {
+          const rowBase = (jj * g + sy) * cols + ii * g;
+          for (let sx = 0; sx < g; sx++) {
+            const id = map[rowBase + sx];
+            if (tally[id] === 0) first.push(id);
+            tally[id]++;
+          }
+        }
+        const w = kernel[jj * wx + ii];
+        for (const id of first) { add(id, tally[id] * w); tally[id] = 0; }
+      }
+    }
+  }
+  let total = 0;
+  for (const id of order) total += fin[id];
+  if (!(total > 0)) return null;
+  const covers = order.filter(id => fin[id] > 0).map(id => ({ id, share: fin[id] / total }));
+  covers.sort((a, b) => b.share - a.share);    // stable: a tie keeps the engine's order
+
+  const n = Math.max(0, Math.floor(nDots));
+  const count = new Int32Array(wx * wy);
+  const rest: { k: number; f: number }[] = [];
+  let given = 0;
+  for (let k = 0; k < wx * wy; k++) {
+    const q = (n * kernel[k]) / kSum;
+    const whole = Math.floor(q);
+    count[k] = whole;
+    given += whole;
+    rest.push({ k, f: q - whole });
+  }
+  rest.sort((a, b) => b.f - a.f || a.k - b.k);
+  for (let t = 0; t < n - given && t < rest.length; t++) count[rest[t].k]++;
+
+  const dotE = new Float64Array(n), dotN = new Float64Array(n), dotCover = new Uint8Array(n);
+  let m = 0, densest = 0;
+  for (let jj = 0; jj < wy; jj++) {
+    for (let ii = 0; ii < wx; ii++) {
+      const c = count[jj * wx + ii];
+      if (c > densest) densest = c;
+      for (let t = 0; t < c && m < n; t++, m++) {
+        const E = wE + (ii + ((0.5 + m * R2_A) % 1)) * res;
+        const N = wN + (jj + ((0.5 + m * R2_B) % 1)) * res;
+        dotE[m] = E;
+        dotN[m] = N;
+        dotCover[m] = cultureAt(E, N, layout, patternOrigin[0], patternOrigin[1]);
+      }
+    }
+  }
+  return { covers, dotE, dotN, dotCover, spacingM: densest > 0 ? res / Math.sqrt(densest) : res };
+}
+
+/**
  * Find the pattern phase (origin shift, in metres) that maximises pure single-crop
  * pixels: i.e. slide the whole planting so strip edges land on pixel edges. Solved
  * 1D per striping axis against the real pixel lattice (exact when rows follow the
@@ -2888,7 +3540,7 @@ function searchPhaseOffset(
   const box = { res, utmBounds: [e0, n0, e0 + n * res, n0 + n * res] } as unknown as S2Grid;
   const layout: SimLayout = { pattern, width, spacing, rotationDeg: 0 };
 
-  const score = (du: number, dv: number) => simulateField(box, [ox0 + du, oy0 + dv], layout, sensor).pureCrop;
+  const score = (du: number, dv: number) => pureVerdictCount(fieldVerdicts(box, [ox0 + du, oy0 + dv], layout, sensor));
   const search = (axis: 'u' | 'v', other: number): number => {
     // Strictly greater keeps the FIRST maximiser, so a flat optimum resolves to
     // the smallest shift and an already-aligned pattern is left alone.

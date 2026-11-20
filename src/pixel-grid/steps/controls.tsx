@@ -22,12 +22,12 @@ import { fmt } from '../util';
 // A flex line, not a block: the rotation row hangs "as in file" and "vs aligned"
 // off the label with ml-auto, which does nothing in a block and dropped them onto
 // their own line as soon as the sidebar was narrow.
-const LABEL = 'mb-1 flex items-center gap-1 text-[11px] text-neutral-500';
-const FIELD = 'w-full rounded-md border border-white/10 bg-neutral-900 px-2 py-1.5 text-sm text-neutral-100 focus:border-sky-500 focus:outline-none';
-const UNIT = 'text-xs text-neutral-500';
+const LABEL = 'mb-1 flex items-center gap-1 text-[14px] text-neutral-500';
+const FIELD = 'w-full rounded-md border border-white/10 bg-neutral-900 px-2 py-1.5 text-[15px] text-neutral-100 focus:border-sky-500 focus:outline-none';
+const UNIT = 'text-[14px] text-neutral-500';
 
 /** One select style for the whole page: the old large/small split was cosmetic drift. */
-export const SELECT = 'w-full rounded-md border border-white/10 bg-neutral-900 px-2 py-1.5 text-sm text-neutral-100 focus:border-sky-500 focus:outline-none';
+export const SELECT = 'w-full rounded-md border border-white/10 bg-neutral-900 px-2 py-1.5 text-[15px] text-neutral-100 focus:border-sky-500 focus:outline-none';
 
 export function LayoutSelect({ pattern, setPattern, selectClass }: {
   pattern: PatternType; setPattern: (p: PatternType) => void; selectClass: string;
@@ -216,7 +216,7 @@ export function BlockSummary({ design, plan, res }: {
   const alongPx = res ? design.plotLength / res : null;
 
   return (
-    <div className="rounded-md border border-white/10 bg-white/[0.02] px-2.5 py-2 text-[11px] text-neutral-300">
+    <div className="rounded-md border border-white/10 bg-white/[0.02] px-2.5 py-2 text-[14px] text-neutral-300">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
         {plan && (
           <span>Trial <span className="font-mono text-neutral-100">{plan.totalU.toFixed(1)} × {plan.totalV.toFixed(1)} m</span></span>
@@ -264,7 +264,7 @@ export function ImportedSummary({ plan, angle, res }: {
     e0 = Math.min(e0, u); e1 = Math.max(e1, u); n0 = Math.min(n0, v); n1 = Math.max(n1, v);
   }
   return (
-    <div className="rounded-md border border-white/10 bg-white/[0.02] px-2.5 py-2 text-[11px] text-neutral-300">
+    <div className="rounded-md border border-white/10 bg-white/[0.02] px-2.5 py-2 text-[14px] text-neutral-300">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
         <span>Trial <span className="font-mono text-neutral-100">{(e1 - e0).toFixed(0)} × {(n1 - n0).toFixed(0)} m</span></span>
         <span><span className="font-mono text-neutral-100">{fmt(plan.plots.length)}</span> plots of about <span className="font-mono text-neutral-100">{median.toFixed(0)} m²</span></span>

@@ -7,22 +7,22 @@ import {
   buildS2Grid,
   fetchCoveringGrids,
   gridConvergence,
-  gridToGeoJson,
+  gridOutline,
   utmEpsg,
   utmZoneForLng,
   zoneFromEpsg,
   type BuildOptions,
   type CoveringGrid,
   type LngLatBounds,
-  type S2Grid,
+  type S2Grid, pixelCentreAt,
 } from './s2-grid';
 import { gridToShapefileZip, type ExtraField } from './shapefile';
 import { polyAreaHa, type Poly } from './geometry';
 import { cellInFieldTest } from './field-membership';
 import { fmt } from './util';
 import { SOURCES } from './sensors';
-import { CE90_TO_SIGMA } from './resolving';
-import { inRange, usePersistentState } from './persist';
+import { CE90_TO_SIGMA, ce90For } from './resolving';
+import { inRange, isBool, usePersistentState } from './persist';
 
 /**
  * Step 2: which satellite, and therefore exactly where its pixels fall.
@@ -83,7 +83,18 @@ export function useFieldGrid({ aoi, fieldRing }: {
    * and the range appears once a value is entered. Only the default changed; a
    * value already saved in a browser is kept, as every persisted setting is.
    */
-  const [geoErrM, setGeoErrM] = usePersistentState('geoErrM', 0, inRange(0, 50));
+  const [geoManual, setGeoManual] = usePersistentState('geoErrM', 0, inRange(0, 50));
+  /**
+   * CE90 follows the PHENET note's default until a value is typed: the note
+   * takes sigma_geo = GSD / 3 for every sensor when no accuracy is known, which
+   * as a CE90 is 2.146 * GSD / 3 = 0.715 GSD (7.2 m for Sentinel-2). It was a
+   * flat 0, i.e. no geolocation error at all unless the reader knew to add one.
+   * Because it follows the pixel size, each rung of the ladder gets its own.
+   */
+  const [geoAuto, setGeoAuto] = usePersistentState('geoAuto', true, isBool);
+  const ce90At = useCallback((res: number): number => ce90For(geoAuto, geoManual, res), [geoAuto, geoManual]);
+  /** Typing a CE90 is what turns the default off. */
+  const setGeoErrM = useCallback((v: number) => { setGeoAuto(false); setGeoManual(v); }, [setGeoAuto, setGeoManual]);
 
   const source = SOURCES.find(s => s.id === sourceId)!;
 
@@ -187,7 +198,8 @@ export function useFieldGrid({ aoi, fieldRing }: {
     return null;
   }, [grid, aoi, buildOpts, build?.capped, viewBounds]);
   const clippedView = !grid && !!renderGrid;
-  const geojson = useMemo(() => (renderGrid ? gridToGeoJson(renderGrid) : null), [renderGrid]);
+  // Every pixel one look, so one feature for the lot (s2-grid cellLines).
+  const geojson = useMemo(() => (renderGrid ? gridOutline(renderGrid) : null), [renderGrid]);
 
   /**
    * Which cells of `renderGrid` belong to the field, decided ONCE.
@@ -221,7 +233,7 @@ export function useFieldGrid({ aoi, fieldRing }: {
   /** The pixels that overlap the field, for "In field only". */
   const fieldGeojson = useMemo(() => {
     if (!renderGrid || !inField) return null;
-    return gridToGeoJson({ ...renderGrid, cells: renderGrid.cells.filter((_, k) => inField.mask[k]) });
+    return gridOutline(renderGrid, inField.mask);
   }, [renderGrid, inField]);
 
   const lineBox = useMemo((): [number, number, number, number] | null => {
@@ -330,6 +342,8 @@ export function useFieldGrid({ aoi, fieldRing }: {
    * The engine applies the box regardless. The panel says so out loud rather
    * than quietly correcting a number simulate.ts did not compute.
    */
+  /** The CE90 in force at the pixel size on screen, to the centimetre. */
+  const geoErrM = Math.round(ce90At(psfRes) * 100) / 100;
   const geoSigmaM = geoErrM > 0 ? geoErrM / CE90_TO_SIGMA : 0;
   const boxSigmaM = pxSize / Math.sqrt(12);
   const effSigmaXM = Math.hypot(psfSigmaXM, geoSigmaM);
@@ -339,9 +353,22 @@ export function useFieldGrid({ aoi, fieldRing }: {
   const psfFwhmM = 2.3548 * psfSigmaM;
   // Centre the PSF blob on the CENTRE of the pixel nearest the field middle, so it
   // clearly reads as one pixel's footprint (not floating between cells).
+  /**
+   * Where the map was last clicked while a blur overlay was on, as [lat, lng]:
+   * the overlays move to the pixel under it. Kept as the POINT, not as a pixel,
+   * so that it follows a change of pixel size: the same ground is then another
+   * pixel, with another centre, and a centre remembered from the old lattice
+   * would sit between two pixels of the new one. Not saved: it is where the
+   * reader is looking now.
+   */
+  const [pickedPoint, pickPixel] = useState<[number, number] | null>(null);
   const psfCenter = useMemo((): [number, number] | null => {
     if (!aoi) return null;
     if (!build?.utmBounds) return [(aoi[1] + aoi[3]) / 2, (aoi[0] + aoi[2]) / 2];
+    // A click outside the grid (the field was redrawn elsewhere, say) is no
+    // pixel of it: the overlays go back to the middle of the field.
+    const picked = pickedPoint && pixelCentreAt(pickedPoint[1], pickedPoint[0], build.epsg, build.utmBounds, build.res);
+    if (picked) return picked;
     const [mnE, mnN] = build.utmBounds, r = build.res;
     const fwd = proj4('EPSG:4326', crsToProj4Def(`EPSG:${build.epsg}`));
     const inv = proj4(crsToProj4Def(`EPSG:${build.epsg}`), 'EPSG:4326');
@@ -350,7 +377,7 @@ export function useFieldGrid({ aoi, fieldRing }: {
     const pcN = mnN + (Math.floor((cN - mnN) / r) + 0.5) * r;
     const [lng, lat] = inv.forward([pcE, pcN]);
     return [lat, lng];
-  }, [aoi, build?.utmBounds, build?.epsg, build?.res]);
+  }, [aoi, build?.utmBounds, build?.epsg, build?.res, pickedPoint]);
   const dims = grid
     ? {
         nx: Math.round((grid.utmBounds[2] - grid.utmBounds[0]) / grid.res),
@@ -394,10 +421,10 @@ export function useFieldGrid({ aoi, fieldRing }: {
   return { geoSigmaM, boxSigmaM, effSigmaXM, effSigmaYM, boxDoubleCounts,
            sourceId, setSourceId, source, gsd, setGsd,
            sigmaX, setSigmaX, sigmaY, setSigmaY,
-           geoErrM, setGeoErrM,
+           geoErrM, setGeoErrM, geoAuto, setGeoAuto, geoManual, ce90At,
            grids, gridState, selectedGridKey, setSelectedGridKey, selectedGrid,
            buildOpts, build, grid, renderGrid, clippedView, geojson, fieldGeojson, inField, lineBox,
-           viewBounds, setViewBounds, pxSize, psfSigmaM, psfFwhmM, psfCenter,
+           viewBounds, setViewBounds, pxSize, psfSigmaM, psfFwhmM, psfCenter, pickPixel,
            psfSigmaXM, psfSigmaYM, psfFwhmXM, psfFwhmYM, psfAnisotropic,
            dims, areaHa, fieldAreaHa, fieldAreaM2, maxAreaHa, fieldCellCount,
            gridNoun, convergence, onDownload, exportAttrsRef, pickRes, gridSummary };

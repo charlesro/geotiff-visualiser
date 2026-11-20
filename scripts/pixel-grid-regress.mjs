@@ -44,7 +44,7 @@ const REVEAL = {
 };
 
 fs.rmSync(BUILD, { recursive: true, force: true });
-for (const rel of ['src/lib/geo.ts', 'src/lib/projections.ts', 'src/pixel-grid/s2-grid.ts', 'src/pixel-grid/geometry.ts', 'src/pixel-grid/simulate.ts', 'src/pixel-grid/resolving.ts', 'src/pixel-grid/shapefile.ts', 'src/pixel-grid/util.ts', 'src/pixel-grid/pca-field.ts', 'src/pixel-grid/ladder.ts', 'src/pixel-grid/ladder-rung.ts', 'src/pixel-grid/sensors.ts', 'src/pixel-grid/design-import.ts', 'src/pixel-grid/imported-plan.ts', 'src/pixel-grid/imported-rotate.ts', 'src/pixel-grid/field-membership.ts', 'src/pixel-grid/pixel-verdicts.ts']) {
+for (const rel of ['src/lib/geo.ts', 'src/lib/projections.ts', 'src/pixel-grid/s2-grid.ts', 'src/pixel-grid/geometry.ts', 'src/pixel-grid/simulate.ts', 'src/pixel-grid/resolving.ts', 'src/pixel-grid/shapefile.ts', 'src/pixel-grid/util.ts', 'src/pixel-grid/pca-field.ts', 'src/pixel-grid/ladder.ts', 'src/pixel-grid/ladder-rung.ts', 'src/pixel-grid/ladder-step.ts', 'src/pixel-grid/sensors.ts', 'src/pixel-grid/design-import.ts', 'src/pixel-grid/imported-plan.ts', 'src/pixel-grid/imported-rotate.ts', 'src/pixel-grid/field-membership.ts', 'src/pixel-grid/pixel-verdicts.ts', 'src/pixel-grid/plot-size.ts']) {
   let ts = fs.readFileSync(path.join(ROOT, rel), 'utf8');
   for (const decl of REVEAL[rel] ?? []) ts = reveal(ts, decl);
   // esbuild only strips types; relative specifiers still need an extension to
@@ -63,7 +63,7 @@ const {
 const {
   makeTruth, makeBetaSchedule, cultureForCell, aggregate, simulate,
   simulateField, simulatePatch, bestPhaseOffset, cultureAt, utmEnvelope, strideFieldSim, geolocationSpread, shiftSamples,
-  resolutionSweep, truthAt, strideFor, patternCultureUV, coverStats, buildCropMap, speciesChannel, importedCoverAt,
+  resolutionSweep, truthAt, strideFor, patternCultureUV, coverStats, buildCropMap, speciesChannel, importedCoverAt, pixelSources,
   buildBlockPlan, blockPermutation, blockCoverUV, blockPlots, minFeatureM, layoutKey, blockPlacement, stakeBlockPlan, plantedAreaPx,
   importedPixelCovers, aggregateImported,
   TMAX, DEFAULT_PARS, BARE, OFF_TRIAL, MIXED, MAX_COVER, MAX_PLOTS, PATTERNS, CROP_COLORS, cropById, parsOf,
@@ -74,9 +74,9 @@ const { fitCover, axisSigns, pointStyle, samplePts, linearPca, pixelId, MIN_PTS 
 const { trialExtent, importedTrialExtent } = await import(path.join(BUILD, 'src/pixel-grid/ladder.mjs'));
 const { ladderKey, rungCellOrigin } = await import(path.join(BUILD, 'src/pixel-grid/ladder-rung.mjs'));
 // The real ladder, so a size added to the page is a size these checks cover.
-const { RES_LADDER } = await import(path.join(BUILD, 'src/pixel-grid/sensors.mjs'));
+const { RES_LADDER, SOURCES, ladderRungs } = await import(path.join(BUILD, 'src/pixel-grid/sensors.mjs'));
 const { resolveImportedPlan, varietyKeyOf, convexHull, hullWidth, narrowestFeature, foldRing } = await import(path.join(BUILD, 'src/pixel-grid/imported-plan.mjs'));
-const { purePixels, stakeOnGrid, rotateImportedPlan, alignedWithin } = await import(path.join(BUILD, 'src/pixel-grid/imported-rotate.mjs'));
+const { purePixels, stakeOnGrid, rotateImportedPlan, alignedWithin, bestPlacement, placementSearch, heldPixels, shiftImportedPlan, trialAngle } = await import(path.join(BUILD, 'src/pixel-grid/imported-rotate.mjs'));
 const { varietiesOf: readerVarietiesOf, varietyKeyOf: readerVarietyKeyOf } = await import(path.join(BUILD, 'src/pixel-grid/design-import.mjs'));
 const { pointInPoly, fieldOverlapTest, viewShowsField } = await import(path.join(BUILD, 'src/pixel-grid/geometry.mjs'));
 const { contrastInfo, pureEfficiency, plantedPixels, plantedShare, probit, bufferK, minPlotSideM, ce90Shifts, robustMask, plotTally, CE90_TO_SIGMA } = await import(path.join(BUILD, 'src/pixel-grid/resolving.mjs'));
@@ -458,6 +458,112 @@ console.log('\nE2. the catalogue lookup gives up rather than hang');
       threw ? `threw ${threw.message}` : `${grids.length} grid(s): ${JSON.stringify(grids.map(g => [g.ulx, g.uly]))}`);
   }
 
+  globalThis.fetch = realFetch;
+}
+
+console.log('\nE3. the catalogue is asked only for what a lattice is read from');
+{
+  // A catalogue item is 16 kB of links, footprint and every band's asset, and a
+  // lattice is three numbers of it. A hundred whole items are 1.5 MB, which the
+  // first catalogue sends uncompressed: on a 1.6 Mbit/s line that never arrived
+  // within the deadline, so every visit waited 8 s and then asked the second
+  // catalogue. Measured on the real answers, the trimmed one is 20 kB and gives
+  // the same grid for every product. What is pinned here is that asking for
+  // less can cost a second request and never an answer.
+  const { latticeFields } = await import(path.join(BUILD, 'src/pixel-grid/s2-grid.mjs'));
+  const realFetch = globalThis.fetch;
+  const cfg = { collection: 'sentinel-2-l2a', asset: 'B04', res: 10, gridLabel: it => it.properties?.['s2:mgrs_tile'] ?? '' };
+  const WHOLE = {
+    id: 'HLS.S30.T31UFS.2026308T104131.v2.0', type: 'Feature', bbox: [4, 50, 6, 51], links: [{ rel: 'self', href: 'x' }],
+    geometry: { type: 'Polygon', coordinates: [[[4, 50], [6, 50], [6, 51], [4, 50]]] }, collection: 'c', stac_version: '1.0.0',
+    properties: { 'proj:epsg': 32631, 'proj:transform': [30, 0, 600000, 0, -30, 5700000], 's2:mgrs_tile': '31UFS', 'grid:code': 'MGRS-31UFS', datetime: '2026-11-17T10:52:41Z', 'eo:cloud_cover': 12 },
+    assets: {
+      B04: { href: 'b04', 'proj:transform': [10, 0, 600000, 0, -10, 5700000], 'proj:shape': [10980, 10980] },
+      red: { href: 'red', 'proj:transform': [10, 0, 600000, 0, -10, 5700000], 'proj:epsg': 32631 },
+      B8A: { href: 'b8a', 'proj:transform': [20, 0, 600000, 0, -20, 5700000] },
+    },
+  };
+  /** What a catalogue that honours `fields` sends back: the included paths and nothing else. */
+  const trim = (item, fields) => {
+    const out = {};
+    for (const dotted of fields.include) {
+      const keys = dotted.split('.');
+      let from = item, to = out;
+      for (let k = 0; k < keys.length && from != null; k++) {
+        if (!(keys[k] in from)) break;
+        if (k === keys.length - 1) to[keys[k]] = from[keys[k]];
+        else { to = to[keys[k]] ??= {}; from = from[keys[k]]; }
+      }
+    }
+    return out;
+  };
+  const asked = [];
+  const catalogue = answer => (url, init) => {
+    const body = JSON.parse(init.body);
+    asked.push({ url, trimmed: !!body.fields, body });
+    return Promise.resolve(answer(body, url));
+  };
+  const okJson = data => ({ ok: true, status: 200, json: async () => data });
+
+  globalThis.fetch = catalogue(body => okJson({ features: [body.fields ? trim(WHOLE, body.fields) : WHOLE] }));
+  const lean = await fetchCoveringGrids(AOI, cfg, undefined, 500);
+  const f = asked[0].body.fields;
+  ok('one request, trimmed, and the grid is read from it', asked.length === 1 && asked[0].trimmed && lean.length === 1 && lean[0].label === '31UFS' && lean[0].ulx === 600000 && lean[0].uly === 5700000);
+  ok('it asks for the origin on the band it is read from, and drops the heavy parts',
+    f.include.includes('assets.B04.proj:transform') && f.include.includes('properties.proj:epsg') && ['geometry', 'links', 'bbox'].every(k => f.exclude.includes(k)));
+  ok('but never the assets as a whole: Earth Search then drops the one band with the rest', !f.exclude.includes('assets'));
+  ok('the question itself is unchanged: same collection, same point, same hundred items',
+    asked[0].body.collections[0] === 'sentinel-2-l2a' && asked[0].body.limit === 100 && asked[0].body.intersects.type === 'Point');
+  // (A real item is 16 kB and trims to 200 bytes; this stand-in has three assets where a real one has twenty.)
+  ok('a trimmed item is under half of even this small stand-in', JSON.stringify(trim(WHOLE, f)).length < JSON.stringify(WHOLE).length / 2,
+    `${JSON.stringify(trim(WHOLE, f)).length} against ${JSON.stringify(WHOLE).length} characters`);
+
+  // A catalogue that does not know `fields` and says so.
+  asked.length = 0;
+  globalThis.fetch = catalogue(body => (body.fields ? { ok: false, status: 400, json: async () => ({}) } : okJson({ features: [WHOLE] })));
+  const refused = await fetchCoveringGrids(AOI, cfg, undefined, 500);
+  ok('a catalogue that refuses the trimmed request is asked for the whole items, and the grid is the same',
+    asked.map(q => q.trimmed).join() === 'true,false' && JSON.stringify(refused) === JSON.stringify(lean));
+
+  // One that trims more than it was asked to: items, and no lattice in them.
+  asked.length = 0;
+  globalThis.fetch = catalogue(body => okJson({ features: [body.fields ? { id: WHOLE.id, properties: { 'proj:epsg': 32631 } } : WHOLE] }));
+  const overTrimmed = await fetchCoveringGrids(AOI, cfg, undefined, 500);
+  ok('a trimmed answer with items but no lattice in them is not trusted: the whole items are asked for',
+    asked.map(q => q.trimmed).join() === 'true,false' && JSON.stringify(overTrimmed) === JSON.stringify(lean));
+
+  // No item at all is an answer, not a reason to ask again.
+  asked.length = 0;
+  globalThis.fetch = catalogue(() => okJson({ features: [] }));
+  const none = await fetchCoveringGrids(AOI, cfg, undefined, 500);
+  ok('an answer with no item in it is taken as it is', asked.length === 1 && none.length === 0);
+
+  // A catalogue in trouble is not asked twice: the second catalogue is.
+  asked.length = 0;
+  globalThis.fetch = catalogue((body, url) => (url === EARTH_SEARCH_URL ? okJson({ features: [trim(WHOLE, body.fields)] }) : { ok: false, status: 503, json: async () => ({}) }));
+  const viaAlt = await fetchCoveringGrids(AOI, { ...cfg, alt: { ...cfg, url: EARTH_SEARCH_URL } }, undefined, 500);
+  ok('a server error goes straight to the second catalogue, with no second try at the first',
+    asked.length === 2 && asked[1].url === EARTH_SEARCH_URL && viaAlt.length === 1, `${asked.length} requests`);
+
+  // Every product of the list: the label and the lattice survive the trimming.
+  {
+    const failed = [];
+    let n = 0;
+    for (const src of SOURCES) {
+      for (const c of [src.cfg, src.cfg?.alt].filter(Boolean)) {
+        n++;
+        const one = { ...c, alt: undefined };
+        const label = c.gridLabel(WHOLE);
+        if (!label || c.gridLabel(trim(WHOLE, latticeFields(c))) !== label) { failed.push(`${src.id}: label`); continue; }
+        asked.length = 0;
+        globalThis.fetch = catalogue(body => okJson({ features: [body.fields ? trim(WHOLE, body.fields) : WHOLE] }));
+        const got = await fetchCoveringGrids(AOI, one, undefined, 500);
+        if (asked.length !== 1 || got.length !== 1 || got[0].label !== label || !Number.isFinite(got[0].ulx)) failed.push(`${src.id}: lattice`);
+      }
+    }
+    ok('for every satellite of the list, and its second catalogue, the label and the lattice are read from the trimmed item alone',
+      failed.length === 0 && n >= 6, failed.length ? failed.join(', ') : `${n} catalogue configurations`);
+  }
   globalThis.fetch = realFetch;
 }
 
@@ -3528,6 +3634,677 @@ console.log('\nH22. the PHENET note: its closed forms, its table, and what survi
     Math.min(...counts) >= 0.9 * count(nom), `${count(nom)} nominal, ${Math.min(...counts)}..${Math.max(...counts)} shifted`);
   ok('the robust set does not: under a third of the nominal pixels survive',
     survivors > 0 && survivors < count(nom) / 3, `${survivors} of ${count(nom)}`);
+}
+
+console.log('\nH23. the plot size a trial needs: any shape, any count, three readings of the geolocation error');
+{
+  const { normCdf, ownShare, heldShare, pureScales, requiredScale, fewestPure, purestShare, imageCases, importedPlotBoxes } =
+    await import(path.join(BUILD, 'src/pixel-grid/plot-size.mjs'));
+  const K = 2.3548, near = (a, b, tol) => Math.abs(a - b) <= tol;
+  const SENSORS = [['WorldView-2', 1.6, 1.9], ['Pleiades', 2, 5], ['PlanetScope', 3, 9.7], ['Sentinel-2', 10, 14]];
+  const view = (gsd, c, angleDeg = 0, threshold = 0.9) => ({ gsd, sigma: c.sigma, shift: c.shift, threshold, angleDeg });
+  const casesOf = (gsd, fwhm) => imageCases(fwhm / K, (CE90_TO_SIGMA * gsd) / 3);
+
+  ok('the normal law used for the shares', near(normCdf(1.2816), 0.9, 1e-4) && near(normCdf(-1), 0.158655, 1e-6) && near(normCdf(0), 0.5, 1e-7) && near(normCdf(3) + normCdf(-3), 1, 1e-12));
+
+  // The share a pixel keeps: every side counted with its own distance. A 15 m
+  // plot seen by PlanetScope with the note's default geolocation (sigma_eff 4.24 m).
+  const se = Math.hypot(9.7 / K, 1), P15 = { a: 15, b: 15 };
+  const out = (x, y) => 100 * (1 - ownShare(x, y, P15, se));
+  ok('a pixel in the middle of a 15 m plot takes 14.8 % from outside it', near(out(0, 0), 14.8, 0.05), out(0, 0).toFixed(2));
+  ok('2 m from one border, 37.2 %', near(out(5.5, 0), 37.2, 0.05), out(5.5, 0).toFixed(2));
+  ok('2 m from a corner, 53.7 %: less than the two sides added, which count the corner twice', near(out(5.5, 5.5), 53.7, 0.05), out(5.5, 5.5).toFixed(2));
+  {
+    const cx = 1 - ownShare(5.5, 0, { a: 15, b: Infinity }, se), cy = 1 - ownShare(0, 5.5, { a: Infinity, b: 15 }, se);
+    ok('the two directions multiply: outside = cx + cy - cx cy', near(1 - ownShare(5.5, 5.5, P15, se), cx + cy - cx * cy, 1e-12));
+  }
+  ok('a shift can only lower the share a pixel is sure of',
+    heldShare(2, 1, P15, { gsd: 3, sigma: 4.1, shift: 2, threshold: 0.9, angleDeg: 0 }) < ownShare(2, 1, P15, 4.1)
+    && near(heldShare(2, 0, { a: 15, b: Infinity }, { gsd: 3, sigma: 4.1, shift: 2, threshold: 0.9, angleDeg: 0 }), ownShare(4, 0, { a: 15, b: Infinity }, 4.1), 1e-12));
+
+  // One pure pixel in a square plot, average image: the note's own case. The
+  // answer is the plot whose pixel half a pixel from the centre on both axes
+  // just reaches the threshold, and it is LARGER than the note's closed form,
+  // which counts the nearest border on each side and not the opposite one.
+  for (const [name, gsd, fwhm] of SENSORS) {
+    const avg = casesOf(gsd, fwhm)[1], side = requiredScale(1, { a: 1, b: 1 }, view(gsd, avg));
+    const exact = ownShare(gsd / 2, gsd / 2, { a: side / 1.006, b: side / 1.006 }, avg.sigma);
+    const closed = minPlotSideM(gsd, avg.sigma, 0.9);
+    ok(`one pure pixel, ${name}: the corner pixel just reaches 90 %`, near(exact, 0.9, 2e-4), `${side.toFixed(2)} m, share ${exact.toFixed(5)}`);
+    ok(`and the plot is no smaller than the note's closed form (${closed.toFixed(1)} m)`, side >= closed, side.toFixed(2));
+    ok('which, at its own size, leaves that pixel under the threshold', ownShare(gsd / 2, gsd / 2, { a: closed, b: closed }, avg.sigma) < 0.9,
+      ownShare(gsd / 2, gsd / 2, { a: closed, b: closed }, avg.sigma).toFixed(4));
+  }
+  {
+    // PlanetScope: 17.5 m where the closed form says 16.8 m.
+    const side = requiredScale(1, { a: 1, b: 1 }, view(3, casesOf(3, 9.7)[1]));
+    ok('PlanetScope needs 17.6 m for one pure pixel, not 16.8 m', near(side, 17.56, 0.06), side.toFixed(2));
+  }
+
+  // The three readings. With no geolocation error they are one.
+  ok('no geolocation error: one reading', imageCases(2, 0).length === 1 && imageCases(2, 0)[0].shift === 0 && imageCases(2, 0)[0].sigma === 2);
+  {
+    const [c, a, r] = imageCases(4, 2.146);
+    ok('corrected is the blur alone, average is sigma_eff, robust is the blur with the image within its CE90',
+      c.sigma === 4 && c.shift === 0 && near(a.sigma, Math.hypot(4, 1), 1e-9) && a.shift === 0 && r.sigma === 4 && r.shift === 2.146);
+  }
+  for (const [name, gsd, fwhm] of SENSORS) {
+    const [c, a, r] = casesOf(gsd, fwhm).map(k => pureScales({ a: 1, b: 1 }, view(gsd, k), [1, 4, 9, 16]));
+    ok(`${name}: a larger count never needs a smaller plot`, [c, a, r].every(s => s.every((v, i) => i === 0 || v >= s[i - 1])),
+      [c, a, r].map(s => s.map(v => v.toFixed(1)).join('/')).join(' | '));
+    ok('and putting the images back in place never asks for more than the other two readings', c.every((v, i) => v <= a[i] && v <= r[i]));
+  }
+  {
+    // Sentinel-2, one pure pixel: 29.6 m corrected, 32.5 m on average, 40.2 m for 9 images in 10.
+    const got = casesOf(10, 14).map(k => requiredScale(1, { a: 1, b: 1 }, view(10, k)));
+    ok('Sentinel-2, one pure pixel: 29.6, 32.5 and 40.2 m', near(got[0], 29.55, 0.1) && near(got[1], 32.47, 0.1) && near(got[2], 40.24, 0.15), got.map(v => v.toFixed(2)).join(', '));
+  }
+
+  // A strip: n pixels across. Far from the opposite border it is the closed
+  // form n GSD + 2 (k sigma + shift); a narrow strip needs more than that.
+  {
+    const k = bufferK(0.9), [c, , r] = casesOf(3, 9.7);
+    const wide = pureScales({ a: 1, b: Infinity }, view(3, r), [3])[0], closedWide = 3 * 3 + 2 * (k * r.sigma + r.shift);
+    ok('a wide strip follows n GSD + 2 (k sigma + CE90)', near(wide, closedWide, 0.01), `${wide.toFixed(3)} vs ${closedWide.toFixed(3)}`);
+    const narrow = pureScales({ a: 1, b: Infinity }, view(3, c), [1])[0], closedNarrow = 3 + 2 * k * c.sigma;
+    ok('a narrow one needs more, because its other border is close too', narrow > closedNarrow + 0.5, `${narrow.toFixed(2)} vs ${closedNarrow.toFixed(2)}`);
+    ok('a strip given along either axis is the same strip', pureScales({ a: Infinity, b: 1 }, view(3, c), [2])[0] === pureScales({ a: 1, b: Infinity }, view(3, c), [2])[0]);
+    ok('the strip the design has holds what it should',
+      fewestPure({ a: wide, b: Infinity }, view(3, r)).count === 3 && fewestPure({ a: wide - 0.05, b: Infinity }, view(3, r)).count === 2);
+  }
+
+  // Against a count that knows nothing of the search: every placement of a fine
+  // grid of them, each pixel tested on 48 landings of the image.
+  const brute = (plot, v, m = 41) => {
+    const t = (v.angleDeg * Math.PI) / 180, ux = Math.cos(t) * v.gsd, uy = Math.sin(t) * v.gsd;
+    const reach = Math.ceil(Math.hypot(plot.a, plot.b) / 2 / v.gsd) + 2;
+    let fewest = Infinity;
+    for (let pa = 0; pa < m; pa++) for (let pb = 0; pb < m; pb++) {
+      const fa = (pa + 0.37) / m, fb = (pb + 0.61) / m;
+      let count = 0;
+      for (let i = -reach; i <= reach; i++) for (let j = -reach; j <= reach; j++) {
+        const p = i + fa, q = j + fb, x = p * ux - q * uy, y = p * uy + q * ux;
+        if (Math.abs(x) > plot.a / 2 || Math.abs(y) > plot.b / 2) continue;
+        let low = ownShare(x, y, plot, v.sigma);
+        for (let d = 0; d < 48 && v.shift > 0 && low >= v.threshold; d++) {
+          const a = (2 * Math.PI * d) / 48;
+          low = Math.min(low, ownShare(x + v.shift * Math.cos(a), y + v.shift * Math.sin(a), plot, v.sigma));
+        }
+        if (low >= v.threshold) count++;
+      }
+      fewest = Math.min(fewest, count);
+    }
+    return fewest;
+  };
+  for (const [name, gsd, fwhm, which, n, shape, angle] of [
+    ['PlanetScope, average, 4 px, square', 3, 9.7, 1, 4, { a: 1, b: 1 }, 0],
+    ['Pleiades, corrected, 9 px, plot 2:1', 2, 5, 0, 9, { a: 2, b: 1 }, 0],
+    ['Sentinel-2, 9 images in 10, 4 px, square', 10, 14, 2, 4, { a: 1, b: 1 }, 0],
+    ['PlanetScope, 9 images in 10, 5 px, plot 3:1 at 45°', 3, 9.7, 2, 5, { a: 3, b: 1 }, 45],
+    ['Sentinel-2, average, 4 px, square at 30°', 10, 14, 1, 4, { a: 1, b: 1 }, 30],
+  ]) {
+    const v = view(gsd, casesOf(gsd, fwhm)[which], angle), s = requiredScale(n, shape, v);
+    const at = k => ({ a: shape.a * s * k, b: shape.b * s * k });
+    const enough = brute(at(1), v), under = brute(at(0.97), v);
+    ok(`${name}: the size holds ${n} pixels at every placement`, enough >= n, `${(s * Math.min(shape.a, shape.b)).toFixed(2)} m, fewest ${enough}`);
+    ok('and 3 % smaller does not', under < n, `fewest ${under}`);
+    ok('the count of the design agrees with the size on both sides', fewestPure(at(1), v).count >= n && fewestPure(at(0.97), v).count < n,
+      `${fewestPure(at(1), v).count} and ${fewestPure(at(0.97), v).count}`);
+  }
+  {
+    // A grid turned 45° leaves a square plot's corners unused: it needs no less.
+    const v0 = view(3, casesOf(3, 9.7)[1], 0), v45 = view(3, casesOf(3, 9.7)[1], 45);
+    const s0 = requiredScale(4, { a: 1, b: 1 }, v0), s45 = requiredScale(4, { a: 1, b: 1 }, v45);
+    ok('a turned grid is its own answer, and 90° is the grid again', s45 !== s0 && near(requiredScale(4, { a: 1, b: 1 }, view(3, casesOf(3, 9.7)[1], 90)), s0, 1e-9),
+      `${s0.toFixed(2)} at 0°, ${s45.toFixed(2)} at 45°`);
+  }
+
+  // What the design has now: a 15 m plot.
+  {
+    const now = (gsd, fwhm) => casesOf(gsd, fwhm).map(k => fewestPure(P15, view(gsd, k)).count);
+    const ps = now(3, 9.7), pl = now(2, 5), wv = now(1.6, 1.9);
+    ok('a 15 m plot holds no pure pixel for PlanetScope, in any reading', ps.every(c => c === 0), ps.join('/'));
+    ok('Pleiades keeps pure pixels in it, fewer once the image may move', pl[0] >= pl[1] && pl[1] > pl[2] && pl[2] > 0, pl.join('/'));
+    ok('and WorldView-2 more still', wv[2] > pl[2], wv.join('/'));
+    const keeps = purestShare(P15, view(3, casesOf(3, 9.7)[1]));
+    ok('its purest pixel takes 18 % from outside at the worst placement, where 10 % is allowed', near(100 * (1 - keeps), 18.2, 0.2), (100 * (1 - keeps)).toFixed(1));
+    ok('which is the pixel half a pixel from the centre on both axes', near(keeps, ownShare(1.5, 1.5, P15, se), 1e-9));
+    ok('a plot too large to try many placements says its count is approximate',
+      fewestPure({ a: 400, b: 400 }, view(0.4, casesOf(0.4, 1.1)[0])).approx === true && fewestPure(P15, view(3, casesOf(3, 9.7)[0])).approx === false);
+  }
+
+  // Nothing to answer: a labelled nothing, never a throw or a NaN.
+  ok('no size at 100 %, with no pixel size, or for a count under one',
+    requiredScale(1, { a: 1, b: 1 }, { gsd: 3, sigma: 4, shift: 0, threshold: 1, angleDeg: 0 }) === null
+    && requiredScale(1, { a: 1, b: 1 }, { gsd: 0, sigma: 4, shift: 0, threshold: 0.9, angleDeg: 0 }) === null
+    && requiredScale(0, { a: 1, b: 1 }, { gsd: 3, sigma: 4, shift: 0, threshold: 0.9, angleDeg: 0 }) === null
+    && fewestPure({ a: 0, b: 5 }, { gsd: 3, sigma: 4, shift: 0, threshold: 0.9, angleDeg: 0 }).count === 0);
+  {
+    const s = requiredScale(4, { a: 1, b: 1 }, { gsd: 2, sigma: 0, shift: 0, threshold: 0.9, angleDeg: 0 });
+    ok('with no blur at all a 2 x 2 block of pixels fits in two pixels', near(s, 4 * 1.006, 0.02), s.toFixed(3));
+  }
+
+  // An imported trial: each plot as the box around it in the trial's own frame.
+  {
+    const rect = (cx, cy, a, b, deg) => {
+      const t = (deg * Math.PI) / 180, c = Math.cos(t), s = Math.sin(t);
+      return [[-a / 2, -b / 2], [a / 2, -b / 2], [a / 2, b / 2], [-a / 2, b / 2]].map(([x, y]) => [cx + x * c - y * s, cy + x * s + y * c]);
+    };
+    const plan = { plots: [{ rings: [rect(100, 50, 12, 6, 30)], species: 0 }, { rings: [rect(130, 80, 12, 6, 30)], species: 1 }, { rings: [rect(60, 20, 3, 8, 30)], species: 0 }] };
+    const boxes = importedPlotBoxes(plan, 30);
+    ok('plots of a turned trial are measured along its own sides, smallest first',
+      boxes.length === 2 && boxes[0].a === 3 && boxes[0].b === 8 && boxes[0].count === 1 && boxes[1].a === 12 && boxes[1].b === 6 && boxes[1].count === 2,
+      JSON.stringify(boxes));
+    ok('measured along the map instead, the same plots read larger', importedPlotBoxes(plan, 0)[0].a > 3.5);
+  }
+}
+
+console.log('\nH24. each pixel keeps its purity, the figure the threshold is compared with');
+{
+  // The engine worked out every pixel's dominant share, compared it with the
+  // threshold, and dropped it: a pixel could say whether it was pure but not
+  // how pure. The map reads it for the pixel under the pointer.
+  const sensor = { sigmaX: 0.6, sigmaY: 0.6, mixThreshold: 0.9 };
+  const box = { res: 10, utmBounds: [0, 0, 300, 300] };
+  const strips = simulateField(box, [0, 0], { pattern: 'row', width: 30, spacing: 0, rotationDeg: 17 }, sensor);
+  const n = strips.mixed.length;
+  ok('a simulated field carries a purity and a dominant cover for every pixel',
+    strips.purity instanceof Float32Array && strips.dominant instanceof Uint8Array && strips.purity.length === n && strips.dominant.length === n && n === 900);
+  let inRange = true, agrees = true, names = true, some = 0;
+  for (let k = 0; k < n; k++) {
+    const p = strips.purity[k], pure = strips.mixed[k] !== 255;
+    if (!(p > 0 && p <= 1 + 1e-6)) inRange = false;
+    // Exactly the engine's own test, on the value it stored (a float32).
+    if (pure !== (p >= 0.9 - 1e-6)) agrees = false;
+    if (pure && strips.dominant[k] !== strips.mixed[k]) names = false;
+    if (!pure) some++;
+  }
+  ok('the purity is a share, between 0 and 1', inRange);
+  ok('a pixel is pure exactly when its purity reaches the threshold', agrees && some > 0 && some < n, `${some} mixed of ${n}`);
+  ok('and the dominant cover is the one a pure pixel is pure for', names);
+  {
+    // Two species only, no alley: the dominant share is the larger of the two.
+    let same = true;
+    for (let k = 0; k < n; k++) if (Math.abs(strips.purity[k] - Math.max(strips.proportionA[k], 1 - strips.proportionA[k])) > 1e-5) same = false;
+    ok('with two crops and no alley it is the larger of the two shares', same);
+  }
+  {
+    // No blur and strips along the pixel rows, two pixels wide: every pixel is one crop.
+    const sharp = simulateField(box, [0, 0], { pattern: 'row', width: 20, spacing: 0, rotationDeg: 0 }, { sigmaX: 0, sigmaY: 0, mixThreshold: 0.9 });
+    ok('with no blur, strips two pixels wide leave every pixel at 100 %', sharp.purity.every(p => Math.abs(p - 1) < 1e-6));
+    // The same strips one and a half pixels wide: the pixel across a border is split 50/50.
+    const half = simulateField(box, [0, 0], { pattern: 'row', width: 15, spacing: 0, rotationDeg: 0 }, { sigmaX: 0, sigmaY: 0, mixThreshold: 0.9 });
+    const lows = Array.from(half.purity).filter(p => p < 0.99);
+    ok('and a pixel cut in two by a border reads 50 %', lows.length > 0 && lows.every(p => Math.abs(p - 0.5) < 1e-6), `${lows.length} such pixels`);
+  }
+  {
+    // A block trial: the cover is the PLOT, so two plots of one species do not add up.
+    const design = { nSpecies: 2, nBlocks: 2, plotLength: 20, plotWidth: 20, plotAlley: 0, blockAlley: 0, blocksPerRow: 2, seed: 3 };
+    const place = blockPlacement([0, 0, 300, 300], [100, 100], 0, 10, true);
+    const plan = buildBlockPlan(design, place);
+    const block = simulateField(box, [100, 100], { pattern: 'block', width: 2, spacing: 0, rotationDeg: 0, block: plan }, { sigmaX: 0.8, sigmaY: 0.8, mixThreshold: 0.9 });
+    let underSpecies = 0;
+    for (let k = 0; k < block.purity.length; k++) {
+      const d = block.dominant[k];
+      if (d > 252) continue;
+      const sp = plan.plotSpecies[d];
+      if (block.purity[k] < block.proportionBySpecies[k * block.nSpecies + sp] - 1e-4) underSpecies++;
+    }
+    ok('on a block trial it is the share of one PLOT, not of every plot of that species', underSpecies > 0, `${underSpecies} pixels where the species holds more than the plot`);
+  }
+}
+
+console.log('\nH25. one placement of the image at a time gives the export\'s own robust set');
+{
+  const { pixelVerdicts, shiftedVerdict } = await import(path.join(BUILD, 'src/pixel-grid/pixel-verdicts.mjs'));
+  const sensor = { sigmaX: 1.37, sigmaY: 1.37, mixThreshold: 0.9 };
+  const box = { res: 3, utmBounds: [0, 0, 150, 150] };
+  const layout = { pattern: 'row', width: 17, spacing: 5, rotationDeg: 12 };
+  const nominal = simulateField(box, [0, 0], layout, sensor).mixed;
+  ok('an image that lands where it should gives the nominal verdict', shiftedVerdict(box, [0, 0], layout, sensor, [0, 0]).every((v, k) => v === nominal[k]));
+  const moved = shiftedVerdict(box, [0, 0], layout, sensor, [2.15, 0]);
+  ok('and one that lands 2.15 m away does not', moved.some((v, k) => v !== nominal[k]));
+  // The map asks for the eight placements one by one; the export runs them in a row.
+  const whole = pixelVerdicts(box, [0, 0], layout, sensor, 2.15);
+  const byOne = robustMask(nominal, ce90Shifts(2.15).map(sh => shiftedVerdict(box, [0, 0], layout, sensor, sh)));
+  let pure = 0, held = 0;
+  for (let k = 0; k < nominal.length; k++) { if (nominal[k] <= 252) pure++; if (byOne[k]) held++; }
+  ok('asked for one by one, the eight placements give the export\'s PURE_CE90 set', whole.robust.length === byOne.length && whole.robust.every((v, k) => v === byOne[k]));
+  ok('which is part of the pure pixels, and here a small part', held > 0 && held < pure / 2 && byOne.every((v, k) => !v || nominal[k] <= 252), `${held} of ${pure} pure pixels`);
+}
+
+console.log('\nH26. a clicked point is read as the pixel it falls in');
+{
+  const { pixelCentreAt } = await import(path.join(BUILD, 'src/pixel-grid/s2-grid.mjs'));
+  const epsg = 32631, bounds = [640000, 5605000, 640300, 5605240], res = 10;
+  const toLL = proj4(`+proj=utm +zone=31 +datum=WGS84 +units=m +no_defs`, 'EPSG:4326');
+  const toUtm = proj4('EPSG:4326', `+proj=utm +zone=31 +datum=WGS84 +units=m +no_defs`);
+  const at = (E, N) => { const [lng, lat] = toLL.forward([E, N]); return pixelCentreAt(lng, lat, epsg, bounds, res); };
+  const utm = c => toUtm.forward([c[1], c[0]]);
+  const near = (c, E, N) => { const [e, n] = utm(c); return Math.abs(e - E) < 1e-3 && Math.abs(n - N) < 1e-3; };
+  ok('a point anywhere in a pixel gives that pixel\'s centre', near(at(640123.4, 5605067.9), 640125, 5605065) && near(at(640120.01, 5605060.01), 640125, 5605065) && near(at(640129.99, 5605069.99), 640125, 5605065));
+  ok('the centre of a pixel is its own centre', near(at(640125, 5605065), 640125, 5605065));
+  ok('the next pixel starts on the edge', near(at(640130, 5605065), 640135, 5605065) && near(at(640125, 5605070), 640125, 5605075));
+  ok('a point outside the grid is no pixel of it', at(639999.5, 5605100) === null && at(640300.5, 5605100) === null && at(640100, 5605240.5) === null && at(640100, 5604999.5) === null);
+  ok('it follows the pixel size: the same point is another pixel on a 3 m lattice', (() => {
+    const [lng, lat] = toLL.forward([640123.4, 5605067.9]);
+    return near(pixelCentreAt(lng, lat, epsg, bounds, 3), 640124.5, 5605067.5);
+  })());
+  ok('and a lattice with no pixel size has none', pixelCentreAt(4.9, 50.5, epsg, bounds, 0) === null);
+}
+
+console.log('\nH27. the circle that holds 90 % of a pixel\'s signal, everything counted');
+{
+  const { signalRadius } = await import(path.join(BUILD, 'src/pixel-grid/plot-size.mjs'));
+  const near = (a, b, rel) => Math.abs(a - b) <= rel * b;
+  // A round Gaussian alone has a closed form: sigma sqrt(-2 ln(1 - p)).
+  ok('a round blur alone: 2.146 sigma holds 90 %', near(signalRadius(0.9, 1, 1), Math.sqrt(-2 * Math.log(0.1)), 0.002), signalRadius(0.9, 1, 1).toFixed(4));
+  ok('and 1.177 sigma holds half, which is half the FWHM', near(signalRadius(0.5, 3, 3), 3 * Math.sqrt(-2 * Math.log(0.5)), 0.002), signalRadius(0.5, 3, 3).toFixed(4));
+  ok('it scales with the blur', near(signalRadius(0.9, 4, 4), 4 * signalRadius(0.9, 1, 1), 0.003));
+  // The footprint alone: a circle that holds 90 % of a square of side b cuts its
+  // four corners. It reaches past the square's edge (b/2) and stops short of
+  // its corner (b/sqrt 2): 0.5576 b, from the segments it leaves out.
+  {
+    const r = signalRadius(0.9, 0, 0, 2);
+    const area = rr => { const h = 1, t = Math.acos(h / rr); return Math.PI * rr * rr - 4 * (rr * rr * t - h * Math.sqrt(rr * rr - h * h)); };
+    ok('the footprint alone: the circle holds 90 % of the square, corners cut', r > 1 && r < Math.SQRT2 && near(area(r) / 4, 0.9, 0.003), `${r.toFixed(4)} m for a 2 m pixel`);
+  }
+  // Against an independent draw: the blur as normal deviates, the footprint as uniform ones.
+  {
+    let seed = 11; const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return (seed + 0.5) / 4294967296; };
+    const g = () => Math.sqrt(-2 * Math.log(rnd())) * Math.cos(2 * Math.PI * rnd());
+    const draw = (sx, sy, b) => { const d = []; for (let i = 0; i < 200000; i++) d.push(Math.hypot(sx * g() + b * (rnd() - 0.5), sy * g() + b * (rnd() - 0.5))); d.sort((p, q) => p - q); return d[Math.floor(0.9 * d.length)]; };
+    for (const [name, sx, sy, b] of [['2 m pixels, sigma_eff 2.82 m', 2.82, 2.82, 2], ['Sentinel-2, sigma_eff 6.78 m, 10 m pixels', 6.78, 6.78, 10], ['a sharp sensor, 0.5 m blur on 2 m pixels', 0.5, 0.5, 2], ['a blur that is not round, 9.4 by 6.5 m, 10 m pixels', 9.42, 6.53, 10]]) {
+      const r = signalRadius(0.9, sx, sy, b), mc = draw(sx, sy, b);
+      ok(`${name}: within half a percent of 200,000 draws`, near(r, mc, 0.005), `${r.toFixed(3)} m against ${mc.toFixed(3)} m`);
+    }
+  }
+  ok('the footprint widens it, and a wider blur widens it', signalRadius(0.9, 2, 2, 3) > signalRadius(0.9, 2, 2, 0) && signalRadius(0.9, 3, 3, 3) > signalRadius(0.9, 2, 2, 3));
+  ok('it is wider than one sigma_eff by a factor of two and more: one sigma holds 39 % of a round spot',
+    signalRadius(0.9, 2.82, 2.82, 2) > 2 * 2.82 && near(signalRadius(0.3935, 1, 1), 1, 0.003));
+  ok('nothing to spread, or no share to hold, is no circle', signalRadius(0.9, 0, 0, 0) === 0 && signalRadius(0, 1, 1) === 0 && signalRadius(1, 1, 1) === 0);
+}
+
+console.log('\nH28. where one pixel\'s signal lands, cover by cover');
+{
+  // The map draws a pixel's signal as dots and prints the share of each cover.
+  // Those shares have to be the engine's own: the first one is printed beside
+  // the purity the pointer reads, and the two may not differ in the last digit.
+  const epsg = 32631;
+  const sq = (e0, n0, w, h) => [[e0, n0], [e0 + w, n0], [e0 + w, n0 + h], [e0, n0 + h], [e0, n0]];
+  const box = (res, nx, ny) => ({ res, utmBounds: [619680, 5601180, 619680 + nx * res, 5601180 + ny * res] });
+  const org = [619680, 5601180];
+  const strips = { pattern: 'row', width: 6, spacing: 1.5, rotationDeg: 17 };
+  const checker = { pattern: 'checker', width: 9, spacing: 0, rotationDeg: 0 };
+  const design = { nSpecies: 4, nBlocks: 3, plotLength: 8, plotWidth: 6, plotAlley: 1, blockAlley: 2, blocksPerRow: 3, seed: 7 };
+  const block = { pattern: 'block', width: 1, spacing: 0, rotationDeg: 12,
+    block: buildBlockPlan(design, blockPlacement([619680, 5601180, 619750, 5601240], [619690, 5601190], 12, 2, false)) };
+  // Four plots that touch, one apart behind an alley, a slanted one: sides and corners inside pixels.
+  const plots = [
+    { rings: [sq(619691.3, 5601191.7, 15.5, 14.2)], species: 0 }, { rings: [sq(619706.8, 5601191.7, 15.5, 14.2)], species: 1 },
+    { rings: [sq(619691.3, 5601205.9, 15.5, 14.2)], species: 2 }, { rings: [sq(619706.8, 5601205.9, 15.5, 14.2)], species: 0 },
+    { rings: [sq(619724.1, 5601191.7, 9, 28.4)], species: 3 },
+    { rings: [[[619692, 5601223], [619710, 5601225], [619709, 5601234], [619691, 5601232], [619692, 5601223]]], species: 1 },
+  ];
+  const all = plots.flatMap(q => q.rings.flat());
+  const plan = { epsg, plots, coverSpecies: Uint8Array.from(plots, q => q.species), plotIds: true, nSpecies: 4, footprint: convexHull(all),
+    bbox: [Math.min(...all.map(q => q[0])), Math.min(...all.map(q => q[1])), Math.max(...all.map(q => q[0])), Math.max(...all.map(q => q[1]))],
+    minFeature: 1, sig: 'h28' };
+  const trial = { pattern: 'imported', width: 2, spacing: 0, rotationDeg: 0, imported: plan };
+  const cases = [
+    ['strips at 17 degrees with alleys, 2 m pixels, sigma 1.37 px', strips, box(2, 34, 28), { sigmaX: 1.37, sigmaY: 1.37, mixThreshold: 0.9 }],
+    ['a checkerboard under a blur that is neither round nor centred', checker, box(3, 22, 18), { sigmaX: 0.6, sigmaY: 1.1, offX: 0.3, offY: -0.2, mixThreshold: 0.8 }],
+    ['a block trial at 12 degrees, 2 m pixels', block, box(2, 35, 30), { sigmaX: 1.37, sigmaY: 1.37, mixThreshold: 0.9 }],
+    ['an imported trial, 2 m pixels, sigma 1.37 px', trial, box(2, 34, 30), { sigmaX: 1.37, sigmaY: 1.37, mixThreshold: 0.9 }],
+    ['the same trial on 10 m pixels, sigma 0.6 px', trial, box(10, 8, 7), { sigmaX: 0.6, sigmaY: 0.6, mixThreshold: 0.8 }],
+    ['the same trial with no blur at all', trial, box(2, 34, 30), { sigmaX: 0, sigmaY: 0, mixThreshold: 0.8 }],
+  ];
+  let worstDots = 0;
+  for (const [name, layout, grid, sensor] of cases) {
+    const sim = simulateField(grid, org, layout, sensor);
+    const nx = Math.round((grid.utmBounds[2] - grid.utmBounds[0]) / grid.res), ny = Math.round((grid.utmBounds[3] - grid.utmBounds[1]) / grid.res);
+    let sums = 0, purity = 0, dominant = 0, sorted = 0, dots = 0, where = 0, several = 0;
+    for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+      const k = j * nx + i, src = pixelSources(grid, org, layout, sensor, i, j);
+      if (!src) { sums++; continue; }
+      const total = src.covers.reduce((a, c) => a + c.share, 0);
+      if (Math.abs(total - 1) > 1e-12) sums++;
+      if (Math.abs(src.covers[0].share - sim.purity[k]) > 1e-6) purity++;
+      if (src.covers[0].id !== sim.dominant[k]) dominant++;
+      if (src.covers.some((c, q) => q > 0 && c.share > src.covers[q - 1].share)) sorted++;
+      if (src.covers.length > 1) several++;
+      if (src.dotCover.length !== 1000 || src.dotE.length !== 1000 || src.dotN.length !== 1000) dots++;
+      // Every dot on the grid, under the cover the layout has there, and the
+      // dots of a cover within a few of its share.
+      const tally = new Map();
+      for (let m = 0; m < 1000; m++) {
+        if (!(src.dotE[m] >= grid.utmBounds[0] && src.dotE[m] <= grid.utmBounds[2] && src.dotN[m] >= grid.utmBounds[1] && src.dotN[m] <= grid.utmBounds[3])) where++;
+        if (src.dotCover[m] !== cultureAt(src.dotE[m], src.dotN[m], layout, org[0], org[1])) where++;
+        tally.set(src.dotCover[m], (tally.get(src.dotCover[m]) ?? 0) + 1);
+      }
+      for (const c of src.covers) worstDots = Math.max(worstDots, Math.abs((tally.get(c.id) ?? 0) / 1000 - c.share));
+    }
+    ok(`${name}: the shares of every pixel add up to 1, largest first`, sums === 0 && sorted === 0 && (several > 0 || sensor.sigmaX === 0), `${nx * ny} pixels, ${several} on more than one cover`);
+    ok('  and the first is the purity the simulation gives that pixel, on the cover it calls dominant', purity === 0 && dominant === 0, `${purity} purities off, ${dominant} covers off`);
+    ok('  and each is drawn as 1000 dots, on the grid, each under the cover the layout has there', dots === 0 && where === 0);
+  }
+  // A picture, not a count: measured worst over the six layouts above, 1.8 points.
+  ok('counting the dots of a cover lands within 2.5 points of its share', worstDots < 0.025, `worst ${(100 * worstDots).toFixed(2)} points`);
+  {
+    const grid = box(2, 34, 30), sensor = { sigmaX: 1.37, sigmaY: 1.37, mixThreshold: 0.9 };
+    ok('a pixel that is not in the grid has no sources',
+      pixelSources(grid, org, trial, sensor, -1, 3) === null && pixelSources(grid, org, trial, sensor, 34, 3) === null &&
+      pixelSources(grid, org, trial, sensor, 3, 30) === null && pixelSources(grid, org, trial, sensor, 2.5, 3) === null);
+    const none = pixelSources(grid, org, trial, sensor, 9, 9, 0), few = pixelSources(grid, org, trial, sensor, 9, 9, 50);
+    ok('the number of dots is the caller\'s, and none is still the shares', none.dotCover.length === 0 && none.covers.length > 0 && few.dotCover.length === 50 &&
+      few.covers[0].share === none.covers[0].share);
+    // The dots thin out with the weight: none denser than in the pixel itself.
+    const src = pixelSources(grid, org, trial, sensor, 9, 9);
+    const inPixel = Array.from(src.dotE).filter((E, m) => E >= 619698 && E < 619700 && src.dotN[m] >= 5601198 && src.dotN[m] < 5601200).length;
+    ok('the pixel itself carries the most dots, and their spacing says so', inPixel > 0 && Math.abs(src.spacingM - 2 / Math.sqrt(inPixel)) < 1e-12, `${inPixel} dots in its own square, ${src.spacingM.toFixed(3)} m apart`);
+    ok('a kernel that weighs nothing on the grid has no sources', pixelSources({ res: 10, utmBounds: [619680, 5601180, 619780, 5601280] }, org, trial, { sigmaX: 0.05, sigmaY: 0.05, offX: 0, offY: 2, mixThreshold: 0.8 }, 3, 9) === null);
+  }
+}
+
+console.log('\nH29. the placement of an imported trial that keeps the most pure pixels');
+{
+  // "Aligned" turned a trial along the pixel rows and called that the best it
+  // could be. It is one placement among others; the search looks at every
+  // angle and position and lets the engine decide between the best of them.
+  const epsg = 32631, ALL = [-Infinity, -Infinity, Infinity, Infinity];
+  /** cols x rows plots of w x h metres, touching, the whole turned by `deg` about (cx, cy). */
+  const trial = (cols, rows, w, h, deg, tag, cx = 619730.3, cy = 5601220.7) => {
+    const t = (deg * Math.PI) / 180, c = Math.cos(t), sn = Math.sin(t);
+    const at = (u, v) => [cx + u * c - v * sn, cy + u * sn + v * c];
+    const plots = [];
+    for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) {
+      const u = (i - cols / 2) * w, v = (j - rows / 2) * h;
+      plots.push({ rings: [[at(u, v), at(u + w, v), at(u + w, v + h), at(u, v + h), at(u, v)]], species: (i + j) % 3 });
+    }
+    const all = plots.flatMap(q => q.rings.flat());
+    return { epsg, plots, coverSpecies: Uint8Array.from(plots, q => q.species), plotIds: true, nSpecies: 3, footprint: convexHull(all),
+      bbox: [Math.min(...all.map(q => q[0])), Math.min(...all.map(q => q[1])), Math.max(...all.map(q => q[0])), Math.max(...all.map(q => q[1]))],
+      minFeature: Math.min(w, h), sig: `h29-${tag}` };
+  };
+  const pure = (plan, r, sensor) => purePixels(plan, r, sensor, importedTrialExtent(plan, r, sensor, ALL));
+  const sharp = { sigmaX: 0, sigmaY: 0, mixThreshold: 0.9 }, blur = { sigmaX: 1.37, sigmaY: 1.37, mixThreshold: 0.9 };
+
+  // Plots of whole pixels: along the rows and on the lattice every pixel is pure, and nothing else gets there.
+  {
+    const base = trial(4, 3, 6, 6, 17, 'whole');
+    const best = bestPlacement(base, 2, sharp);
+    ok('plots of 3 x 3 pixels drawn at 17 degrees: the best placement is along the rows, every pixel pure',
+      best.searched && best.pure === 4 * 3 * 9 && alignedWithin(best.angle, 0.01) && pure(base, 2, sharp) < best.pure,
+      `${best.pure} pure at ${best.angle.toFixed(2)} deg, ${pure(base, 2, sharp)} as drawn`);
+    const there = shiftImportedPlan(rotateImportedPlan(base, best.turn), best.shift[0], best.shift[1]);
+    ok('the turn and the shift it returns are the placement it counted', pure(there, 2, sharp) === best.pure && alignedWithin(trialAngle(there) - best.angle, 1e-6));
+  }
+  // Plots that are not whole pixels, under a blur: the rows are not the answer.
+  {
+    const base = trial(6, 9, 14.19, 15.49, 50.42, 'real');
+    const drawn = pure(base, 2, blur);
+    const turned = rotateImportedPlan(base, -50.42);
+    const rows = pure(stakeOnGrid(turned, 2, blur, importedTrialExtent(turned, 2, blur, ALL)).plan, 2, blur);
+    const best = bestPlacement(base, 2, blur);
+    ok('54 plots of 14.19 x 15.49 m on 2 m pixels, sigma 1.37 px: the best placement beats the trial as drawn and the trial along the rows',
+      best.searched && best.pure > drawn && best.pure > rows && !alignedWithin(best.angle, 1),
+      `${best.pure} pure at ${best.angle.toFixed(2)} deg, ${drawn} as drawn, ${rows} along the rows`);
+    ok('and the count it returns is the engine\'s, at that placement', pure(best.plan, 2, blur) === best.pure);
+    // The same search, a slice at a time, and asked for twice.
+    const again = placementSearch(base, 2, blur);
+    ok('a search already run is kept: asked again, it is the same one, finished', again.found === best && again.step() === true);
+    const fresh = placementSearch(trial(6, 9, 14.19, 15.49, 50.42, 'real-2'), 2, blur);
+    let slices = 0; while (!fresh.step()) slices++;
+    ok('run a slice at a time it comes to the same placement, in more than a handful of slices',
+      slices >= 5 && fresh.found.pure === best.pure && fresh.found.turn === best.turn && fresh.found.shift.join() === best.shift.join(), `${slices + 1} slices`);
+    // With a geolocation error the page judges on the pixels that hold within it.
+    const ce90 = 1.43;
+    const held = bestPlacement(base, 2, blur, ce90);
+    ok('with a CE90 it is searched on the pixels that hold within it, and returns that count',
+      held.searched && held.pure === heldPixels(held.plan, 2, blur, ce90) && held.pure > heldPixels(base, 2, blur, ce90) && held.pure < best.pure,
+      `${held.pure} hold at ${held.angle.toFixed(2)} deg, ${heldPixels(base, 2, blur, ce90)} as drawn`);
+    ok('the pixels that hold are fewer than the pure ones, and all of them with no error at all',
+      heldPixels(base, 2, blur, ce90) < drawn && heldPixels(base, 2, blur, 0) === drawn);
+    // Where nothing is pure there is nothing to gain, and the trial stays where it is.
+    const coarse = bestPlacement(base, 10, blur);
+    ok('at a size where no pixel is pure the trial is left as drawn', coarse.searched && coarse.pure === 0 && coarse.turn === 0 && coarse.shift.join() === '0,0' && coarse.plan === base);
+    // Too little budget for the trial as drawn and one other: no search, and it says so.
+    const none = bestPlacement(base, 2, blur, 0, 5000);
+    ok('a budget that does not pay for two placements searches nothing, and says so', !none.searched && none.plan === base && none.turn === 0 && Number.isNaN(none.pure));
+  }
+  // Never worse than the trial as drawn, whatever the stand-in thought.
+  {
+    let worse = 0, gained = 0, n = 0;
+    for (const [cols, rows, w, h, deg, r, sensor] of [
+      [3, 3, 9, 7, 31, 3, blur], [5, 2, 4.5, 11, 72.5, 1, sharp], [2, 6, 12.3, 5.2, 8, 2, { sigmaX: 0.6, sigmaY: 1.1, mixThreshold: 0.8 }],
+      [4, 4, 10, 10, 0, 2, blur], [3, 5, 7.7, 13.1, 45, 2.5, blur],
+    ]) {
+      const base = trial(cols, rows, w, h, deg, `sweep-${n++}`);
+      const best = bestPlacement(base, r, sensor), drawn = pure(base, r, sensor);
+      if (best.pure < drawn || pure(best.plan, r, sensor) !== best.pure) worse++;
+      if (best.pure > drawn) gained++;
+    }
+    ok('over five other trials and sensors it is never below the trial as drawn, and above it on some', worse === 0 && gained >= 2, `${gained} of 5 gained`);
+  }
+}
+
+console.log('\nH30. the ladder\'s rows are satellites');
+{
+  const sats = SOURCES.filter(q => q.id !== 'custom');
+  const rows = ladderRungs({ id: 's2-10', res: 10, sigmaX: 0.59, sigmaY: 0.59 });
+  ok('every satellite of the list has a row, and a custom sensor none while a satellite is selected',
+    rows.length === sats.length && sats.every(q => rows.some(g => g.id === q.id)) && !rows.some(g => g.id === 'custom'), `${rows.length} rows`);
+  ok('finest pixels first, two satellites with the same pixels in the order of the list',
+    rows.every((g, k) => k === 0 || g.res >= rows[k - 1].res)
+    && rows.findIndex(g => g.id === 'pleiades-ps') < rows.findIndex(g => g.id === 'skysat') && rows.findIndex(g => g.id === 'hls-30') < rows.findIndex(g => g.id === 'ls-30'));
+  ok('each at its own pixel size and blur, both axes',
+    rows.every(g => { const q = SOURCES.find(x => x.id === g.id); return g.res === q.res && g.sigmaX === q.psf && g.sigmaY === q.psf && g.name === q.short; }));
+  // The one selected is the trial on the map: its figures are the page's, edits included.
+  const edited = ladderRungs({ id: 'pleiades', res: 2.5, sigmaX: 1.3, sigmaY: 0.9 });
+  const p = edited.find(g => g.id === 'pleiades');
+  ok('the satellite selected is taken as it stands on the page, and moves to where its pixel size puts it',
+    p.res === 2.5 && p.sigmaX === 1.3 && p.sigmaY === 0.9 && edited.findIndex(g => g.id === 'pleiades') === edited.findIndex(g => g.id === 'planet') - 1
+    && edited.filter(g => g.id !== 'pleiades').every(g => g.res === SOURCES.find(x => x.id === g.id).res));
+  const custom = ladderRungs({ id: 'custom', res: 3, sigmaX: 1.37, sigmaY: 1.37 });
+  const c = custom.find(g => g.id === 'custom');
+  ok('a custom sensor has a row while it is the one in use, at its own figures',
+    custom.length === sats.length + 1 && !!c && c.res === 3 && c.sigmaX === 1.37 && c.name === 'Custom');
+  ok('no two rows share an id, and every name fits a narrow table', new Set(custom.map(g => g.id)).size === custom.length && SOURCES.every(q => q.short.length <= 12), SOURCES.map(q => q.short).join(', '));
+}
+
+console.log('\nH31. the driver\'s own path through the engine gives what aggregate gives, to the last bit');
+{
+  // simulateField no longer goes through `aggregate`: it runs the one case the
+  // page ever asks for (no series, no rotation of the fine grid, the outside
+  // weighed in) on its own, reading a fine cell once, summing in a register and
+  // settling a pixel whose whole window is one cover without summing at all.
+  // That is only allowed if every figure is the one `aggregate` gives.
+  // simulateFieldReference IS the old path, so the two are compared whole.
+  const { simulateFieldReference, fieldVerdicts, pureVerdictCount } = await import(path.join(BUILD, 'src/pixel-grid/simulate.mjs'));
+  const bytes = a => new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
+  const sameArr = (x, y) => (x === null || y === null ? x === y
+    : x.constructor === y.constructor && x.length === y.length && bytes(x).every((v, i) => v === bytes(y)[i]));
+  const ARR = ['mixed', 'proportionA', 'proportionBare', 'purity', 'dominant', 'pureBySpecies', 'meanBySpecies', 'proportionBySpecies', 'proportionOffTrial'];
+  const NUM = ['purePct', 'pureCrop', 'pureBare', 'total', 'meanPropA', 'nSpecies', 'pureA', 'pureB'];
+  const differs = (x, y) => ARR.find(k => !sameArr(x[k], y[k])) ?? NUM.find(k => !Object.is(x[k], y[k])) ?? null;
+
+  const E0 = 619280, N0 = 5600840, epsg = 32631;
+  const boxOf = (nx, ny, r, dE = 0, dN = 0) => ({ res: r, utmBounds: [E0 + dE, N0 + dN, E0 + dE + nx * r, N0 + dN + ny * r] });
+  const design = { nSpecies: 4, nBlocks: 3, plotLength: 15.5, plotWidth: 6, plotAlley: 1, blockAlley: 2, blocksPerRow: 2, seed: 7 };
+  const blockAt = (deg, r, box) => ({ pattern: 'block', width: 2, spacing: 0, rotationDeg: deg,
+    block: buildBlockPlan(design, blockPlacement(box.utmBounds, [E0, N0], deg, r, true)) });
+  const trial = (cols, rows, w, h, deg, tag) => {
+    const cx = E0 + 41.3, cy = N0 + 33.7, t = (deg * Math.PI) / 180, c = Math.cos(t), sn = Math.sin(t);
+    const at = (u, v) => [cx + u * c - v * sn, cy + u * sn + v * c];
+    const plots = [];
+    for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) {
+      const u = (i - cols / 2) * (w + 0.7), v = (j - rows / 2) * h;
+      plots.push({ rings: [[at(u, v), at(u + w, v), at(u + w, v + h), at(u, v + h), at(u, v)]], species: (i + 2 * j) % 3 });
+    }
+    const all = plots.flatMap(q => q.rings.flat());
+    return { epsg, plots, coverSpecies: Uint8Array.from(plots, q => q.species), plotIds: true, nSpecies: 3, footprint: convexHull(all),
+      bbox: [Math.min(...all.map(q => q[0])), Math.min(...all.map(q => q[1])), Math.max(...all.map(q => q[0])), Math.max(...all.map(q => q[1]))],
+      minFeature: 0.7, sig: `h31-${tag}` };
+  };
+  const sensors = [
+    { sigmaX: 0, sigmaY: 0, mixThreshold: 0.9 }, { sigmaX: 0.3, sigmaY: 0.3, mixThreshold: 0.8 }, { sigmaX: 0.62, sigmaY: 0.62, mixThreshold: 0.9 },
+    { sigmaX: 1.37, sigmaY: 1.37, mixThreshold: 0.9 }, { sigmaX: 0.6, sigmaY: 1.1, mixThreshold: 0.75 },
+    { sigmaX: 0.8, sigmaY: 0.8, offX: 0.4, offY: -0.3, mixThreshold: 0.85 }, { sigmaX: 2.4, sigmaY: 0.2, mixThreshold: 0.5 },
+    { sigmaX: 1, sigmaY: 1, mixThreshold: 1.01 },                                   // nothing can be pure
+    { sigmaX: 0.05, sigmaY: 0.05, offX: 2, offY: 0, mixThreshold: 0.9 },              // a kernel that underflows on the pixel itself
+  ];
+  const layouts = [];
+  for (const pattern of ['row', 'col', 'checker', 'strip-row-2', 'strip-col-2']) {
+    for (const [deg, spacing] of [[0, 0], [0, 0.6], [17, 0], [90, 0.4], [-33, 1.1], [180, 0]]) {
+      layouts.push([`${pattern} ${deg} deg, alley ${spacing}`, () => ({ pattern, width: 3.3, spacing, rotationDeg: deg }), [E0 + 1.234, N0 - 0.777]]);
+    }
+  }
+  for (const deg of [0, 12, 90, -45]) layouts.push([`block ${deg} deg`, (r, box) => blockAt(deg, r, box), [E0, N0]]);
+  layouts.push(['block with no plan', () => ({ pattern: 'block', width: 2, spacing: 0, rotationDeg: 0 }), [E0, N0]]);
+  for (const deg of [0, 23.5, 50.42]) {
+    const plan = trial(4, 3, 9.1, 12.3, deg, `t${deg}`);
+    layouts.push([`imported ${deg} deg`, () => ({ pattern: 'imported', width: 1, spacing: 0, rotationDeg: 0, imported: plan }), [0, 0]]);
+  }
+  const grids = [[36, 29, 2], [9, 7, 10], [1, 1, 5], [1, 23, 3], [31, 2, 2.5], [60, 44, 1]];
+
+  let runs = 0, flatPixels = 0;
+  const wrong = [], wrongCount = [], wrongVerdict = [], wrongNeed = [];
+  let seed = 12345;
+  const rnd = () => { seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  for (const [name, make, origin] of layouts) {
+    for (const [nx, ny, r] of grids) {
+      const box = boxOf(nx, ny, r, 0.5 * r * Math.floor(name.length % 3), 0);
+      const layout = make(r, box);
+      for (const sensor of sensors) {
+        // The slow reference for every sensor on the small grids, for three on the large one.
+        if (nx * ny > 2000 && ![sensors[2], sensors[3], sensors[5]].includes(sensor)) continue;
+        runs++;
+        const tag = `${name} | ${nx}x${ny} @${r} | ${JSON.stringify(sensor)}`;
+        const ref = simulateFieldReference(box, origin, layout, sensor);
+        const got = simulateField(box, origin, layout, sensor);
+        const d = differs(got, ref);
+        if (d) wrong.push(`${tag}: ${d}`);
+        for (let k = 0; k < ref.purity.length; k++) if (ref.purity[k] === 1) flatPixels++;
+        if (pureVerdictCount(ref.mixed) !== ref.pureCrop) wrongCount.push(tag);
+        if (!sameArr(fieldVerdicts(box, origin, layout, sensor), ref.mixed)) wrongVerdict.push(tag);
+        // Asked about some pixels only: those are the whole simulation's, the others read mixed (or off-trial, for a blind one).
+        const need = Uint8Array.from({ length: nx * ny }, () => (rnd() < 0.3 ? 1 : 0));
+        const part = fieldVerdicts(box, origin, layout, sensor, need);
+        for (let k = 0; k < need.length; k++) {
+          if (need[k] ? part[k] !== ref.mixed[k] : (part[k] !== MIXED && part[k] !== OFF_TRIAL.id)) { wrongNeed.push(`${tag} at ${k}`); break; }
+        }
+      }
+    }
+  }
+  ok('simulateField equals the path through aggregate on every array and every figure', wrong.length === 0,
+    wrong.length ? wrong.slice(0, 3).join(' ;; ') : `${runs} simulations, ${layouts.length} layouts`);
+  ok('among them pixels settled without a sum (a purity of exactly 1), so the shortcut is exercised', flatPixels > 5000, `${flatPixels} pixels`);
+  ok('fieldVerdicts is that simulation\'s verdict bytes', wrongVerdict.length === 0, wrongVerdict.slice(0, 2).join(' ;; '));
+  ok('asked about some pixels only, it gives those the same verdict and never a pure one to the others', wrongNeed.length === 0, wrongNeed.slice(0, 2).join(' ;; '));
+  ok('pureVerdictCount is the simulation\'s pure crop count, pixels half off the trial included in the reasoning', wrongCount.length === 0, wrongCount.slice(0, 2).join(' ;; '));
+
+  // The fine cover map is no longer worked out a cell at a time along the pixel rows.
+  {
+    let bad = null, cells = 0;
+    for (const [name, make, origin] of layouts) {
+      if (name.startsWith('imported')) continue;
+      const r = 2, nx = 13, ny = 9, box = boxOf(nx, ny, r), layout = make(r, box);
+      const g = strideFor(r, minFeatureM(layout)), fine = r / g, rows = ny * g, cols = nx * g;
+      const map = buildCropMap(box.utmBounds[0], box.utmBounds[1], rows, cols, fine, origin[0], origin[1], layout);
+      const t = (layout.rotationDeg * Math.PI) / 180, cos = Math.cos(t), sin = Math.sin(t);
+      for (let rr = 0; rr < rows && !bad; rr++) for (let c = 0; c < cols; c++) {
+        const dx = box.utmBounds[0] + (c + 0.5) * fine - origin[0], dy = box.utmBounds[1] + (rr + 0.5) * fine - origin[1];
+        cells++;
+        if (map[rr * cols + c] !== patternCultureUV(dx * cos + dy * sin, -dx * sin + dy * cos, layout)) { bad = `${name} at row ${rr}, column ${c}`; break; }
+      }
+    }
+    ok('buildCropMap is patternCultureUV at every fine cell, along the pixel rows and turned', bad === null, bad ?? `${cells} cells`);
+  }
+  // Outside the plain case the driver still answers, through aggregate.
+  {
+    const box = boxOf(6, 5, 4), layout = { pattern: 'row', width: 3, spacing: 0, rotationDeg: 0 };
+    const odd = { sigmaX: NaN, sigmaY: 0.5, mixThreshold: 0.9 };
+    ok('a blur that is not a number goes through aggregate, as before', differs(simulateField(box, [E0, N0], layout, odd), simulateFieldReference(box, [E0, N0], layout, odd)) === null);
+    const none = { res: 4, utmBounds: [E0, N0, E0, N0] };
+    ok('and so does an extent with no pixel in it', differs(simulateField(none, [E0, N0], layout, sensors[2]), simulateFieldReference(none, [E0, N0], layout, sensors[2])) === null);
+  }
+}
+
+console.log('\nH32. the pixels that hold within the CE90, without simulating the ones that cannot matter');
+{
+  const { simulateFieldReference } = await import(path.join(BUILD, 'src/pixel-grid/simulate.mjs'));
+  const { heldMask, holdTracker, ce90For } = await import(path.join(BUILD, 'src/pixel-grid/resolving.mjs'));
+  const { pixelVerdicts } = await import(path.join(BUILD, 'src/pixel-grid/pixel-verdicts.mjs'));
+  const { ladderStep, ladderSearch } = await import(path.join(BUILD, 'src/pixel-grid/ladder-step.mjs'));
+  // heldMask against robustMask on verdicts made up to hit every case.
+  {
+    let seed = 99, diff = 0, asked = 0, skipped = 0;
+    const rnd = () => { seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+    for (let trialNo = 0; trialNo < 40; trialNo++) {
+      const n = 60;
+      const pick = () => { const u = rnd(); return u < 0.15 ? MIXED : u < 0.2 ? BARE.id : u < 0.25 ? OFF_TRIAL.id : Math.floor(rnd() * 3); };
+      const nominal = Uint8Array.from({ length: n }, pick);
+      const shifted = Array.from({ length: 8 }, () => Uint8Array.from(nominal, v => (rnd() < 0.12 ? pick() : v)));
+      const mask = heldMask(nominal, 8, (q, need) => {
+        asked++;
+        // What a placement returns for a pixel it was not asked about must not be read.
+        return Uint8Array.from(shifted[q], (v, k) => (need[k] ? v : 77));
+      });
+      const want = robustMask(nominal, shifted);
+      if (mask.some((v, k) => v !== want[k])) diff++;
+      const none = heldMask(Uint8Array.from({ length: n }, () => MIXED), 8, () => { skipped++; return new Uint8Array(n); });
+      if (none.some(v => v)) diff++;
+    }
+    ok('heldMask is robustMask, reading only the pixels it asked about', diff === 0 && asked > 0, `${asked} placements asked`);
+    ok('and with no pure pixel left no placement is simulated at all', skipped === 0);
+    const hold = holdTracker(Uint8Array.of(0, 1, MIXED, 2));
+    hold.take(Uint8Array.of(0, 5, 0, 2));
+    ok('holdTracker counts what is left and marks it', hold.left() === 2 && Array.from(hold.alive).join() === '1,0,0,1');
+  }
+  // The export's PURE_CE90 column against eight whole simulations through aggregate.
+  {
+    const E0 = 619280, N0 = 5600840;
+    const grid = { res: 2, utmBounds: [E0, N0, E0 + 80, N0 + 64] };
+    const design = { nSpecies: 3, nBlocks: 2, plotLength: 14, plotWidth: 8, plotAlley: 1, blockAlley: 2, blocksPerRow: 2, seed: 3 };
+    const sensor = { sigmaX: 0.62, sigmaY: 0.62, mixThreshold: 0.9 };
+    let wrong = 0, held = 0;
+    for (const deg of [0, 9]) {
+      const layout = { pattern: 'block', width: 2, spacing: 0, rotationDeg: deg, block: buildBlockPlan(design, blockPlacement(grid.utmBounds, [E0, N0], deg, 2, true)) };
+      const v = pixelVerdicts(grid, [E0, N0], layout, sensor, 1.43);
+      const nominal = simulateFieldReference(grid, [E0, N0], layout, sensor).mixed;
+      const want = robustMask(nominal, ce90Shifts(1.43).map(([dx, dy]) => simulateFieldReference(grid, [E0 - dx, N0 - dy], layout, sensor).mixed));
+      if (v.robust.some((x, k) => x !== want[k]) || v.pure.some((x, k) => x !== (nominal[k] <= MAX_COVER ? 1 : 0))) wrong++;
+      held += v.robust.reduce((a, x) => a + x, 0);
+    }
+    ok('pixelVerdicts marks the pixels eight whole simulations would', wrong === 0, `${wrong} of 2 layouts differ`);
+    ok('and some of them hold, so the comparison is not of two empty sets', held >= 10, `${held} hold`);
+  }
+  // A rung is computed from plain data, so that a worker can be handed it.
+  {
+    const E0 = 619280, N0 = 5600840, epsg = 32631;
+    const toLL = proj4(`+proj=utm +zone=31 +datum=WGS84 +units=m +no_defs`, 'EPSG:4326');
+    const [w, so] = toLL.forward([E0, N0]), [e, n] = toLL.forward([E0 + 90, N0 + 70]);
+    const aoi = [w, so, e, n];
+    const design = { nSpecies: 3, nBlocks: 2, plotLength: 14, plotWidth: 8, plotAlley: 1, blockAlley: 2, blocksPerRow: 2, seed: 3 };
+    const origin = aoiUtmOrigin(aoi, epsg);
+    const env = utmEnvelope(aoi, epsg);
+    const layout = { pattern: 'block', width: 2, spacing: 0, rotationDeg: 9, block: buildBlockPlan(design, blockPlacement(env, origin, 9, 2, true)) };
+    const ctx = { aoi, fieldRing: null, epsg, layout, threshold: 90, blockDesign: design, importedAngle: 0, importedFileAngle: 0, importedBasePlan: undefined, geoAuto: true, geoManual: 0 };
+    const rung = { id: 'pleiades', name: 'Pléiades MS', res: 2, sigmaX: 0.62, sigmaY: 0.62 };
+    const here = ladderStep(ctx, 9, rung, true);
+    const there = ladderStep(structuredClone(ctx), 9, rung, true);
+    const flat = q => JSON.stringify(q, (k, v) => (ArrayBuffer.isView(v) ? Array.from(v) : v));
+    ok('a rung computed from a copy of its context, as a worker gets it, is the same rung', flat(here) === flat(there), `${here.pureCount} pure of ${here.trialCount}`);
+    ok('it carries the figures a row prints: the share, the pixels that hold, the CE90 of its own size',
+      here.resolvingPct > 0 && here.geoRobust <= here.resolvingPct && here.geoRobustPure <= here.pureCount && here.ce90M === Math.round(ce90For(true, 0, 2) * 100) / 100,
+      `${here.resolvingPct?.toFixed(1)} %, ${here.geoRobust?.toFixed(1)} % within ${here.ce90M} m`);
+    // The same count by eight whole simulations of the rung's own box.
+    const typed = ladderStep({ ...ctx, geoAuto: false, geoManual: 0 }, 9, rung, true);
+    ok('with no geolocation error the rung has no CE90 figures and the same pure pixels', typed.geoRobust === undefined && typed.ce90M === undefined && typed.pureCount === here.pureCount);
+    ok('with no trial there is no search to run', ladderSearch(ctx, rung) === null);
+    ok('ce90For is the note\'s default while nothing is typed, else the figure typed at every size',
+      Math.abs(ce90For(true, 3, 10) - (CE90_TO_SIGMA * 10) / 3) < 1e-12 && ce90For(false, 3, 10) === 3 && ce90For(false, 3, 0.5) === 3);
+  }
 }
 
 console.log('\n' + (bad ? `${bad} FAILURE(S)` : 'ALL PIXEL-GRID CHECKS PASSED'));

@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { CircleMarker, GeoJSON, Polygon, Polyline, Rectangle, Tooltip as LTooltip, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import proj4 from 'proj4';
 import { crsToProj4Def } from '../lib/geo';
 import { clipPolygon, type Poly } from './geometry';
-import { cultureForCell, blockPlots, type SimLayout, BARE, OFF_TRIAL, CROP_COLORS } from './simulate';
-import type { LngLatBounds } from './s2-grid';
+import { cultureForCell, blockPlots, type FieldSim, type PixelSources, type SimLayout, BARE, MAX_COVER, MIXED, OFF_TRIAL, CROP_COLORS } from './simulate';
+import { coverNamer } from './signal-sources';
+import type { LngLatBounds, S2Grid } from './s2-grid';
 
 /**
  * Everything drawn ON the Leaflet map, and the two draw tools that put a field
@@ -222,13 +224,18 @@ function GridLines({ box, res, epsg, color, weight, onStep }: {
     return { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'MultiLineString', coordinates: lines } }] } as GeoJSON.FeatureCollection;
   }, [box[0], box[1], box[2], box[3], step, epsg]);
   useEffect(() => { onStep?.(stride > 1 ? step : 0); }, [onStep, stride, step]);
-  if (!data) return null;
   // Stroke and opacity follow the RULED gap, not the pixel size, so a strided
   // grid is as legible as a close-up one instead of fading away.
   const gapPx = cellPx * stride;
   const w = Math.max(0.35, Math.min(weight, gapPx * 0.16));
   const opacity = Math.max(0.35, Math.min(0.6, gapPx / 5));
-  return <GeoJSON key={`gl-${box.join('_')}-${step}-${color}-${w.toFixed(2)}-${opacity.toFixed(2)}`} data={data} style={() => ({ color, weight: w, opacity, interactive: false }) as L.PathOptions} />;
+  // One function for as long as the look is the same: a new one on each render
+  // had react-leaflet restyle the lines after every pan (the key below is what
+  // redraws them when the look changes, and it is made of these same values).
+  const look = `${color}-${w.toFixed(2)}-${opacity.toFixed(2)}`;
+  const style = useMemo(() => () => ({ color, weight: w, opacity, interactive: false }) as L.PathOptions, [look]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!data) return null;
+  return <GeoJSON key={`gl-${box.join('_')}-${step}-${look}`} data={data} style={style} />;
 }
 
 /**
@@ -317,6 +324,178 @@ function PsfOverlay({ center, sigmaXM, sigmaYM, fwhmXM, fwhmYM, light = false }:
       </Polygon>
     </>
   );
+}
+
+/**
+ * The three spreads of the blur budget, to scale on the ground: sigma_PSF, the
+ * blur of the optics; sigma_geo, how far the image may sit from where its
+ * coordinates say; and sigma_eff, the two combined. One ring each, at one
+ * sigma, around the centre of the pixel nearest the middle of the field, with
+ * its name and its value on it.
+ *
+ * Drawn on the map because that is where they mean something: next to the
+ * pixel they belong to and the plots they blur. A ring of sigma_geo as wide as
+ * a pixel, or a sigma_eff ring that sits on the sigma_PSF one, is read at a
+ * glance there and takes a row of figures to see in the budget's table.
+ *
+ * sigma_PSF and sigma_eff are ellipses when the blur is not the same on both
+ * axes (Leaflet has no ellipse, so they are traced); the geolocation error has
+ * no direction, and its ring is a circle.
+ */
+function SigmaRings({ center, psfXM, psfYM, geoM, light = false }: {
+  center: [number, number];
+  /** sigma_PSF along x and y, in metres. */
+  psfXM: number; psfYM: number;
+  /** sigma_geo per axis, in metres; 0 when no geolocation error is set. */
+  geoM: number;
+  /** True for a pale basemap, where the rings need the darker of each colour. */
+  light?: boolean;
+}) {
+  /**
+   * The broken rings are not one sigma. A Gaussian holds 90 % of itself within
+   * sqrt(2 ln 10) = 2.146 of its sigma, and there is one such ring per
+   * Gaussian that a signal can be said to follow:
+   *
+   *  - WITHOUT the CE90: the signal a sensor receives when it points at the
+   *    centre of the pixel, 2.146 sigma_PSF. This is the one the purity figure
+   *    goes with, and the one drawn when no geolocation error is set.
+   *  - WITH the CE90: the same over many images, each a little off its
+   *    coordinates, 2.146 sigma_eff. In the colour of the sigma_eff ring.
+   *
+   * Plain Gaussians both, so that either is checked by hand; the pixel's own
+   * square is in neither. One sigma holds 39 % of a round spot, so the solid
+   * rings read as much tighter than the ground a pixel answers for.
+   */
+  const K90 = Math.sqrt(-2 * Math.log(0.1));
+  const r90X = K90 * psfXM, r90Y = K90 * psfYM;
+  const e90X = K90 * Math.hypot(psfXM, geoM), e90Y = K90 * Math.hypot(psfYM, geoM);
+  if (!(Math.max(psfXM, psfYM) > 0)) return null;
+  const [lat, lng] = center;
+  const mPerLat = 111320, mPerLng = 111320 * Math.cos((lat * Math.PI) / 180);
+  const at = (dxM: number, dyM: number): [number, number] => [lat + dyM / mPerLat, lng + dxM / mPerLng];
+  const ring = (rxM: number, ryM: number): [number, number][] =>
+    Array.from({ length: 180 }, (_, k) => { const t = (k / 180) * 2 * Math.PI; return at(rxM * Math.cos(t), ryM * Math.sin(t)); });
+  const effXM = Math.hypot(psfXM, geoM), effYM = Math.hypot(psfYM, geoM);
+  const aniso = Math.abs(psfXM - psfYM) > 1e-9;
+  const m = (x: number, y: number) => (aniso ? `${x.toFixed(2)} × ${y.toFixed(2)} m` : `${x.toFixed(2)} m`);
+  const line = light ? { psf: '#0369a1', geo: '#6d28d9', eff: '#be123c' } : { psf: '#38bdf8', geo: '#a78bfa', eff: '#fb7185' };
+  const text = { psf: '#7dd3fc', geo: '#c4b5fd', eff: '#fda4af', all: '#f1f5f9' };
+  // (The rings are drawn with no simplification: Leaflet thins a path as it
+  // gets small on screen, and a ring a few pixels across came out an octagon.)
+  // ONE label, beside the rings, with a line per sigma in its ring's colour.
+  // A name hung on each ring sat on the other two as soon as the rings were
+  // closer together than a label is wide, which at most zooms they are. On a
+  // dark plate whatever the basemap, and with no arrow: it points at nothing
+  // the colours do not already say.
+  const TIP = 'border-0! bg-[#11151a]/90! px-2! py-1! text-[12px]! leading-snug! font-medium! shadow-none! before:hidden!';
+  const row = (color: string, name: string, value: string) => (
+    <div style={{ color }}>σ<sub>{name}</sub> {value}</div>
+  );
+  return (
+    <>
+      {geoM > 0 && <Polygon positions={ring(e90X, e90Y)} smoothFactor={0}
+        pathOptions={{ color: line.eff, weight: 2, dashArray: '7 6', fill: false, interactive: false }} />}
+      <Polygon positions={ring(r90X, r90Y)} smoothFactor={0}
+        pathOptions={{ color: light ? '#0f172a' : '#f8fafc', weight: 2, dashArray: '7 6', fill: false, interactive: false }} />
+      <Polygon positions={ring(effXM, effYM)} smoothFactor={0} pathOptions={{ color: line.eff, weight: 2, fill: false, interactive: false }} />
+      <Polygon positions={ring(psfXM, psfYM)} smoothFactor={0} pathOptions={{ color: line.psf, weight: 2, dashArray: geoM > 0 ? undefined : '6 4', fill: false, interactive: false }} />
+      {geoM > 0 && <Polygon positions={ring(geoM, geoM)} smoothFactor={0} pathOptions={{ color: line.geo, weight: 2, fill: false, interactive: false }} />}
+      {/* On the LEFT of the rings: the purity readout hangs to the right of the
+          pointer, and right after a click the pointer is on this very pixel. */}
+      <CircleMarker center={at(-e90X, 0)} radius={0.1} pathOptions={{ opacity: 0, fillOpacity: 0, interactive: false }}>
+        <LTooltip permanent direction="left" offset={[-8, 0]} className={TIP}>
+          {row(text.psf, 'PSF', m(psfXM, psfYM))}
+          {/* With no geolocation error the two are one ring, and it says so. */}
+          {geoM > 0 ? row(text.geo, 'geo', `${geoM.toFixed(2)} m`) : null}
+          {row(text.eff, 'eff', geoM > 0 ? m(effXM, effYM) : '= PSF')}
+          <div style={{ color: text.all }}>90 % of signal{geoM > 0 ? ', without CE90:' : ' within'} {m(r90X, r90Y)}</div>
+          {geoM > 0 ? <div style={{ color: text.eff }}>90 % of signal, with CE90: {m(e90X, e90Y)}</div> : null}
+        </LTooltip>
+      </CircleMarker>
+    </>
+  );
+}
+
+/**
+ * One pixel's signal as dots of equal weight, each in the colour of the cover
+ * it lands on, with the pixel's own square outlined under them.
+ *
+ * Dots, and not a glow whose strength follows the weight: a glow fades to
+ * nothing where the signal is thin, and the thin part is spread over so much
+ * ground that it adds up. That is what a circle holding 90 % of the signal
+ * hid: a tenth of it lies beyond, and on a pixel near a border a good part of
+ * that tenth is still on its own plot. A dot far out weighs what a dot at the
+ * centre weighs, and is drawn as large.
+ *
+ * Canvas markers added by hand, not a thousand React elements: the map tree
+ * re-renders on every pan (see FieldMap), and these do not change with it.
+ * Their radius is in screen pixels, taken from the ground between two dots
+ * where they are densest, so that at any zoom the dots of the pixel itself
+ * nearly touch and never merge; below that they would be specks, and there
+ * they stop shrinking and run into a patch of colour, which still reads.
+ */
+function SignalDots({ sources, colorOf, epsg, ring, pane }: {
+  sources: PixelSources;
+  /** The colour of each cover id's dots. */
+  colorOf: string[];
+  epsg: number;
+  /** The pixel's own square, as [lat, lng] corners. */
+  ring: [number, number][] | null;
+  /** The pane the dots are drawn in: between the PSF haze and the sigma rings. */
+  pane: string;
+}) {
+  const map = useMap();
+  useEffect(() => {
+    const n = sources.dotCover.length;
+    if (!n || !map.getPane(pane)) return;
+    const inv = proj4(crsToProj4Def(`EPSG:${epsg}`), 'EPSG:4326');
+    const [, lat0] = inv.forward([sources.dotE[0], sources.dotN[0]]);
+    const look = (): L.CircleMarkerOptions => {
+      const pxPerM = Math.pow(2, map.getZoom()) / (156543.03392 * Math.cos((lat0 * Math.PI) / 180));
+      const radius = Math.max(1.2, Math.min(5, 0.36 * sources.spacingM * pxPerM));
+      // A dark edge sets a dot apart from a plot of its own colour; on a speck it would be all there is.
+      return { radius, stroke: radius >= 2.2, color: '#0b0e11', weight: 0.8, opacity: 0.9 };
+    };
+    const first = look();
+    const group = L.layerGroup();
+    const dots: L.CircleMarker[] = [];
+    for (let m = 0; m < n; m++) {
+      const [lng, lat] = inv.forward([sources.dotE[m], sources.dotN[m]]);
+      dots.push(L.circleMarker([lat, lng], { ...first, pane, fillColor: colorOf[sources.dotCover[m]], fillOpacity: 1, interactive: false }).addTo(group));
+    }
+    group.addTo(map);
+    const resize = () => { const now = look(); for (const d of dots) d.setStyle(now); };
+    map.on('zoomend', resize);
+    return () => { map.off('zoomend', resize); group.remove(); };
+  }, [map, sources, colorOf, epsg, pane]);
+  if (!ring) return null;
+  return (
+    <>
+      <Polygon positions={ring} pathOptions={{ color: '#0b0e11', weight: 4, opacity: 0.9, fill: false, interactive: false }} />
+      <Polygon positions={ring} pathOptions={{ color: '#ffffff', weight: 2, opacity: 1, fill: false, interactive: false }} />
+    </>
+  );
+}
+
+/**
+ * A click on the map, reported as [lat, lng], while an overlay that sits on one
+ * pixel is on (the blur overlays, the signal dots): they move to the pixel that
+ * was clicked. Mounted only then, so a click means
+ * nothing the rest of the time, and never while a field is being drawn, when
+ * every click is a corner of it. A drag is not a click: Leaflet does not fire
+ * one at the end of a pan.
+ *
+ * The pointer is a crosshair for as long as it is mounted, which is the only
+ * thing on the map that says a pixel can be picked.
+ */
+function PixelPicker({ onPick }: { onPick: (at: [number, number]) => void }) {
+  const map = useMapEvents({ click: e => onPick([e.latlng.lat, e.latlng.lng]) });
+  useEffect(() => {
+    const box = map.getContainer(), was = box.style.cursor;
+    box.style.cursor = 'crosshair';
+    return () => { box.style.cursor = was; };
+  }, [map]);
+  return null;
 }
 
 /** Drag-to-draw a rectangle on the map while `active`. */
@@ -436,5 +615,124 @@ function ViewTracker({ onChange, onView }: {
   return null;
 }
 
-export { BASEMAPS, AOI_STYLE, TruthOverlay, GridLines, PsfOverlay, RectDrawer, PolyDrawer, ViewTracker };
+/**
+ * What a pixel's purity reads as: one decimal, cut rather than rounded, so a
+ * pixel a hair under the threshold is never printed as the threshold itself
+ * (89.96 % beside the word "mixed" would read as 90.0 %).
+ */
+const purityText = (p: number): string => (p >= 0.99995 ? '100 %' : `${(Math.floor(p * 1000) / 10).toFixed(1)} %`);
+
+/**
+ * The pixel under the pointer: its purity, what it is mostly made of, and
+ * whether that clears the threshold.
+ *
+ * ONE listener on the map, not one per cell. The overlay is drawn on a canvas
+ * with `interactive: false` on every cell, which is what keeps tens of
+ * thousands of them cheap, so the pixel is found from the pointer's own
+ * coordinates: the grid is a lattice, and a point's cell is two divisions.
+ *
+ * The readout lives in the map's container through a portal and is moved by
+ * writing its transform, so the pointer never re-renders the map above it:
+ * GridLines is rebuilt on every render of that tree, and a state change per
+ * mouse move would rule the whole grid again each time.
+ *
+ * Rendered inside the selection pane, so the outline of the hovered pixel sits
+ * above the simulation overlay however often that layer is remounted.
+ */
+function PixelHover({ grid, sim, mask, layout, names, held }: {
+  /** The grid the simulation covers, every pixel of it (never a strided sample). */
+  grid: S2Grid;
+  sim: FieldSim;
+  /** 1 for the pixels that belong to the field; the others are not drawn and not read. */
+  mask: ArrayLike<number> | null;
+  layout: SimLayout;
+  /** Species names, as drawn. */
+  names: string[];
+  /**
+   * 1 for the pixels that stay pure wherever the image lands within its CE90,
+   * when the map is showing that; null when it is not, or not worked out yet.
+   */
+  held: ArrayLike<number> | null;
+}) {
+  const map = useMap();
+  const tip = useRef<HTMLDivElement>(null);
+  const [k, setK] = useState(-1);
+  const usable = !!sim.purity && !!sim.dominant && sim.purity.length === grid.cells.length && !(grid.stride && grid.stride > 1);
+
+  useEffect(() => {
+    if (!usable) { setK(-1); return; }
+    const fwd = proj4('EPSG:4326', crsToProj4Def(`EPSG:${grid.epsg}`));
+    const [e0, n0, e1, n1] = grid.utmBounds, r = grid.res;
+    const nx = Math.round((e1 - e0) / r), ny = Math.round((n1 - n0) / r);
+    const move = (ev: L.LeafletMouseEvent) => {
+      const [E, N] = fwd.forward([ev.latlng.lng, ev.latlng.lat]);
+      const i = Math.floor((E - e0) / r), j = Math.floor((N - n0) / r);
+      const at = i >= 0 && i < nx && j >= 0 && j < ny ? j * nx + i : -1;
+      const hit = at >= 0 && (!mask || mask[at]) ? at : -1;
+      setK(hit);
+      const el = tip.current;
+      if (!el || hit < 0) return;
+      // Beside the pointer, on whichever side keeps it inside the map.
+      const size = map.getSize(), w = el.offsetWidth || 190, h = el.offsetHeight || 46;
+      const x = ev.containerPoint.x + 14 + w > size.x ? ev.containerPoint.x - 14 - w : ev.containerPoint.x + 14;
+      const y = ev.containerPoint.y + 14 + h > size.y ? ev.containerPoint.y - 14 - h : ev.containerPoint.y + 14;
+      el.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
+    };
+    const out = () => setK(-1);
+    // The container's own mouseleave, not the map's mouseout: Leaflet fires
+    // that one only when the pointer goes to another element of the page, so a
+    // pointer that left the window altogether kept its readout on the map.
+    const box = map.getContainer();
+    map.on('mousemove', move);
+    box.addEventListener('mouseleave', out);
+    // A pan or a zoom moves the ground under a still pointer.
+    map.on('movestart', out);
+    return () => { map.off('mousemove', move); box.removeEventListener('mouseleave', out); map.off('movestart', out); };
+  }, [map, grid, mask, usable]);
+
+  // The same names as the lines of the Signal of a pixel card.
+  const nameOf = useMemo(() => coverNamer(layout, names), [layout, names]);
+  const shown = usable && k >= 0 && k < grid.cells.length;
+  let head = '', verdict = '', what = '', holds = '', pure = false;
+  if (shown) {
+    const p = sim.purity![k], d = sim.dominant![k], v = sim.mixed[k];
+    pure = v !== MIXED;
+    // A pixel whose PSF weighs nothing on the grid is off-trial whatever its cover reads.
+    what = v === OFF_TRIAL.id ? nameOf(OFF_TRIAL.id) : nameOf(d);
+    head = p > 0 ? purityText(p) : 'no signal';
+    verdict = pure ? 'pure' : 'mixed';
+    if (!pure) what = `mostly ${what}`;
+    // Only a pixel that is pure for a crop has anything to lose to a shift.
+    if (held && held.length === grid.cells.length && v <= MAX_COVER) holds = held[k] ? 'stays pure within the CE90' : 'not pure within the CE90';
+  }
+  const ring = shown ? grid.cells[k].ring.map(([lng, lat]) => [lat, lng] as [number, number]) : null;
+
+  return (
+    <>
+      {ring && (
+        <>
+          {/* Dark under light, so the outline reads on any basemap and any crop colour. */}
+          <Polygon positions={ring} pathOptions={{ color: '#0b0e11', weight: 4, opacity: 0.9, fill: false, interactive: false }} />
+          <Polygon positions={ring} pathOptions={{ color: '#ffffff', weight: 2, opacity: 1, fill: false, interactive: false }} />
+        </>
+      )}
+      {createPortal(
+        <div ref={tip} role="status"
+          className="pointer-events-none absolute left-0 top-0 z-[1100] whitespace-nowrap rounded-md border border-white/10 bg-[#11151a]/90 px-2.5 py-1.5 text-[14px] leading-snug text-slate-200 shadow-lg backdrop-blur"
+          style={{ display: shown ? 'block' : 'none' }}>
+          <div className="flex items-baseline gap-2">
+            <span className="text-slate-400">purity</span>
+            <span className="font-mono text-[15px] font-semibold text-white">{head}</span>
+            <span className={pure ? 'text-emerald-300' : 'text-amber-300'}>{verdict}</span>
+          </div>
+          <div className="text-[13px] text-slate-400">{what}</div>
+          {holds && <div className="text-[13px] text-slate-400">{holds}</div>}
+        </div>,
+        map.getContainer(),
+      )}
+    </>
+  );
+}
+
+export { BASEMAPS, AOI_STYLE, TruthOverlay, GridLines, PsfOverlay, SigmaRings, SignalDots, PixelPicker, RectDrawer, PolyDrawer, ViewTracker, PixelHover, purityText };
 export type { BasemapKey };
