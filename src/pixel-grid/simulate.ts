@@ -32,12 +32,16 @@ export const TRUTH_TYPES: { id: TruthType; label: string }[] = [
   { id: 'const', label: 'Constant' },
 ];
 
+/**
+ * The layouts the page OFFERS. The two 2:2 strip layouts ('strip-row-2',
+ * 'strip-col-2') are not among them any more ("remove all the 2:2",
+ * 2026-11-21): the engine still draws and measures them, they are only not in
+ * the list, and a browser that had one selected falls back to the first.
+ */
 export const PATTERNS: { id: PatternType; label: string }[] = [
   { id: 'row', label: 'Alternating rows (1:1)' },
   { id: 'col', label: 'Alternating columns (1:1)' },
   { id: 'checker', label: 'Checkerboard' },
-  { id: 'strip-row-2', label: 'Strip rows (2:2)' },
-  { id: 'strip-col-2', label: 'Strip columns (2:2)' },
   { id: 'block', label: 'Randomised blocks (RCBD)' },
   { id: 'imported', label: 'Imported trial (file)' },
 ];
@@ -999,17 +1003,24 @@ export function blockPlacement(
   rotationDeg: number,
   res: number,
   snapToPixels: boolean,
-): { centerU: number; centerV: number; snap: number; phaseU: number; phaseV: number } {
+  /**
+   * Where the trial's middle goes, as a UTM point, in place of the middle of
+   * the bounds: its seat in a field that is not a box (trial-seat.ts). The
+   * staking then scores its phases around that point, see stakeBlockPlan.
+   */
+  centre?: [number, number] | null,
+): { centerU: number; centerV: number; snap: number; phaseU: number; phaseV: number; window?: [number, number] } {
   const [minE, minN, maxE, maxN] = utmBounds;
   const t = (rotationDeg * Math.PI) / 180, cos = Math.cos(t), sin = Math.sin(t);
   const toUV = (E: number, N: number): [number, number] => {
     const dx = E - origin[0], dy = N - origin[1];
     return [dx * cos + dy * sin, -dx * sin + dy * cos];
   };
-  const [centerU, centerV] = toUV((minE + maxE) / 2, (minN + maxN) / 2);
+  const [centerU, centerV] = centre ? toUV(centre[0], centre[1]) : toUV((minE + maxE) / 2, (minN + maxN) / 2);
   const [phaseU, phaseV] = toUV(minE, minN);
   const axisAligned = Math.abs(rotationDeg % 90) < 1e-9;
-  return { centerU, centerV, snap: snapToPixels && axisAligned && res > 0 ? res : 0, phaseU, phaseV };
+  const snap = snapToPixels && axisAligned && res > 0 ? res : 0;
+  return centre ? { centerU, centerV, snap, phaseU, phaseV, window: centre } : { centerU, centerV, snap, phaseU, phaseV };
 }
 
 export function buildBlockPlan(
@@ -1176,7 +1187,7 @@ export function stakeMesh(extent: [number, number, number, number], res: number)
 
 export function stakeBlockPlan(
   design: BlockDesign,
-  place: { centerU: number; centerV: number; snap?: number; phaseU?: number; phaseV?: number },
+  place: { centerU: number; centerV: number; snap?: number; phaseU?: number; phaseV?: number; window?: [number, number] },
   origin: [number, number],
   rotationDeg: number,
   res: number,
@@ -1198,7 +1209,10 @@ export function stakeBlockPlan(
   if (!mesh) return { plan: base, offset: [0, 0], staked: false };
   const { nx, ny } = mesh;
   const [e0, n0, e1, n1] = extent;
-  const cx = (e0 + e1) / 2, cy = (n0 + n1) / 2;
+  // Around the trial: the middle of the extent, or the seat it was given. A
+  // large field's window is cut down to its middle, and a trial seated away
+  // from there would be scored on a window it is not in, every phase alike.
+  const [cx, cy] = place.window ?? [(e0 + e1) / 2, (n0 + n1) / 2];
   const w0 = Math.floor((cx - (nx * res) / 2) / res) * res;
   const v0 = Math.floor((cy - (ny * res) / 2) / res) * res;
   const box = { res, utmBounds: [w0, v0, w0 + nx * res, v0 + ny * res] } as unknown as S2Grid;

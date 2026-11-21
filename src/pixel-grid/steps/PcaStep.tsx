@@ -7,8 +7,15 @@ import { ResTable } from '../ResTable';
 import { fmt } from '../util';
 import { FIXED, SOURCES, TASK } from '../sensors';
 import PcaSweep from '../PcaSweep';
-import type { StepProps } from './props';
+import { SHOW_GRID_STEP, STEP_NO, type StepProps } from './props';
 import { alignedWithin } from '../imported-rotate';
+
+/**
+ * The "Retune design" fold under the results (satellite, layout, design fields
+ * and crops, the same controls as the step before) is kept in the code and not
+ * shown ("remove the retune design", 2026-11-21). Set to true to bring it back.
+ */
+const SHOW_RETUNE: boolean = false;
 
 /**
  * The big chart and its tabs, fetched when step 4 is first opened: its variance
@@ -265,7 +272,7 @@ function PcaStepBody(p: StepProps) {
   );
 
   return (
-        <Step n={4} title="PCA simulation" summary={`${pattern === 'imported' ? `${names.length} ${names.length === 1 ? 'variety' : 'varieties'}` : names.length > 4 ? `${names.length} species` : names.join(' × ')} → PCA`} open={activeStep === 'pca'} onClick={() => toggleStep('pca')} enabled={!!aoi}>
+        <Step n={STEP_NO.pca} title="Pixel purity" summary={`${pattern === 'imported' ? `${names.length} ${names.length === 1 ? 'variety' : 'varieties'}` : names.length > 4 ? `${names.length} species` : names.join(' × ')} → PCA`} open={activeStep === 'pca'} onClick={() => toggleStep('pca')} enabled={!!aoi}>
         {!aoi ? (
           <p className="text-[14px] text-neutral-400">Draw an experiment area in step&nbsp;1 first.</p>
         ) : pcaView ? (
@@ -294,7 +301,7 @@ function PcaStepBody(p: StepProps) {
                     ? imported
                       ? <>One PCA per satellite, at its own pixel size and blur, twice: your trial, and the same trial at the angle and position that keep the most pure pixels for that satellite{worstCase ? ' wherever the image lands within the CE90' : ''} (px = pure pixels). The best placement is searched for each satellite, so its angle changes from one row to the next. Click a row to select that satellite and put the trial at that placement on the map.</>
                       : <>One PCA per satellite, at its own pixel size and blur, twice: your design and the same design along the pixel rows (px = pure pixels). The two placements catch different numbers of edge pixels, so their totals differ and only the counts compare. Click a row to select that satellite.</>
-                    : <>One PCA per satellite, at its own pixel size and blur (% = pure pixels). The satellite selected is taken as it stands in step 2. Click a row to select that satellite.</>}><InfoDot /></Explain>
+                    : <>One PCA per satellite, at its own pixel size and blur (% = pure pixels). The satellite selected is taken as it stands{SHOW_GRID_STEP && ' in step 2'}. Click a row to select that satellite.</>}><InfoDot /></Explain>
                 </span>
                 {sweepBusy && <Spinner className="h-3 w-3" />}
                 {/* The same rungs, as a table of their figures or as the small
@@ -352,6 +359,8 @@ function PcaStepBody(p: StepProps) {
               ) : <p className="text-[14px] leading-snug text-neutral-500">Computing the PCA for each satellite…</p>}
             </div>
 
+            {/* The design's own controls, repeated under the results. Not shown (SHOW_RETUNE). */}
+            {SHOW_RETUNE && (
             <Disclosure
               label={pattern === 'imported'
                 ? `Retune design: ${names.length} ${names.length === 1 ? 'variety' : 'varieties'} · ${importedDesign ? `${angleLabel}°` : 'no file yet'}`
@@ -405,13 +414,14 @@ function PcaStepBody(p: StepProps) {
                 </>
               )}
             </Disclosure>
+            )}
           </div>
         ) : pcaBusy ? (
           // Between opening this step and the deferred run landing there is no view
           // yet, and the panel used to blame the grid for it.
           <p className="flex items-center gap-1.5 text-[14px] text-neutral-400"><Spinner className="h-3 w-3" /> Running the PCA over the field…</p>
         ) : (
-          <p className="text-[14px] text-neutral-400">Build the pixel grid in step&nbsp;2 first.</p>
+          <p className="text-[14px] text-neutral-400">{SHOW_GRID_STEP ? <>Build the pixel grid in step&nbsp;2 first.</> : 'The pixel grid of this area is not there yet.'}</p>
         )}
         </Step>
   );
@@ -426,5 +436,5 @@ function PcaStepBody(p: StepProps) {
  * Wrapped here, the other steps, the map and the header's Reset survive it.
  */
 export function PcaStep(p: StepProps) {
-  return <Boundary name="PCA simulation"><PcaStepBody {...p} /></Boundary>;
+  return <Boundary name="Pixel purity"><PcaStepBody {...p} /></Boundary>;
 }

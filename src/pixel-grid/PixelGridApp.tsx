@@ -8,15 +8,16 @@ import { useFieldGrid } from './use-grid';
 import { useExperiment, usePcaSim, useSimulation } from './use-simulation';
 import { pixelVerdicts } from './pixel-verdicts';
 import { aoiUtmOrigin, utmEpsg, utmZoneForLng, type LngLatBounds } from './s2-grid';
-import { stakeMesh, utmEnvelope } from './simulate';
-import { ladderRungs } from './sensors';
-import { ladderStep } from './ladder-step';
-import { suggestBlockDesign } from './suggest-design';
-import type { SuggestAsk, SuggestOutcome } from './steps/SuggestDesign';
-import type { SimSection } from './steps/props';
+import { buildBlockPlan, stakeMesh, utmEnvelope, type BlockDesign } from './simulate';
+import { fieldSeat } from './trial-seat';
+import { ladderRungs, type Rung } from './sensors';
+import { blockPlotCounts, ladderStep } from './ladder-step';
+import { suggestBlockDesign, suggestChecker, suggestStrips, type CheckerSuggestion, type StripSuggestion } from './suggest-design';
+import { PER_STRIP_DEFAULT, type SuggestAsk, type SuggestOutcome } from './steps/SuggestDesign';
+import { SHOW_GRID_STEP, type SimSection } from './steps/props';
 import { readDesignFiles } from './design-import';
 import { convexHull } from './imported-plan';
-import { polyBbox, viewShowsField } from './geometry';
+import { polyBbox, viewShowsField, type Poly } from './geometry';
 import { alignedWithin, isAligned, nearestTurn, rotateImportedPlan, shiftImportedPlan, stakeOnGrid } from './imported-rotate';
 import proj4 from 'proj4';
 import { crsToProj4Def } from '../lib/geo';
@@ -69,8 +70,10 @@ export default function PixelGridApp() {
   const mapRef = useRef<L.Map | null>(null);
 
   // Collapsible steps (one open at a time, PCA-style; click an open one to close it)
-  const [activeStep, setActiveStep] = usePersistentState<'area' | 'grid' | 'sim' | 'pca' | null>('activeStep', 'grid',
-    v => v === null || oneOf('area', 'grid', 'sim', 'pca')(v));
+  // With the grid step not shown (SHOW_GRID_STEP), a browser that had it open
+  // is not left on a step that is not there: it opens the simulation instead.
+  const [activeStep, setActiveStep] = usePersistentState<'area' | 'grid' | 'sim' | 'pca' | null>('activeStep', SHOW_GRID_STEP ? 'grid' : 'sim',
+    v => v === null || (SHOW_GRID_STEP ? oneOf('area', 'grid', 'sim', 'pca') : oneOf('area', 'sim', 'pca'))(v));
   const toggleStep = (s: 'area' | 'grid' | 'sim' | 'pca') => setActiveStep(cur => (cur === s ? null : s));
   // The simulation is drawn in every step while the map's Simulation button is
   // on, so a sensor or CE90 typed in step 2 can be watched on the map. Steps 3
@@ -111,8 +114,11 @@ export default function PixelGridApp() {
   // Disclosure / tab state for the step panels. It lives up here because `Step`
   // unmounts a collapsed panel, which would otherwise reset it every time the
   // user folds a step away.
-  // Step 3's folds: one open at a time. The design to begin with, since that is what the step is for.
-  const [simSection, setSimSection] = usePersistentState<SimSection>('simSection', 'design',
+  // Step 3's folds: one open at a time, all shut to begin with ("make all
+  // subtabs closed by default"). Kept under a key of its own, `simFold`: the
+  // one before it, `simSection`, began with the design open and was saved that
+  // way in every browser that had the page.
+  const [simSection, setSimSection] = usePersistentState<SimSection>('simFold', null,
     v => v === null || oneOf('design', 'suggest', 'size', 'curves', 'noise')(v));
   const [blurOpen, setBlurOpen] = usePersistentState('blurOpen', false, isBool);
   const [pcaRetuneOpen, setPcaRetuneOpen] = usePersistentState('pcaRetuneOpen', false, isBool);
@@ -174,7 +180,7 @@ export default function PixelGridApp() {
   const exp = useExperiment({
     sigmaX, sigmaY,
     fieldBounds: gridApi.build?.utmBounds ?? null, fieldOrigin, pixelSize: gridApi.build?.res ?? 10,
-    epsg: gridApi.build?.epsg ?? null,
+    epsg: gridApi.build?.epsg ?? null, aoi, fieldRing,
   });
 
   /**
@@ -429,16 +435,22 @@ export default function PixelGridApp() {
    * was last built is only for the lines under the button.
    *
    * A build writes four things at once, which is why it lives here: the block
-   * design, the angle (along the pixel rows, where a trial of whole-pixel plots
-   * keeps the most), the layout, and the satellite the trial was sized for.
-   * The search itself is a few tens of milliseconds (suggest-design.ts); it
-   * runs after a tick so that the button can say it is working.
+   * design, the angle (along the pixel rows unless another is asked for: that
+   * is where a trial of whole-pixel plots keeps the most), the layout, and the
+   * satellite the trial was sized for. The search itself is a few tens of
+   * milliseconds along the rows (suggest-design.ts), more for a turned trial,
+   * which is counted whole at every size tried; it runs after a tick so that
+   * the button can say it is working.
    */
   const [suggestAsk, setSuggestAsk] = usePersistentState<SuggestAsk>('suggestAsk',
     () => ({ species: 4, reps: 4, sat: '', hold: true, plotAlley: 0, blockAlley: 0 }),
     v => !!v && typeof v === 'object' && inRange(2, 8)((v as SuggestAsk).species) && inRange(1, 20)((v as SuggestAsk).reps)
       && typeof (v as SuggestAsk).sat === 'string' && isBool((v as SuggestAsk).hold)
-      && inRange(0, 100)((v as SuggestAsk).plotAlley) && inRange(0, 100)((v as SuggestAsk).blockAlley));
+      && inRange(0, 100)((v as SuggestAsk).plotAlley) && inRange(0, 100)((v as SuggestAsk).blockAlley)
+      // A request saved before the angle existed has none: along the pixel rows.
+      && ((v as SuggestAsk).angle === undefined || inRange(-90, 90)((v as SuggestAsk).angle))
+      && ((v as SuggestAsk).stripAlley === undefined || inRange(0, 100)((v as SuggestAsk).stripAlley))
+      && ((v as SuggestAsk).perStrip === undefined || inRange(1, 2000)((v as SuggestAsk).perStrip)));
   const [suggestBusy, setSuggestBusy] = useState(false);
   const [suggestOutcome, setSuggestOutcome] = useState<SuggestOutcome | null>(null);
   const buildSuggested = () => {
@@ -462,6 +474,15 @@ export default function PixelGridApp() {
       : view ? [view.lng, view.lat] : [initialCenter[1], initialCenter[0]];
     const epsg = grid?.epsg ?? utmEpsg(utmZoneForLng(centre[0]), centre[1] < 0);
     const r = sat.res;
+    // The trial's angle to the pixel rows, and its own box's half sides when turned by it.
+    const angle = suggestAsk.angle ?? 0;
+    const turned = Math.abs(angle) > 1e-9;
+    const rad = (angle * Math.PI) / 180, cosA = Math.abs(Math.cos(rad)), sinA = Math.abs(Math.sin(rad));
+    const halfBox = (u: number, v: number): [number, number] => [(u * cosA + v * sinA) / 2, (u * sinA + v * cosA) / 2];
+    // Alternating rows or columns have no trial to size: their strips are
+    // (suggestStrips), and a checkerboard's cells (suggestChecker).
+    const kind = exp.pattern === 'row' || exp.pattern === 'col' || exp.pattern === 'checker' ? exp.pattern : null;
+    if (kind) { buildStrips(kind, sat, epsg, centre, angle); return; }
     setSuggestBusy(true);
     window.setTimeout(() => {
       const ce90M = suggestAsk.hold ? Math.round(gridApi.ce90At(r) * 100) / 100 : 0;
@@ -472,37 +493,76 @@ export default function PixelGridApp() {
         const [e0, n0, e1, n1] = utmEnvelope(b, epsg);
         return stakeMesh([Math.floor(e0 / r) * r, Math.floor(n0 / r) * r, Math.ceil(e1 / r) * r, Math.ceil(n1 / r) * r], r)?.steps;
       };
-      const ask = (field: { u: number; v: number } | null, stakeSteps: number | undefined) => suggestBlockDesign({
+      /**
+       * A turned trial is sized on the satellites table's own count, plot by
+       * plot, on the ground it will lie on: an area and its outline. With the
+       * box unticked no geolocation error is held against, as along the rows.
+       */
+      const countOn = (ground: LngLatBounds, ring: Poly | null) => (design: BlockDesign) => {
+        const c = blockPlotCounts({
+          aoi: ground, fieldRing: ring, epsg, threshold: exp.threshold, blockDesign: design,
+          layout: { pattern: 'block', width: exp.stripWidth, spacing: exp.spacing, rotationDeg: angle },
+          importedAngle: 0, importedFileAngle: 0, importedBasePlan: undefined,
+          geoAuto: suggestAsk.hold ? gridApi.geoAuto : false, geoManual: suggestAsk.hold ? gridApi.geoManual : 0,
+        }, angle, sat);
+        if (!c) throw new Error('This trial is too large to be counted plot by plot at an angle. Ask for fewer pixels, species or repetitions, or build it along the pixel rows (angle 0).');
+        return c;
+      };
+      type Count = ReturnType<typeof countOn>;
+      const ask = (field: { u: number; v: number } | null, stakeSteps: number | undefined, countAt?: Count) => suggestBlockDesign({
         nSpecies: suggestAsk.species, nBlocks: suggestAsk.reps, pixels: wantPure,
         res: r, sigmaX: sat.sigmaX, sigmaY: sat.sigmaY, threshold: exp.threshold / 100, ce90M,
         // The alleys asked for in the panel, none by default: NOT the design's
         // own, which are whatever the layout last had.
         plotAlley: suggestAsk.plotAlley, blockAlley: suggestAsk.blockAlley,
-        field, stakeSteps, seed: exp.blockDesign.seed,
+        field, fitsField: field ? fitsField : undefined, stakeSteps, seed: exp.blockDesign.seed,
+        rotationDeg: angle, countAt,
       });
       const had = aoi ? utmEnvelope(aoi, epsg) : null;
       const field = had ? { u: had[2] - had[0], v: had[3] - had[1] } : { u: 0, v: 0 };
-      const said = { satId: sat.id, sat: sat.name, res: r, pixels: wantPure, ce90M, threshold: exp.threshold, field };
+      const said = { satId: sat.id, sat: sat.name, res: r, pixels: wantPure, ce90M, threshold: exp.threshold, field, angle };
+      // A trial fits a traced field when it has a seat wholly inside the
+      // outline, which the box of an oblique parcel says nothing about. A field
+      // that is a box holds a turned trial when it holds the trial's own box.
+      const fitsField = (u: number, v: number) => {
+        const seat = aoi ? fieldSeat(fieldRing, aoi, epsg, u, v, angle) : null;
+        const [hu, hv] = halfBox(u, v);
+        return seat ? seat.clearance > 0 : 2 * hu <= field.u + 1e-6 && 2 * hv <= field.v + 1e-6;
+      };
+      // The area the page makes for a trial that has none to go in: the trial's
+      // own box, and a margin that keeps it clear of the edge.
+      const [cE, cN] = toUtm.forward(centre);
+      const areaFor = (u: number, v: number): LngLatBounds => {
+        const margin = Math.max(3 * r, 0.05 * Math.max(u, v), 5);
+        const [bu, bv] = halfBox(u, v), hu = bu + margin, hv = bv + margin;
+        const corners = ([[cE - hu, cN - hv], [cE + hu, cN - hv], [cE + hu, cN + hv], [cE - hu, cN + hv]] as [number, number][])
+          .map(q => toLngLat.forward(q) as [number, number]);
+        return [Math.min(...corners.map(q => q[0])), Math.min(...corners.map(q => q[1])), Math.max(...corners.map(q => q[0])), Math.max(...corners.map(q => q[1]))];
+      };
+      const ringOf = (b: LngLatBounds): Poly => [[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]];
+      const cmOf = (m: number) => Math.round(m * 100) / 100;
+      /** A turned design counted on the area the page would make for it. */
+      const countOnOwn: Count = design => {
+        const size = buildBlockPlan(design, { centerU: 0, centerV: 0 });
+        const own = areaFor(cmOf(size.totalU), cmOf(size.totalV));
+        return countOn(own, ringOf(own))(design);
+      };
       try {
         let ground: LngLatBounds | null = aoi, ring = fieldRing;
         let area: SuggestOutcome['area'] = null;
         // In the area there is, when some arrangement fits it.
-        let built = aoi && had ? ask(field, stepsOn(aoi)) : null;
+        let built = aoi && had ? ask(field, stepsOn(aoi), turned ? countOn(aoi, fieldRing) : undefined) : null;
         if (!built || built.fits === false) {
           // Otherwise an area of its own: the trial, and a margin that keeps it
           // clear of the edge wherever the staking then puts it. The mesh the
           // page will stake on depends on that area's size, which depends on
-          // the trial: asked again until the two agree.
-          const [cE, cN] = toUtm.forward(centre);
+          // the trial: asked again until the two agree. A turned trial is not
+          // staked: it is counted on its own area at every size, once.
           let steps: number | undefined = 6, own: ReturnType<typeof ask> = null, box: LngLatBounds | null = null;
-          for (let pass = 0; pass < 3; pass++) {
-            own = ask(null, steps);
+          for (let pass = 0; pass < (turned ? 1 : 3); pass++) {
+            own = ask(null, steps, turned ? countOnOwn : undefined);
             if (!own) break;
-            const margin = Math.max(3 * r, 0.05 * Math.max(own.footprint[0], own.footprint[1]), 5);
-            const hu = own.footprint[0] / 2 + margin, hv = own.footprint[1] / 2 + margin;
-            const corners = ([[cE - hu, cN - hv], [cE + hu, cN - hv], [cE + hu, cN + hv], [cE - hu, cN + hv]] as [number, number][])
-              .map(q => toLngLat.forward(q) as [number, number]);
-            box = [Math.min(...corners.map(q => q[0])), Math.min(...corners.map(q => q[1])), Math.max(...corners.map(q => q[0])), Math.max(...corners.map(q => q[1]))];
+            box = areaFor(own.footprint[0], own.footprint[1]);
             const need = stepsOn(box);
             if (need === steps) break;
             steps = need;
@@ -510,7 +570,7 @@ export default function PixelGridApp() {
           if (own && box) {
             built = own;
             ground = box;
-            ring = [[box[0], box[1]], [box[2], box[1]], [box[2], box[3]], [box[0], box[3]]];
+            ring = ringOf(box);
             const [e0, n0, e1, n1] = utmEnvelope(box, epsg);
             area = { how: aoi ? 'replaced' : 'made', u: e1 - e0, v: n1 - n0 };
           } else if (!own) {
@@ -522,24 +582,26 @@ export default function PixelGridApp() {
           cancelStake();
           exp.setPattern('block');
           exp.setBlockDesign(built.design);
-          exp.setRotation(0);
+          exp.setRotation(angle);
           setAdopted(null);
           if (sat.id !== gridApi.sourceId) gridApi.setSourceId(sat.id);
           if (area) setFieldBox(ground);
-          // Show what was built: the trial sits in the middle of its area.
+          // Show what was built: the trial on its seat in the field, the
+          // middle of its area when that is a box.
           const [gE0, gN0, gE1, gN1] = utmEnvelope(ground, epsg);
-          const cE = (gE0 + gE1) / 2, cN = (gN0 + gN1) / 2, hu = built.footprint[0] / 2, hv = built.footprint[1] / 2;
-          const [w, so] = toLngLat.forward([cE - hu, cN - hv]), [e, n] = toLngLat.forward([cE + hu, cN + hv]);
+          const [tE, tN] = fieldSeat(ring, ground, epsg, built.footprint[0], built.footprint[1], angle)?.centre ?? [(gE0 + gE1) / 2, (gN0 + gN1) / 2];
+          const [hu, hv] = halfBox(built.footprint[0], built.footprint[1]);
+          const [w, so] = toLngLat.forward([tE - hu, tN - hv]), [e, n] = toLngLat.forward([tE + hu, tN + hv]);
           mapRef.current?.fitBounds([[so, w], [n, e]], { padding: [60, 60], maxZoom: 21 });
           // What the satellites table will count for it on THIS area, plot by
           // plot, while the trial is small enough for the table to count so.
           if ((built.footprint[0] / r) * (built.footprint[1] / r) <= 15_000) {
             const row = ladderStep({
               aoi: ground, fieldRing: ring, epsg, threshold: exp.threshold, blockDesign: built.design,
-              layout: { pattern: 'block', width: exp.stripWidth, spacing: exp.spacing, rotationDeg: 0 },
+              layout: { pattern: 'block', width: exp.stripWidth, spacing: exp.spacing, rotationDeg: angle },
               importedAngle: 0, importedFileAngle: 0, importedBasePlan: undefined,
               geoAuto: gridApi.geoAuto, geoManual: gridApi.geoManual,
-            }, 0, sat, true);
+            }, angle, sat, true);
             if (row.plots) onField = { pure: row.plots.min, held: row.plotsRobust?.min ?? null };
           }
         }
@@ -552,16 +614,103 @@ export default function PixelGridApp() {
     }, 30);
   };
   /**
+   * Alternating rows or columns: the thinnest strips that keep the pixels
+   * asked for in every strip, over its length in the field, written to the
+   * layout's own fields (strip width, spacing, angle) with the satellite they
+   * were sized for.
+   *
+   * The page anchors a periodic planting on the field's corner and slides it
+   * from there, so the strips are counted from that corner, and they are as
+   * long as the field's outline lets them be. With no experiment area the page
+   * makes one, four strips of each crop wide and as long as the strips need to
+   * hold the count, in the middle of the map: its corner depends on its size,
+   * which depends on the strips, so they are asked for again until the two
+   * agree.
+   */
+  const buildStrips = (kind: 'row' | 'col' | 'checker', sat: Rung, epsg: number, centre: [number, number], angle: number) => {
+    const r = sat.res;
+    setSuggestBusy(true);
+    window.setTimeout(() => {
+      const ce90M = suggestAsk.hold ? Math.round(gridApi.ce90At(r) * 100) / 100 : 0;
+      // A strip is asked for by the pixels in the whole strip; a checkerboard's
+      // cell is a plot, and is asked for by the plot's own count.
+      const pixels = kind === 'checker' ? wantPure : suggestAsk.perStrip ?? PER_STRIP_DEFAULT;
+      const said = { satId: sat.id, sat: sat.name, res: r, pixels, ce90M, threshold: exp.threshold, field: { u: 0, v: 0 }, angle, built: null, onField: null };
+      // What the lines under the button are told, for strips or for cells.
+      const told = (found: StripSuggestion | CheckerSuggestion | null) => (kind === 'checker'
+        ? { cells: { found: found as CheckerSuggestion | null } }
+        : { strips: { pattern: kind, found: found as StripSuggestion | null } });
+      try {
+        const def = crsToProj4Def(`EPSG:${epsg}`);
+        const toUtm = proj4('EPSG:4326', def), toLngLat = proj4(def, 'EPSG:4326');
+        const sized = { pixels, res: r, sigmaX: sat.sigmaX, sigmaY: sat.sigmaY, threshold: exp.threshold / 100, ce90M, spacing: suggestAsk.stripAlley ?? 0, rotationDeg: angle };
+        const ask = (base: [number, number], ring: [number, number][] | null): StripSuggestion | CheckerSuggestion | null => (kind === 'checker'
+          ? suggestChecker({ ...sized, base })
+          : suggestStrips({ pattern: kind, ...sized, base, ring }));
+        let found: ReturnType<typeof ask> = null, made: LngLatBounds | null = null;
+        // In the field there is, its strips as long as its outline lets them be.
+        if (aoi) found = ask(aoiUtmOrigin(aoi, epsg), fieldRing ? fieldRing.map(q => toUtm.forward(q) as [number, number]) : null);
+        else {
+          const [cE, cN] = toUtm.forward(centre);
+          let base: [number, number] = [cE, cN];
+          for (let pass = 0; pass < 5; pass++) {
+            found = ask(base, null);
+            if (!found) { made = null; break; }
+            // Four strips of each crop across, and the length that holds the
+            // count with room to spare: half as much again when the strips
+            // cross the square at an angle.
+            const half = Math.max(4 * found.pitchPx * r, 12 * r, 'lengthM' in found ? (Math.abs(angle % 90) < 1e-9 ? 0.5 : 0.75) * found.lengthM + 2 * r : 0);
+            const corners = ([[cE - half, cN - half], [cE + half, cN - half], [cE + half, cN + half], [cE - half, cN + half]] as [number, number][])
+              .map(q => toLngLat.forward(q) as [number, number]);
+            made = [Math.min(...corners.map(q => q[0])), Math.min(...corners.map(q => q[1])), Math.max(...corners.map(q => q[0])), Math.max(...corners.map(q => q[1]))];
+            const corner = aoiUtmOrigin(made, epsg);
+            if (corner[0] === base[0] && corner[1] === base[1]) break;
+            base = corner;
+          }
+        }
+        let area: SuggestOutcome['area'] = null;
+        if (found) {
+          cancelStake();
+          exp.setStripWidth(found.width);
+          exp.setSpacing(found.spacing);
+          exp.setRotation(angle);
+          setAdopted(null);
+          if (sat.id !== gridApi.sourceId) gridApi.setSourceId(sat.id);
+          if (made) {
+            setFieldBox(made);
+            const [e0, n0, e1, n1] = utmEnvelope(made, epsg);
+            area = { how: 'made', u: e1 - e0, v: n1 - n0 };
+            mapRef.current?.fitBounds([[made[1], made[0]], [made[3], made[2]]], { padding: [60, 60], maxZoom: 21 });
+          }
+        }
+        setSuggestOutcome({ ...said, area, ...told(found) });
+      } catch (e) {
+        setSuggestOutcome({ ...said, area: null, ...told(null), error: e instanceof Error ? e.message : String(e) });
+      } finally {
+        setSuggestBusy(false);
+      }
+    }, 30);
+  };
+  /**
    * The lines under the button stand only while the page still holds the trial
    * that was built. A plot-size row applied, a field typed or another satellite
    * picked afterwards, and they described a trial that was gone: "plots of
    * 10.5 x 11.5 m" over a design of 8.5 x 9.1.
    */
   const builtDesign = suggestOutcome?.built?.design;
-  const outcomeStands = !suggestOutcome || !builtDesign || (
-    exp.pattern === 'block' && exp.rotation === 0 && suggestOutcome.satId === gridApi.sourceId && suggestOutcome.res === gridApi.pxSize
-    && suggestOutcome.threshold === exp.threshold
-    && (['nSpecies', 'nBlocks', 'blocksPerRow', 'plotLength', 'plotWidth', 'plotAlley', 'blockAlley'] as const).every(k => builtDesign[k] === exp.blockDesign[k]));
+  const builtStrips = suggestOutcome?.strips;
+  const builtCells = suggestOutcome?.cells;
+  // The satellite, the pixel size, the purity and the angle a build was made for.
+  const sameSetting = !!suggestOutcome && exp.rotation === suggestOutcome.angle && suggestOutcome.satId === gridApi.sourceId && suggestOutcome.res === gridApi.pxSize
+    && suggestOutcome.threshold === exp.threshold;
+  // Strips and cells are both a width and a spacing in the layout's own fields.
+  const holds = (f: { width: number; spacing: number } | null) => !f || (sameSetting && exp.stripWidth === f.width && exp.spacing === f.spacing);
+  const outcomeStands = !suggestOutcome
+    // Strips and cells are described under the layout they were built for, while its fields still hold them.
+    || (builtStrips ? exp.pattern === builtStrips.pattern && holds(builtStrips.found)
+      : builtCells ? exp.pattern === 'checker' && holds(builtCells.found)
+      : exp.pattern === 'block' && (!builtDesign || (sameSetting
+        && (['nSpecies', 'nBlocks', 'blocksPerRow', 'plotLength', 'plotWidth', 'plotAlley', 'blockAlley'] as const).every(k => builtDesign[k] === exp.blockDesign[k]))));
   const suggest = { ask: suggestAsk, setAsk: setSuggestAsk,
                     busy: suggestBusy, outcome: outcomeStands ? suggestOutcome : null, build: buildSuggested };
 
@@ -709,7 +858,7 @@ export default function PixelGridApp() {
         <div className="min-h-0 flex-1 overflow-y-auto">
         <AreaStep {...stepProps} />
 
-        <GridStep {...stepProps} />
+        {SHOW_GRID_STEP && <GridStep {...stepProps} />}
 
         <SimStep {...stepProps} />
 

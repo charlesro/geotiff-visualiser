@@ -4,7 +4,7 @@ import { fmt } from '../util';
 import { bufferK, minPlotSideM } from '../resolving';
 import { FIXED, GSD_PRESETS, SOURCES, TASK } from '../sensors';
 import { zoneFromEpsg } from '../s2-grid';
-import type { StepProps } from './props';
+import { STEP_NO, type StepProps } from './props';
 
 /**
  * Step 2: pick the satellite, see where its pixels really fall, export them.
@@ -143,7 +143,7 @@ function GridStepBody(p: StepProps) {
   const CAP = 'mb-1 block text-[14px] text-neutral-500';
 
   return (
-        <Step n={2} title="Pixel grid & export" summary={gridSummary} open={activeStep === 'grid'} onClick={() => toggleStep('grid')} enabled={!!aoi}>
+        <Step n={STEP_NO.grid} title="Pixel grid & export" summary={gridSummary} open={activeStep === 'grid'} onClick={() => toggleStep('grid')} enabled={!!aoi}>
         {!aoi ? (
           <p className="text-[14px] text-neutral-400">Draw an experiment area in step&nbsp;1 first.</p>
         ) : (<>

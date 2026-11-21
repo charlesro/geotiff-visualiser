@@ -1,6 +1,6 @@
 import { Step } from '../ui';
 import { Boundary } from '../Boundary';
-import type { StepProps } from './props';
+import { STEP_NO, type StepProps } from './props';
 
 /**
  * Step 1: draw or trace the experiment or search for it.
@@ -14,7 +14,7 @@ function AreaStepBody(p: StepProps) {
   const { query, setQuery, suggestions, showSuggestions, setShowSuggestions, activeSuggestion, setActiveSuggestion, pickSuggestion, onSearch, onSearchKeyDown } = p.search;
 
   return (
-        <Step n={1} title="Experiment area" summary={areaSummary} open={activeStep === 'area'} onClick={() => toggleStep('area')}>
+        <Step n={STEP_NO.area} title="Experiment area" summary={areaSummary} open={activeStep === 'area'} onClick={() => toggleStep('area')}>
         {/* Search with autocomplete */}
         <form onSubmit={onSearch} className="relative flex gap-2">
           <input

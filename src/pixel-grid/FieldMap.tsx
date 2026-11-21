@@ -4,7 +4,7 @@ import { Boundary } from './Boundary';
 import { isBool, usePersistentState } from './persist';
 import { MapContainer, TileLayer, Rectangle, Polygon, GeoJSON, Pane, ScaleControl } from 'react-leaflet';
 import L from 'leaflet';
-import { AOI_STYLE, BASEMAPS, GridLines, PixelHover, PixelPicker, PolyDrawer, PsfOverlay, RectDrawer, SigmaRings, SignalDots, TruthOverlay, ViewTracker, purityText, type BasemapKey } from './map-layers';
+import { AOI_STYLE, BASEMAPS, GridLines, KeepSized, PixelHover, PixelPicker, PolyDrawer, PsfOverlay, RectDrawer, SigmaRings, SignalDots, TruthOverlay, ViewTracker, purityText, type BasemapKey } from './map-layers';
 import { BARE, OFF_TRIAL, pixelSources } from './simulate';
 import { SOURCE_DOTS, coverNamer, pixelIndexAt, shareText, sourceRows, type SourceRow } from './signal-sources';
 import type { useAoiField } from './use-area';
@@ -203,8 +203,11 @@ function FieldMapBody({
             // requesting ones that do not exist (Esri's dark canvas ends at 16).
             maxNativeZoom={basemap === 'satellite' ? 18 : basemap === 'dark' ? 16 : 19}
           />
-          <ScaleControl position="bottomleft" />
+          {/* Metres only. With the feet line under it the Legend button sat on
+              the metres and the map's scale read "300 ft" alone. */}
+          <ScaleControl position="bottomleft" imperial={false} />
           <ViewTracker onChange={setViewBounds} onView={onView} />
+          <KeepSized />
           {pickOn && !drawMode && <PixelPicker onPick={pickPixel} />}
           <RectDrawer active={drawKind === 'rect'} onDone={onDrawDone} />
           <PolyDrawer active={drawKind === 'poly'} onDone={onPolyDone} />

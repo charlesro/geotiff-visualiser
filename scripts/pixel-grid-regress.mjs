@@ -44,7 +44,7 @@ const REVEAL = {
 };
 
 fs.rmSync(BUILD, { recursive: true, force: true });
-for (const rel of ['src/lib/geo.ts', 'src/lib/projections.ts', 'src/pixel-grid/s2-grid.ts', 'src/pixel-grid/geometry.ts', 'src/pixel-grid/simulate.ts', 'src/pixel-grid/resolving.ts', 'src/pixel-grid/shapefile.ts', 'src/pixel-grid/util.ts', 'src/pixel-grid/pca-field.ts', 'src/pixel-grid/ladder.ts', 'src/pixel-grid/ladder-rung.ts', 'src/pixel-grid/ladder-step.ts', 'src/pixel-grid/suggest-design.ts', 'src/pixel-grid/sensors.ts', 'src/pixel-grid/design-import.ts', 'src/pixel-grid/imported-plan.ts', 'src/pixel-grid/imported-rotate.ts', 'src/pixel-grid/field-membership.ts', 'src/pixel-grid/pixel-verdicts.ts', 'src/pixel-grid/plot-size.ts']) {
+for (const rel of ['src/lib/geo.ts', 'src/lib/projections.ts', 'src/pixel-grid/s2-grid.ts', 'src/pixel-grid/geometry.ts', 'src/pixel-grid/simulate.ts', 'src/pixel-grid/resolving.ts', 'src/pixel-grid/shapefile.ts', 'src/pixel-grid/util.ts', 'src/pixel-grid/pca-field.ts', 'src/pixel-grid/ladder.ts', 'src/pixel-grid/ladder-rung.ts', 'src/pixel-grid/ladder-step.ts', 'src/pixel-grid/suggest-design.ts', 'src/pixel-grid/trial-seat.ts', 'src/pixel-grid/sensors.ts', 'src/pixel-grid/design-import.ts', 'src/pixel-grid/imported-plan.ts', 'src/pixel-grid/imported-rotate.ts', 'src/pixel-grid/field-membership.ts', 'src/pixel-grid/pixel-verdicts.ts', 'src/pixel-grid/plot-size.ts']) {
   let ts = fs.readFileSync(path.join(ROOT, rel), 'utf8');
   for (const decl of REVEAL[rel] ?? []) ts = reveal(ts, decl);
   // esbuild only strips types; relative specifiers still need an extension to
@@ -678,8 +678,10 @@ console.log('\nG. the planting pattern');
       }
       return true;
     })());
-  ok('and PATTERNS still holds exactly the five legacy designs, the block design and the imported trial',
-    PATTERNS.map(p => p.id).join(',') === [...LEGACY_PATTERNS, 'block', 'imported'].join(','),
+  // The 2:2 strips are still the engine's (every check above runs them) and are
+  // no longer offered: "remove all the 2:2".
+  ok('and the layouts offered are the rows, the columns, the checkerboard, the block design and the imported trial',
+    PATTERNS.map(p => p.id).join(',') === ['row', 'col', 'checker', 'block', 'imported'].join(','),
     PATTERNS.map(p => p.id).join(','));
   ok('with spacing 0 the alley never appears',
     (() => { for (let u = -200; u < 200; u += 0.5) if (patternCultureUV(u, 0, col) === BARE.id) return false; return true; })());
@@ -4517,6 +4519,604 @@ console.log('\nH33. a block trial built from what is asked of it');
     }
     ok('stakeMesh gives the phases stakeBlockPlan tries on a field, small or large', same === n, `${same} of ${n}`);
   }
+}
+
+console.log('\nH34. a block trial sits inside its field, furthest from its edges');
+{
+  // A trial went on the middle of the field's BOX. On a traced parcel that is
+  // an arbitrary point, and on an oblique one the trial hung out of a field
+  // with room to spare. The seat (trial-seat.ts) is where its rectangle lies
+  // furthest from the field's edges; a field that is a box keeps its middle.
+  const { seatRect, fieldSeat, seatedPlacement } = await import(path.join(BUILD, 'src/pixel-grid/trial-seat.mjs'));
+  const { ladderStep } = await import(path.join(BUILD, 'src/pixel-grid/ladder-step.mjs'));
+  const { suggestBlockDesign } = await import(path.join(BUILD, 'src/pixel-grid/suggest-design.mjs'));
+  const { stakeMesh } = await import(path.join(BUILD, 'src/pixel-grid/simulate.mjs'));
+
+  const inRing = (ring, x, y) => {
+    let c = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const [xi, yi] = ring[i], [xj, yj] = ring[j];
+      if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) c = !c;
+    }
+    return c;
+  };
+  const toRing = (ring, x, y) => {
+    let d = Infinity;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const [ax, ay] = ring[j], [bx, by] = ring[i], ex = bx - ax, ey = by - ay;
+      const t = Math.max(0, Math.min(1, ((x - ax) * ex + (y - ay) * ey) / (ex * ex + ey * ey)));
+      d = Math.min(d, Math.hypot(ax + t * ex - x, ay + t * ey - y));
+    }
+    return d;
+  };
+  // A rectangle's margin by brute force: the points of its outline, each at its
+  // own distance from the field's edge, counted negative outside. Nothing of
+  // the search's own geometry is reused.
+  const margin = (ring, c, w, h, deg = 0, per = 400) => {
+    const t = (deg * Math.PI) / 180, cos = Math.cos(t), sin = Math.sin(t);
+    let m = Infinity;
+    for (let k = 0; k < per; k++) for (const [lx, ly] of [[-w / 2 + (w * k) / per, -h / 2], [w / 2, -h / 2 + (h * k) / per], [w / 2 - (w * k) / per, h / 2], [-w / 2, h / 2 - (h * k) / per]]) {
+      const x = c[0] + lx * cos - ly * sin, y = c[1] + lx * sin + ly * cos;
+      const d = toRing(ring, x, y);
+      m = Math.min(m, inRing(ring, x, y) ? d : -d);
+    }
+    return m;
+  };
+
+  const box = [[0, 0], [600, 0], [600, 300], [0, 300]];
+  const inBox = seatRect(box, 280, 280);
+  ok('in a field that is a box the seat is its middle, and the margin the room left on the short side',
+    Math.abs(inBox.x - 300) < 1e-6 && Math.abs(inBox.y - 150) < 1e-6 && Math.abs(inBox.clearance - 10) < 1e-6,
+    `${inBox.x.toFixed(3)}, ${inBox.y.toFixed(3)}, margin ${inBox.clearance.toFixed(3)} m`);
+  const long = seatRect(box, 700, 100);
+  ok('a rectangle too long for it sits in the middle, hanging out by the same length at both ends',
+    Math.abs(long.x - 300) < 1e-6 && Math.abs(long.y - 150) < 1e-6 && Math.abs(long.clearance + 50) < 1e-6, `margin ${long.clearance.toFixed(3)} m`);
+
+  // An oblique field that widens to one end: the middle of its box is inside
+  // it, and a trial put there hangs out.
+  const kite = [[0, 0], [1500, 900], [1500, 1500], [1100, 1500]];
+  const seat = seatRect(kite, 280, 280);
+  const mid = margin(kite, [750, 750], 280, 280), got = margin(kite, [seat.x, seat.y], 280, 280);
+  ok('on an oblique field the middle of the box leaves the trial hanging out, and the seat has it wholly inside',
+    inRing(kite, 750, 750) && mid < -20 && got > 100, `${mid.toFixed(1)} m at the middle of the box, ${got.toFixed(1)} m at the seat`);
+  ok('the margin it reports is the rectangle\'s true distance to the field\'s edge', Math.abs(got - seat.clearance) < 0.5, `${seat.clearance.toFixed(2)} against ${got.toFixed(2)} m`);
+  ok('and no place does better',
+    (() => {
+      let best = -Infinity;
+      for (let x = 0; x <= 1500; x += 15) for (let y = 0; y <= 1500; y += 15) best = Math.max(best, margin(kite, [x, y], 280, 280, 0, 40));
+      return best <= seat.clearance + 4 && best > seat.clearance - 15;
+    })());
+  ok('the same field and trial turned together give the same seat, turned',
+    (() => {
+      for (const deg of [30, -17, 90]) {
+        const t = (deg * Math.PI) / 180, cos = Math.cos(t), sin = Math.sin(t);
+        const turned = seatRect(kite.map(([x, y]) => [x * cos - y * sin, x * sin + y * cos]), 280, 280, deg);
+        if (Math.abs(turned.clearance - seat.clearance) > 1e-6) return false;
+        if (Math.hypot(turned.x - (seat.x * cos - seat.y * sin), turned.y - (seat.x * sin + seat.y * cos)) > 1e-6) return false;
+      }
+      return true;
+    })());
+  ok('a trial turned in a field that is not has its own seat, inside too',
+    (() => {
+      const s30 = seatRect(kite, 280, 280, 30), m30 = margin(kite, [s30.x, s30.y], 280, 280, 30);
+      return m30 > 100 && Math.abs(m30 - s30.clearance) < 0.5;
+    })());
+  // A field with a re-entrant corner: the trial fits one arm only.
+  const ell = [[0, 0], [1000, 0], [1000, 300], [300, 300], [300, 1000], [0, 1000]];
+  const arm = seatRect(ell, 500, 250);
+  ok('in an L-shaped field the trial goes in the arm that holds it, though the middle of the box is outside the field',
+    !inRing(ell, 500, 500) && Math.abs(arm.clearance - 25) < 1e-3 && Math.abs(margin(ell, [arm.x, arm.y], 500, 250) - 25) < 0.5 && arm.y < 300,
+    `${arm.x.toFixed(1)}, ${arm.y.toFixed(1)}, margin ${arm.clearance.toFixed(4)} m`);
+  const big = seatRect(kite, 900, 900);
+  ok('where it fits nowhere the seat is where the least of it hangs out, and says so',
+    big.clearance < 0 && inRing(kite, big.x, big.y) && margin(kite, [big.x, big.y], 900, 900, 0, 60) >= margin(kite, [750, 750], 900, 900, 0, 60) - 1,
+    `${big.clearance.toFixed(1)} m`);
+  ok('a ring closed on its first point is the same field, and a ring that encloses nothing has no seat',
+    JSON.stringify(seatRect([...kite, kite[0]], 280, 280)) === JSON.stringify(seat) && seatRect([[0, 0], [10, 10]], 5, 5) === null && seatRect([[0, 0], [10, 10], [20, 20]], 5, 5) === null);
+
+  // On the page: the field in longitude and latitude, the trial in the grid's metres.
+  const E0 = 619280, N0 = 5600840, epsg = 32631;
+  const toLL = proj4('+proj=utm +zone=31 +datum=WGS84 +units=m +no_defs', 'EPSG:4326');
+  const lngLat = ring => ring.map(([x, y]) => toLL.forward([E0 + x, N0 + y]));
+  const aoiOf = ring => [Math.min(...ring.map(q => q[0])), Math.min(...ring.map(q => q[1])), Math.max(...ring.map(q => q[0])), Math.max(...ring.map(q => q[1]))];
+  const boxOf = a => [[a[0], a[1]], [a[2], a[1]], [a[2], a[3]], [a[0], a[3]]];
+  const field = lngLat(kite), aoi = aoiOf(field);
+  ok('a field that is its own box has no seat to look for: the trial keeps the middle of the box',
+    fieldSeat(boxOf(aoi), aoi, epsg, 280, 280, 0) === null && fieldSeat(null, aoi, epsg, 280, 280, 0) === null);
+  const onPage = fieldSeat(field, aoi, epsg, 280, 280, 0);
+  ok('a traced field has one, the same as its outline gives in metres',
+    Math.hypot(onPage.centre[0] - (E0 + seat.x), onPage.centre[1] - (N0 + seat.y)) < 0.05 && Math.abs(onPage.clearance - seat.clearance) < 0.05
+    && fieldSeat(field, aoi, epsg, 280, 280, 0) === onPage && fieldSeat(field, aoi, epsg, 300, 280, 0) !== onPage);
+
+  // The plan the map draws and the table measures.
+  {
+    const design = { nSpecies: 4, nBlocks: 4, plotLength: 70, plotWidth: 70, plotAlley: 0, blockAlley: 0, blocksPerRow: 4, seed: 1 };
+    const sensor = { sigmaX: 0.59, sigmaY: 0.59, mixThreshold: 0.9 }, r = 10;
+    const origin = aoiUtmOrigin(aoi, epsg), env = utmEnvelope(aoi, epsg);
+    const ext = [Math.floor(env[0] / r) * r, Math.floor(env[1] / r) * r, Math.ceil(env[2] / r) * r, Math.ceil(env[3] / r) * r];
+    const utmRing = kite.map(([x, y]) => [E0 + x, N0 + y]);
+    const cornersIn = plan => [[0, 0], [plan.totalU, 0], [plan.totalU, plan.totalV], [0, plan.totalV]]
+      .filter(([du, dv]) => inRing(utmRing, origin[0] + plan.u0 + du, origin[1] + plan.v0 + dv)).length;
+    const old = stakeBlockPlan(design, blockPlacement(ext, origin, 0, r, true), origin, 0, r, sensor, ext).plan;
+    const now = stakeBlockPlan(design, seatedPlacement(design, field, aoi, epsg, ext, origin, 0, r, true), origin, 0, r, sensor, ext).plan;
+    ok('the staked trial has its four corners in the field, where the middle of the box left one out', cornersIn(old) < 4 && cornersIn(now) === 4,
+      `${cornersIn(old)} of 4 before, ${cornersIn(now)} of 4 now`);
+    ok('on a field that is a box the placement is the one it was, to the last bit',
+      JSON.stringify(seatedPlacement(design, boxOf(aoi), aoi, epsg, ext, origin, 0, r, true)) === JSON.stringify(blockPlacement(ext, origin, 0, r, true))
+      && JSON.stringify(seatedPlacement(design, null, aoi, epsg, ext, origin, 0, r, true)) === JSON.stringify(blockPlacement(ext, origin, 0, r, true)));
+    // The table: every plot keeps on the oblique field what it keeps in the
+    // open, on a box of the same extent. The field's edge used to cut it.
+    const ctx = ring => ({ aoi, fieldRing: ring, epsg, threshold: 90, blockDesign: design, importedAngle: 0, importedFileAngle: 0, importedBasePlan: undefined,
+      geoAuto: true, geoManual: 0, layout: { pattern: 'block', width: 2, spacing: 0, rotationDeg: 0 } });
+    const rung = { id: 's2', name: 'Sentinel-2', res: r, sigmaX: 0.59, sigmaY: 0.59 };
+    const open = ladderStep(ctx(boxOf(aoi)), 0, rung, true), oblique = ladderStep(ctx(field), 0, rung, true);
+    ok('the satellites table counts in every plot of the oblique field what it counts in the open',
+      open.plots.min > 0 && oblique.plots.min === open.plots.min && oblique.plotsRobust.min === open.plotsRobust.min && oblique.pureCount === open.pureCount,
+      `min ${oblique.plots.min} pure, ${oblique.plotsRobust.min} within the CE90`);
+  }
+  // A large field, a small trial seated far from the middle of the box: its
+  // phases are scored around the trial, not around the middle of the field.
+  {
+    const far = kite.map(([x, y]) => [2 * x, 2 * y]), fieldFar = lngLat(far), aoiFar = aoiOf(fieldFar);
+    const design = { nSpecies: 3, nBlocks: 2, plotLength: 14, plotWidth: 8, plotAlley: 1, blockAlley: 2, blocksPerRow: 2, seed: 3 };
+    const sensor = { sigmaX: 0.62, sigmaY: 0.62, mixThreshold: 0.9 }, r = 2;
+    const origin = aoiUtmOrigin(aoiFar, epsg), env = utmEnvelope(aoiFar, epsg);
+    const ext = [Math.floor(env[0] / r) * r, Math.floor(env[1] / r) * r, Math.ceil(env[2] / r) * r, Math.ceil(env[3] / r) * r];
+    const place = seatedPlacement(design, fieldFar, aoiFar, epsg, ext, origin, 0, r, true);
+    const seated = stakeBlockPlan(design, place, origin, 0, r, sensor, ext);
+    const central = stakeBlockPlan(design, blockPlacement(ext, origin, 0, r, true), origin, 0, r, sensor, ext);
+    const { window: _w, ...blind } = place;
+    const unseen = stakeBlockPlan(design, blind, origin, 0, r, sensor, ext);
+    const away = Math.hypot(place.window[0] - (ext[0] + ext[2]) / 2, place.window[1] - (ext[1] + ext[3]) / 2);
+    ok('a trial seated far from the middle of a large field is staked on the phase it would get in the middle',
+      away > 500 && stakeMesh(ext, r).nx * r < away && seated.offset.join() === central.offset.join() && seated.offset.join() !== '0,0',
+      `${Math.round(away)} m away, offset ${seated.offset.join(', ')}`);
+    ok('which it was not while the phases were scored on the middle of the field',
+      unseen.offset.join() === '0,0');
+  }
+  // The suggestion asks the outline, not the box.
+  {
+    const base = { nSpecies: 4, nBlocks: 4, pixels: 4, res: 10, sigmaX: 0.59, sigmaY: 0.59, threshold: 0.9, ce90M: 0, plotAlley: 0, blockAlley: 0, field: { u: 5000, v: 5000 } };
+    const plain = suggestBlockDesign(base);
+    const narrow = suggestBlockDesign({ ...base, fitsField: u => u <= plain.footprint[0] / 2 + 1 });
+    const none = suggestBlockDesign({ ...base, fitsField: () => false });
+    ok('an arrangement fits when the field\'s outline holds it, whatever the size of its box',
+      plain.fits === true && narrow.fits === true && narrow.footprint[0] < plain.footprint[0] && none.fits === false,
+      `${plain.footprint.join(' x ')} m, ${narrow.footprint.join(' x ')} m when the outline is narrower`);
+    // A sliver across a box that would hold the trial four times over.
+    const sliver = lngLat([[0, 0], [1500, 1400], [1500, 1500], [0, 100]]), aoiS = aoiOf(sliver);
+    const fits = (u, v) => fieldSeat(sliver, aoiS, epsg, u, v, 0).clearance > 0;
+    const inSliver = suggestBlockDesign({ ...base, pixels: 16, field: { u: 1500, v: 1500 }, fitsField: fits });
+    ok('a sliver of a field across a large box holds no arrangement, and the suggestion says so', inSliver.fits === false, `${inSliver.footprint.join(' x ')} m`);
+  }
+}
+
+console.log('\nH35. a block trial built at an angle to the pixel rows');
+{
+  // "add a rotation possibility in the design trial". Turned, every plot lies
+  // its own way across the pixels: no plot stands for the others, so the whole
+  // trial is counted where it will lie, by the table's own per-plot count, for
+  // every size tried. Pinned here: that count IS the table's, and the trial
+  // built keeps what was asked by the table itself.
+  const { blockPlotCounts, ladderStep } = await import(path.join(BUILD, 'src/pixel-grid/ladder-step.mjs'));
+  const { suggestBlockDesign } = await import(path.join(BUILD, 'src/pixel-grid/suggest-design.mjs'));
+  const { fieldSeat } = await import(path.join(BUILD, 'src/pixel-grid/trial-seat.mjs'));
+  const fieldSeatOf = (f, u, v, deg) => fieldSeat(f.ring, f.aoi, 32631, u, v, deg).clearance;
+  const E0 = 619280, N0 = 5600840, epsg = 32631;
+  const toLL = proj4('+proj=utm +zone=31 +datum=WGS84 +units=m +no_defs', 'EPSG:4326');
+  const lngLat = ring => ring.map(([x, y]) => toLL.forward([E0 + x, N0 + y]));
+  const aoiOf = ring => [Math.min(...ring.map(q => q[0])), Math.min(...ring.map(q => q[1])), Math.max(...ring.map(q => q[0])), Math.max(...ring.map(q => q[1]))];
+  const square = lngLat([[0, 0], [1500, 0], [1500, 1500], [0, 1500]]), kite = lngLat([[0, 0], [1500, 900], [1500, 1500], [1100, 1500]]);
+  const fields = [{ name: 'box', aoi: aoiOf(square), ring: null }, { name: 'oblique', aoi: aoiOf(kite), ring: kite }];
+  const s2 = { id: 's2', name: 'Sentinel-2', res: 10, sigmaX: 0.59, sigmaY: 0.59 }, pl = { id: 'pleiades', name: 'Pléiades MS', res: 2, sigmaX: 1.37, sigmaY: 1.37 };
+  const ctxOf = (f, design, deg, hold = true) => ({ aoi: f.aoi, fieldRing: f.ring, epsg, threshold: 90, blockDesign: design, importedAngle: 0, importedFileAngle: 0, importedBasePlan: undefined,
+    geoAuto: hold, geoManual: 0, layout: { pattern: 'block', width: 2, spacing: 0, rotationDeg: deg } });
+
+  // The lean count against the table's row.
+  {
+    const designs = [
+      { nSpecies: 4, nBlocks: 4, plotLength: 70, plotWidth: 70, plotAlley: 0, blockAlley: 0, blocksPerRow: 4, seed: 1 },
+      { nSpecies: 3, nBlocks: 5, plotLength: 85, plotWidth: 60, plotAlley: 2.5, blockAlley: 5, blocksPerRow: 2, seed: 7 },
+      // Larger than the kite holds anywhere: the field's edge cuts it, and both must cut alike.
+      { nSpecies: 6, nBlocks: 4, plotLength: 160, plotWidth: 110, plotAlley: 0, blockAlley: 0, blocksPerRow: 4, seed: 2 },
+    ];
+    let n = 0, cut = 0; const differ = [], inTheOpen = new Map();
+    for (const f of fields) for (const d of designs) for (const deg of [0, 10, 30, -60, 90]) for (const hold of [true, false]) {
+      const row = ladderStep(ctxOf(f, d, deg, hold), deg, s2, true), got = blockPlotCounts(ctxOf(f, d, deg, hold), deg, s2);
+      n++;
+      if (!row.plots || !got) { differ.push(`${f.name} ${d.nSpecies}x${d.nBlocks} ${deg} ${hold}: not counted`); continue; }
+      // The box comes first: the oblique field cuts a trial when a plot keeps less there than in the open.
+      const key = `${designs.indexOf(d)}|${deg}|${hold}`;
+      if (f.name === 'box') inTheOpen.set(key, row.plots.min); else if (row.plots.min < inTheOpen.get(key)) cut++;
+      if (got.pure !== row.plots.min || got.held !== (row.plotsRobust?.min ?? null)) differ.push(`${f.name} ${d.nSpecies}x${d.nBlocks} ${deg} ${hold}`);
+    }
+    ok('the count a turned trial is sized on is the satellites table\'s own, pure and within the CE90', differ.length === 0 && n === 60, `${n} rows${differ.length ? ', differ: ' + differ.slice(0, 3).join('; ') : ''}`);
+    ok('trials cut by the field\'s edge included', cut > 0, `${cut} rows where a plot keeps less than in the open`);
+    const fine = { id: 'fine', name: 'fine', res: 0.5, sigmaX: 0.6, sigmaY: 0.6 };
+    ok('a trial the table does not count plot by plot has no count here either',
+      blockPlotCounts(ctxOf(fields[0], designs[0], 30), 30, fine) === null && ladderStep(ctxOf(fields[0], designs[0], 30), 30, fine, true).plots === undefined);
+  }
+
+  // The trial built, turned.
+  const request = (sat, hold, extra) => ({ nSpecies: 4, nBlocks: 4, pixels: 16, res: sat.res, sigmaX: sat.sigmaX, sigmaY: sat.sigmaY, threshold: 0.9,
+    ce90M: hold ? Math.round(((CE90_TO_SIGMA * sat.res) / 3) * 100) / 100 : 0, plotAlley: 0, blockAlley: 0, ...extra });
+  {
+    const f = fields[0];
+    let n = 0, short = 0, offStep = 0, calls = 0; const sizes = [];
+    for (const [sat, hold] of [[s2, true], [s2, false], [pl, true]]) for (const deg of [10, 30, 45, -60]) {
+      const countAt = d => { calls++; return blockPlotCounts(ctxOf(f, d, deg, hold), deg, sat); };
+      const out = suggestBlockDesign(request(sat, hold, { field: { u: 1500, v: 1500 }, rotationDeg: deg, countAt }));
+      const row = ladderStep(ctxOf(f, out.design, deg, hold), deg, sat, true);
+      n++;
+      if ((hold ? row.plotsRobust.min : row.plots.min) < 16 || out.angle !== deg || (out.held ?? out.pure) !== (hold ? row.plotsRobust.min : row.plots.min)) short++;
+      if (out.pitchPx.some(p => Math.abs(p * 2 - Math.round(p * 2)) > 1e-9)) offStep++;
+      // No more ground than the first square that does, from the size the pixel rows need upwards.
+      const along = suggestBlockDesign(request(sat, hold, { field: { u: 1500, v: 1500 } }));
+      let p = Math.floor(Math.sqrt(along.pitchPx[0] * along.pitchPx[1]) * 2) / 2;
+      const sq = q => ({ ...out.design, plotLength: q * sat.res, plotWidth: q * sat.res });
+      const enough = q => { const c = blockPlotCounts(ctxOf(f, sq(q), deg, hold), deg, sat); return (c.held ?? c.pure) >= 16; };
+      while (!enough(p)) p += 0.5;
+      if (out.pitchPx[0] * out.pitchPx[1] > p * p + 1e-9) short++;
+      sizes.push(`${out.design.plotLength} x ${out.design.plotWidth}`);
+    }
+    ok('a trial built at an angle keeps the pixels asked for in every plot, by the satellites table', short === 0 && n === 12, `${n} builds, e.g. ${sizes[1]} m at 30 deg`);
+    ok('its plots are sized by half pixels', offStep === 0);
+    ok('and each build counts the whole trial a few times, not hundreds', calls / n < 30, `${(calls / n).toFixed(1)} counts a build`);
+  }
+  {
+    const base = request(s2, true, { field: { u: 1500, v: 1500 } });
+    const plain = suggestBlockDesign(base);
+    const never = () => { throw new Error('counted'); };
+    ok('along the pixel rows nothing changes and the whole trial is never counted',
+      JSON.stringify(suggestBlockDesign({ ...base, rotationDeg: 0, countAt: never })) === JSON.stringify(plain) && plain.angle === 0);
+    ok('a turned trial with nothing to count it on is answered with nothing', suggestBlockDesign({ ...base, rotationDeg: 20 }) === null);
+    // A field given by its extent is a box: a turned trial fits it when its own box does.
+    const f = fields[0], countAt = deg => d => blockPlotCounts(ctxOf(f, d, deg), deg, s2);
+    const tight = suggestBlockDesign({ ...base, field: { u: 300, v: 300 } });
+    const turned = suggestBlockDesign({ ...base, field: { u: 300, v: 300 }, rotationDeg: 45, countAt: countAt(45) });
+    const t = Math.PI / 4, own = turned.footprint[0] * Math.cos(t) + turned.footprint[1] * Math.sin(t);
+    ok('a box that holds the trial along the rows does not hold it turned, and the suggestion says so',
+      tight.fits === true && turned.fits === false && own > 300, `its own box is ${own.toFixed(0)} m wide`);
+    // An oblique field: the arrangement and the fit follow the outline at that angle.
+    const kiteField = fields[1];
+    const onKite = suggestBlockDesign({ ...base, rotationDeg: 31, countAt: d => blockPlotCounts(ctxOf(kiteField, d, 31), 31, s2),
+      fitsField: (u, v) => fieldSeatOf(kiteField, u, v, 31) > 0 });
+    const row = ladderStep(ctxOf(kiteField, onKite.design, 31), 31, s2, true);
+    ok('on an oblique field a trial turned along it fits, and the table counts what was asked in every plot',
+      onKite.fits === true && row.plotsRobust.min >= 16 && row.plotsRobust.min === onKite.held, `min ${row.plotsRobust.min} within the CE90`);
+  }
+}
+
+console.log('\nH36. strips built from the pixels wanted in them');
+{
+  // "also do the suggest design for alternating row or column". A strip runs
+  // the length of the field, so its pixels are its pixels across times its
+  // length. First the pixels ACROSS, which is where the engine comes in: the
+  // count is the engine's on the strips as the page slides them, and for a
+  // count across the strips found are the thinnest. Then the pixels in the
+  // whole strip, which is what is asked: the thinnest strips, widened only on
+  // a field too short for them.
+  const { suggestStrips, thinnestStripsAcross, stripPixels, stripLengths } = await import(path.join(BUILD, 'src/pixel-grid/suggest-design.mjs'));
+  const { simulateFieldReference, fieldVerdicts } = await import(path.join(BUILD, 'src/pixel-grid/simulate.mjs'));
+  const base = [619283.7, 5600846.2];
+  const ce90Of = res => Math.round(((CE90_TO_SIGMA * res) / 3) * 100) / 100;
+  const s2 = { res: 10, sigmaX: 0.59, sigmaY: 0.59 }, pl = { res: 2, sigmaX: 1.37, sigmaY: 1.37 };
+  const sensorOf = sat => ({ sigmaX: sat.sigmaX, sigmaY: sat.sigmaY, mixThreshold: 0.9 });
+
+  // The count against whole simulations read the plain way: along the pixel
+  // rows a strip's pure pixels are pixel rows, the same in every column, so one
+  // column of the field is read from end to end and the runs of one crop are
+  // the strips. Nothing of the slab is reused.
+  const byRuns = (pattern, width, spacing, sat, ce90M) => {
+    const sensor = sensorOf(sat), res = sat.res, n = 60;
+    const [du, dv] = bestPhaseOffset(pattern, res, width, spacing, 0.9, base[0], base[1], sensor);
+    const origin = [base[0] + du, base[1] + dv];
+    const e0 = Math.floor(base[0] / res) * res - 30 * res, n0 = Math.floor(base[1] / res) * res - 30 * res;
+    const grid = { res, utmBounds: [e0, n0, e0 + n * res, n0 + n * res] }, layout = { pattern, width, spacing, rotationDeg: 0 };
+    const nominal = simulateFieldReference(grid, origin, layout, sensor).mixed;
+    const held = ce90M > 0 ? robustMask(nominal, ce90Shifts(ce90M).map(([dx, dy]) => simulateFieldReference(grid, [origin[0] - dx, origin[1] - dy], layout, sensor).mixed)) : null;
+    // The middle line across the strips: a column of pixels for rows, a row of pixels for columns.
+    const line = Array.from({ length: n }, (_, j) => (pattern === 'row' ? j * n + 30 : 30 * n + j));
+    const runs = keep => {
+      const out = []; let cur = -1, len = 0, first = true;
+      for (let j = 8; j < n - 8; j++) {
+        const v = nominal[line[j]], sp = v <= 1 && keep(line[j]) ? v : -1;
+        // A strip's pixels are one run of its crop: the gap between two strips ends it.
+        if (v <= 1 && v === cur) { if (sp >= 0) len++; continue; }
+        if (v <= 1) { if (cur >= 0 && !first) out.push(len); if (cur >= 0) first = false; cur = v; len = sp >= 0 ? 1 : 0; }
+      }
+      return out;
+    };
+    const pure = runs(() => true), kept = held ? runs(k => held[k]) : null;
+    // Strips too narrow to keep one pure pixel leave no run to read: none across.
+    const fewest = list => (list.length ? Math.min(...list) : 0);
+    return { pure: fewest(pure), held: kept ? fewest(kept) : null, strips: pure.length };
+  };
+  {
+    let n = 0; const differ = [];
+    for (const sat of [s2, pl]) for (const pattern of ['row', 'col']) for (const [w, sp] of [[4, 0], [5, 0], [6, 0], [7, 1], [9, 0]]) for (const ce of [0, ce90Of(sat.res)]) {
+      const width = w * sat.res - sp * (sat.res / 2), spacing = sp * (sat.res / 2);
+      const got = stripPixels(pattern, width, spacing, 0, sat.res, sensorOf(sat), ce, base), want = byRuns(pattern, width, spacing, sat, ce);
+      n++;
+      if ((want.pure > 0 && want.strips < 2) || got.pure !== want.pure || got.held !== want.held) differ.push(`${pattern} ${width}+${spacing} m at ${sat.res} m, ce ${ce}: ${got.pure}/${got.held} against ${want.pure}/${want.held}`);
+    }
+    ok('the pixels across a strip are the pixel rows a whole simulation leaves pure in it, and the ones that hold', differ.length === 0 && n === 40, `${n} strips${differ.length ? ', ' + differ.slice(0, 2).join('; ') : ''}`);
+    ok('strips with pure pixels and strips with none are both among them',
+      stripPixels('row', 60, 0, 0, 10, sensorOf(s2), 0, base).pure >= 3 && stripPixels('row', 8, 0, 0, 2, sensorOf(pl), 0, base).pure === 0);
+  }
+  const ask = (sat, pixels, hold, extra) => ({ pattern: 'row', pixels, res: sat.res, sigmaX: sat.sigmaX, sigmaY: sat.sigmaY, threshold: 0.9, ce90M: hold ? ce90Of(sat.res) : 0, spacing: 0, base, ...extra });
+  {
+    let n = 0, wrong = 0, evenOnes = 0; const said = [], between = [];
+    for (const sat of [s2, pl]) for (const pattern of ['row', 'col']) for (const pixels of [1, 3, 6]) for (const hold of [true, false]) for (const spacing of [0, 1.5]) {
+      const out = thinnestStripsAcross(ask(sat, pixels, hold, { pattern, spacing }));
+      const got = out.held ?? out.pure;
+      const narrower = stripPixels(pattern, Math.round(((out.pitchPx - 0.25) * sat.res - spacing) * 100) / 100, spacing, 0, sat.res, sensorOf(sat), hold ? ce90Of(sat.res) : 0, base);
+      n++;
+      if (got < pixels || Math.abs(out.pitchPx * 4 - Math.round(out.pitchPx * 4)) > 1e-9 || !Number.isInteger(got) || !out.whole || out.angle !== 0) wrong++;
+      if (out.even !== Number.isInteger(out.pitchPx)) wrong++;
+      if (Math.abs(out.width + spacing - out.pitchPx * sat.res) > 1e-9 || out.spacing !== spacing) wrong++;
+      if (narrower && (narrower.held ?? narrower.pure) >= pixels) wrong++;
+      if (out.even) evenOnes++; else between.push(`${pattern} ${pixels} px ${hold ? 'held' : 'pure'} alley ${spacing} at ${sat.res} m: ${out.pitchPx} px`);
+      if (pixels === 3 && hold && spacing === 0 && pattern === 'row') said.push(`${out.width} m at ${sat.res} m`);
+    }
+    ok('strips built along the pixel rows keep the pixels asked for across, a strip and its alley whole pixels or quarters of one, and a quarter pixel narrower would not do',
+      wrong === 0 && n === 48, `${n} requests; 3 px across within the CE90: ${said.join(', ')}`);
+    ok('a whole number of pixels is the answer most often, not always', evenOnes > 0.5 * n && evenOnes < n, `${evenOnes} of ${n}; between: ${between.join('; ')}`);
+  }
+  // "always put the thinnest rows or columns possible that achieve the wanted
+  // number of pixels". Read the plain way again: one long column of a whole
+  // simulation, strip by strip, at twenty-four positions of the strips on the
+  // lattice, for every width a quarter pixel apart under the one built. None
+  // may keep the pixels asked for in every strip.
+  {
+    const everyStrip = (sat, wPx, phase, ce) => {
+      const res = sat.res, nx = 12, ny = 200, sensor = sensorOf(sat), layout = { pattern: 'row', width: wPx * res, spacing: 0, rotationDeg: 0 };
+      const grid = { res, utmBounds: [0, 0, nx * res, ny * res] }, origin = [0, phase * res];
+      const nominal = fieldVerdicts(grid, origin, layout, sensor);
+      const held = ce > 0 ? robustMask(nominal, ce90Shifts(ce).map(([dx, dy]) => fieldVerdicts(grid, [origin[0] - dx, origin[1] - dy], layout, sensor))) : null;
+      const counts = new Map();
+      for (let j = 0; j < ny; j++) {
+        const i = Math.floor(((j + 0.5) * res - origin[1]) / (wPx * res));
+        if (i * wPx * res + origin[1] < 12 * res || (i + 1) * wPx * res + origin[1] > (ny - 12) * res) continue;
+        const k = j * nx + 6, c = counts.get(i) ?? 0;
+        counts.set(i, c + (nominal[k] <= 1 && (!held || held[k]) ? 1 : 0));
+      }
+      return Math.min(...counts.values());
+    };
+    let n = 0; const thinner = [], built = [];
+    for (const [sat, pixels, hold] of [[s2, 1, false], [s2, 1, true], [s2, 3, true], [s2, 2, false], [pl, 2, true], [pl, 1, false]]) {
+      const ce = hold ? ce90Of(sat.res) : 0;
+      const out = thinnestStripsAcross(ask(sat, pixels, hold, { base: [0, 0] }));
+      n++; built.push(`${out.width} m`);
+      for (let w = Math.max(1, out.pitchPx - 1.5); w < out.pitchPx - 1e-9; w += 0.25) {
+        for (let k = 0; k < 24; k++) if (everyStrip(sat, w, (k / 24) * w, ce) >= pixels) { thinner.push(`${w} px at ${sat.res} m for ${pixels}`); break; }
+      }
+    }
+    ok('no thinner strips, at any position on the lattice, keep the pixels asked for in every strip', thinner.length === 0 && n === 6,
+      thinner.length ? thinner.join('; ') : `built ${built.join(', ')}`);
+    const one = thinnestStripsAcross(ask(s2, 1, false, { base: [0, 0] }));
+    ok('where a whole pixel more steps over the count asked for, the strips between are built: 25 m keeps one pure pixel at 10 m, 20 m none, 30 m two',
+      one.pitchPx === 2.5 && one.width === 25 && one.pure === 1 && !one.even
+      && stripPixels('row', 20, 0, 0, 10, sensorOf(s2), 0, [0, 0]).pure === 0 && stripPixels('row', 30, 0, 0, 10, sensorOf(s2), 0, [0, 0]).pure === 2);
+  }
+  {
+    const rows = thinnestStripsAcross(ask(s2, 3, true)), cols = thinnestStripsAcross(ask(s2, 3, true, { pattern: 'col' }));
+    ok('rows and columns come out alike under a round blur', rows.width === cols.width && rows.held === cols.held);
+    // A blur wider up and down than left to right: rows are blurred across, columns along.
+    const tall = { res: 10, sigmaX: 0.3, sigmaY: 1.5 };
+    const r2 = thinnestStripsAcross(ask(tall, 3, false)), c2 = thinnestStripsAcross(ask(tall, 3, false, { pattern: 'col' }));
+    ok('and a blur wider one way asks for wider strips across it only', r2.width > c2.width, `rows ${r2.width} m, columns ${c2.width} m`);
+    const held = thinnestStripsAcross(ask(s2, 3, true)), plain = thinnestStripsAcross(ask(s2, 3, false));
+    ok('holding within the CE90 asks for wider strips than pure pixels do', held.width > plain.width && plain.held === null, `${held.width} against ${plain.width} m`);
+  }
+  {
+    let n = 0, wrong = 0; const said = [];
+    for (const sat of [s2, pl]) for (const pattern of ['row', 'col']) for (const deg of [20, -35, 60]) for (const hold of [true, false]) {
+      const out = thinnestStripsAcross(ask(sat, 3, hold, { pattern, rotationDeg: deg }));
+      const got = out.held ?? out.pure;
+      const narrower = stripPixels(pattern, Math.round((out.pitchPx - 0.25) * sat.res * 100) / 100, 0, deg, sat.res, sensorOf(sat), hold ? ce90Of(sat.res) : 0, base);
+      n++;
+      if (got < 3 || out.whole || out.even || out.angle !== deg || Math.abs(out.pitchPx * 4 - Math.round(out.pitchPx * 4)) > 1e-9) wrong++;
+      if (narrower && (narrower.held ?? narrower.pure) >= 3) wrong++;
+      if (pattern === 'row' && hold && deg === 20) said.push(`${out.width} m at ${sat.res} m`);
+    }
+    ok('turned strips are sized by quarter pixels on the mean pixels across, and a quarter pixel narrower would not do', wrong === 0 && n === 24, `${n} requests; at 20 deg: ${said.join(', ')}`);
+  }
+  {
+    // Counted from the field's corner, wherever that falls on the lattice.
+    let short = 0;
+    for (const corner of [[619280, 5600840], [619283.7, 5600846.2], [619288.1, 5600841.9], [0, 0]]) {
+      const out = thinnestStripsAcross(ask(s2, 3, true, { base: corner }));
+      const again = stripPixels('row', out.width, 0, 0, 10, sensorOf(s2), ce90Of(10), corner);
+      if (again.held < 3 || again.held !== out.held) short++;
+    }
+    ok('the strips keep their pixels from any field corner', short === 0);
+    ok('what no strip within the design\'s limits can give is answered with nothing',
+      thinnestStripsAcross(ask(s2, 400, true)) === null && thinnestStripsAcross({ ...ask(s2, 3, true), res: 0 }) === null);
+  }
+
+  // The pixels in the WHOLE strip: what the panel asks for.
+  {
+    const ringOf = (w, h) => [[base[0], base[1]], [base[0] + w, base[1]], [base[0] + w, base[1] + h], [base[0], base[1] + h]];
+    const one = thinnestStripsAcross(ask(s2, 1, true));
+    const long = ringOf(1000, 600);
+    const three = suggestStrips(ask(s2, 3, true, { ring: long })), ten = suggestStrips(ask(s2, 10, true, { ring: long })), sixty = suggestStrips(ask(s2, 60, true, { ring: long }));
+    // "this would also fit for 10 px, so why is the 10 px much wider"
+    ok('on a long field 3, 10 and 60 pixels a strip are the same strips, the thinnest that keep a pixel across',
+      three.width === one.width && ten.width === one.width && sixty.width === one.width && ten.held === one.held,
+      `${ten.width} m, against ${thinnestStripsAcross(ask(s2, 10, true)).width} m for 10 pixels across`);
+    ok('and each says the length of strip that holds its count', three.lengthM === 30 && ten.lengthM === 100 && sixty.lengthM === 600
+      && ten.onField.enough === ten.onField.strips && ten.onField.strips >= 14, `${ten.onField.strips} strips of 1000 m`);
+    // A field whose strips are 80 m long: eight pixels along.
+    const short = ringOf(80, 600);
+    const s10 = suggestStrips(ask(s2, 10, true, { ring: short })), s30 = suggestStrips(ask(s2, 30, true, { ring: short }));
+    ok('on a short field the strips are widened until they hold the count, and no further',
+      s10.width === thinnestStripsAcross(ask(s2, 2, true)).width && s10.held === 2 && s10.lengthM === 50
+      && s30.width === thinnestStripsAcross(ask(s2, 4, true)).width && s30.held === 4 && s30.lengthM === 80
+      && s10.onField.share >= 0.9 && s30.onField.share >= 0.9, `10 px: ${s10.width} m, 30 px: ${s30.width} m, against ${one.width} m on a long field`);
+    const open = suggestStrips(ask(s2, 10, true));
+    ok('with no field the thinnest strips are the answer, with the length they need', open.width === one.width && open.lengthM === 100 && open.onField === null);
+    const tiny = suggestStrips(ask(s2, 500, true, { ring: ringOf(30, 600) }));
+    ok('a field too short at any width gets the thinnest strips, with how few of its strips are long enough, and never a strip a kilometre wide',
+      tiny.width === one.width && tiny.onField.share < 0.9 && tiny.onField.enough === 0 && tiny.lengthM === 5000, `${tiny.width} m, ${tiny.onField.enough} of ${tiny.onField.strips} strips`);
+    // Many pixels on a field of middling length: found in a few steps, and the thinnest that does.
+    const mid = ringOf(300, 900);
+    const m100 = suggestStrips(ask(s2, 100, true, { ring: mid })), under = thinnestStripsAcross(ask(s2, m100.held - 1, true));
+    ok('a count that needs several pixels across is met by the thinnest strips that hold it on the field',
+      m100.held * 30 >= 100 && under.held * 30 < 100 && m100.onField.share >= 0.9, `${m100.width} m keep ${m100.held} across over 30 pixels`);
+
+    // The count a strip is promised, read off a whole simulation of the field:
+    // every strip that lies whole in it holds the pixels asked for.
+    const inField = (ring, fit, sat, hold) => {
+      const res = sat.res, sensor = sensorOf(sat), P = fit.width + fit.spacing;
+      const [, dv] = bestPhaseOffset('row', res, fit.width, fit.spacing, 0.9, base[0], base[1], sensor);
+      const origin = [base[0], base[1] + dv];
+      const w = ring[1][0] - ring[0][0], h = ring[2][1] - ring[0][1];
+      const e0 = Math.floor(base[0] / res) * res, n0 = Math.floor(base[1] / res) * res, nx = Math.ceil((base[0] + w - e0) / res), ny = Math.ceil((base[1] + h - n0) / res);
+      const grid = { res, utmBounds: [e0, n0, e0 + nx * res, n0 + ny * res] }, layout = { pattern: 'row', width: fit.width, spacing: fit.spacing, rotationDeg: 0 };
+      const nominal = fieldVerdicts(grid, origin, layout, sensor);
+      const held = hold ? robustMask(nominal, ce90Shifts(ce90Of(res)).map(([dx, dy]) => fieldVerdicts(grid, [origin[0] - dx, origin[1] - dy], layout, sensor))) : null;
+      const counts = new Map();
+      for (let k = 0; k < nominal.length; k++) {
+        const E = e0 + ((k % nx) + 0.5) * res, N = n0 + (Math.floor(k / nx) + 0.5) * res;
+        if (E < base[0] || E > base[0] + w || N < base[1] || N > base[1] + h) continue;
+        const i = Math.floor((N - origin[1]) / P);
+        // Strips whole in the field, across.
+        if (i * P + origin[1] < base[1] || i * P + fit.width + origin[1] > base[1] + h) continue;
+        counts.set(i, (counts.get(i) ?? 0) + (nominal[k] <= 1 && (!held || held[k]) ? 1 : 0));
+      }
+      return { fewest: Math.min(...counts.values()), strips: counts.size };
+    };
+    const onLong = inField(long, ten, s2, true), onShort = inField(short, s10, s2, true), onShort30 = inField(short, s30, s2, true);
+    ok('by a whole simulation of the field every whole strip holds the pixels asked for',
+      onLong.fewest >= 10 && onLong.strips >= 12 && onShort.fewest >= 10 && onShort30.fewest >= 30,
+      `fewest ${onLong.fewest} on the long field, ${onShort.fewest} and ${onShort30.fewest} on the short one`);
+    ok('and a strip is promised no more than a pixel or two a row under what it holds', onLong.fewest >= ten.held * 98 && onShort.fewest <= s10.held * 9,
+      `${onLong.fewest} against ${ten.held} across over 100 pixels`);
+
+    // An oblique field ends on short strips: they do not set the width.
+    const kite = [[0, 0], [1500, 900], [1500, 1500], [1100, 1500]].map(([x, y]) => [base[0] + x, base[1] + y]);
+    const onKite = suggestStrips(ask(s2, 10, true, { ring: kite }));
+    ok('an oblique field\'s short end strips do not widen the others', onKite.width === one.width && onKite.onField.enough < onKite.onField.strips && onKite.onField.share >= 0.9,
+      `${onKite.onField.enough} of ${onKite.onField.strips} strips are long enough, ${(100 * onKite.onField.share).toFixed(0)} % of the field`);
+    // The lengths themselves: a field's strips, laid end to end and given their pitch, are the field.
+    let worst = 0;
+    for (const deg of [0, 30, -50]) for (const pattern of ['row', 'col']) {
+      const lens = stripLengths(kite, pattern, 20, 5, deg, [base[0] + 3, base[1] + 7]);
+      const area = 0.5 * Math.abs(kite.reduce((a, q, i) => { const r = kite[(i + 1) % kite.length]; return a + q[0] * r[1] - r[0] * q[1]; }, 0));
+      worst = Math.max(worst, Math.abs(lens.reduce((a, b) => a + b, 0) * 25 - area) / area);
+    }
+    ok('strip lengths: the strips of a field, each times its pitch, add up to the field', worst < 0.03, `within ${(100 * worst).toFixed(1)} %`);
+    ok('and in a box along the rows every strip is as long as the box', stripLengths(long, 'row', 40, 0, 0, base).every(len => Math.abs(len - 1000) < 1e-6)
+      && stripLengths(long, 'col', 40, 0, 0, base).every(len => Math.abs(len - 600) < 1e-6));
+  }
+}
+
+console.log('\nH37. a checkerboard built from the pixels wanted in a cell');
+{
+  // "the suggest design should be available for every configuration". A cell of
+  // a checkerboard is a plot: asked for by the pure pixels it keeps, answered
+  // with its side. Pinned: the count is a whole simulation's, read cell by cell,
+  // and the cells built are the smallest the page's own sliding gives.
+  const { suggestChecker, checkerPixels } = await import(path.join(BUILD, 'src/pixel-grid/suggest-design.mjs'));
+  const { fieldVerdicts } = await import(path.join(BUILD, 'src/pixel-grid/simulate.mjs'));
+  const base = [619283.7, 5600846.2];
+  const ce90Of = res => Math.round(((CE90_TO_SIGMA * res) / 3) * 100) / 100;
+  const s2 = { res: 10, sigmaX: 0.59, sigmaY: 0.59 }, pl = { res: 2, sigmaX: 1.06, sigmaY: 1.06 };
+  const sensorOf = sat => ({ sigmaX: sat.sigmaX, sigmaY: sat.sigmaY, mixThreshold: 0.9 });
+  // A whole simulation at the phase the page slides to, read cell by cell.
+  const byCells = (width, spacing, sat, ce90M) => {
+    const res = sat.res, sensor = sensorOf(sat), P = width + spacing, n = Math.ceil((8 * P) / res) + 16;
+    const [du, dv] = bestPhaseOffset('checker', res, width, spacing, 0.9, base[0], base[1], sensor);
+    const origin = [base[0] + du, base[1] + dv];
+    const e0 = Math.floor(base[0] / res) * res - 8 * res, n0 = Math.floor(base[1] / res) * res - 8 * res;
+    const grid = { res, utmBounds: [e0, n0, e0 + n * res, n0 + n * res] }, layout = { pattern: 'checker', width, spacing, rotationDeg: 0 };
+    const nominal = fieldVerdicts(grid, origin, layout, sensor);
+    const held = ce90M > 0 ? robustMask(nominal, ce90Shifts(ce90M).map(([dx, dy]) => fieldVerdicts(grid, [origin[0] - dx, origin[1] - dy], layout, sensor))) : null;
+    const pure = new Map(), kept = new Map();
+    for (let k = 0; k < nominal.length; k++) {
+      const u = e0 + ((k % n) + 0.5) * res - origin[0], v = n0 + (Math.floor(k / n) + 0.5) * res - origin[1];
+      const i = Math.floor(u / P), j = Math.floor(v / P);
+      // Cells well inside the simulated square, so that none is cut by its edge.
+      if (i < 1 || i > 6 || j < 1 || j > 6) continue;
+      const key = i * 100 + j, mine = nominal[k] === (((i + j) % 2) + 2) % 2 && u - i * P < width && v - j * P < width;
+      pure.set(key, (pure.get(key) ?? 0) + (mine ? 1 : 0));
+      kept.set(key, (kept.get(key) ?? 0) + (mine && held && held[k] ? 1 : 0));
+    }
+    return { pure: Math.min(...pure.values()), held: held ? Math.min(...kept.values()) : null };
+  };
+  {
+    let n = 0; const differ = [];
+    for (const sat of [s2, pl]) for (const [w, sp] of [[4, 0], [5, 0], [7, 0], [6, 1], [5.5, 0]]) for (const ce of [0, ce90Of(sat.res)]) {
+      const width = w * sat.res - sp * (sat.res / 2), spacing = sp * (sat.res / 2);
+      const got = checkerPixels(width, spacing, 0, sat.res, sensorOf(sat), ce, base), want = byCells(width, spacing, sat, ce);
+      n++;
+      if (got.pure !== want.pure || got.held !== want.held) differ.push(`${width}+${spacing} m at ${sat.res} m, ce ${ce}: ${got.pure}/${got.held} against ${want.pure}/${want.held}`);
+    }
+    ok('the pixels of a cell are the ones a whole simulation leaves pure in the cell that keeps the fewest, and the ones that hold', differ.length === 0 && n === 20,
+      `${n} checkerboards${differ.length ? ', ' + differ.slice(0, 2).join('; ') : ''}`);
+  }
+  const ask = (sat, pixels, hold, extra) => ({ pixels, res: sat.res, sigmaX: sat.sigmaX, sigmaY: sat.sigmaY, threshold: 0.9, ce90M: hold ? ce90Of(sat.res) : 0, spacing: 0, base, ...extra });
+  {
+    let n = 0, wrong = 0; const said = [];
+    for (const sat of [s2, pl]) for (const pixels of [1, 4, 16]) for (const hold of [true, false]) for (const spacing of [0, 1.5]) for (const deg of [0, 25]) {
+      const out = suggestChecker(ask(sat, pixels, hold, { spacing, rotationDeg: deg }));
+      const got = out.held ?? out.pure;
+      const smaller = checkerPixels(Math.round(((out.pitchPx - 0.25) * sat.res - spacing) * 100) / 100, spacing, deg, sat.res, sensorOf(sat), hold ? ce90Of(sat.res) : 0, base);
+      n++;
+      if (got < pixels || out.angle !== deg || out.whole !== (deg === 0) || out.even !== (deg === 0 && Number.isInteger(out.pitchPx))) wrong++;
+      if (Math.abs(out.pitchPx * 4 - Math.round(out.pitchPx * 4)) > 1e-9 || Math.abs(out.width + spacing - out.pitchPx * sat.res) > 1e-9 || out.spacing !== spacing) wrong++;
+      if (deg === 0 && !Number.isInteger(got)) wrong++;
+      if (smaller && (smaller.held ?? smaller.pure) >= pixels) wrong++;
+      if (pixels === 16 && hold && spacing === 0) said.push(`${out.width} m at ${sat.res} m${deg ? ' turned' : ''}`);
+    }
+    ok('the cells built keep the pixels asked for, a cell and its alley whole pixels or quarters of one, and a quarter pixel smaller would not do',
+      wrong === 0 && n === 48, `${n} requests; 16 px within the CE90: ${said.join(', ')}`);
+  }
+  ok('holding within the CE90 asks for larger cells than pure pixels do, and more pixels for larger cells',
+    suggestChecker(ask(s2, 16, true)).width > suggestChecker(ask(s2, 16, false)).width && suggestChecker(ask(s2, 16, true)).width > suggestChecker(ask(s2, 4, true)).width);
+  ok('what no cell within the design\'s limits can give is answered with nothing',
+    suggestChecker(ask(s2, 100000, true)) === null && suggestChecker({ ...ask(s2, 4, true), res: 0 }) === null);
+}
+
+console.log('\nH38. the largest plots a field holds');
+{
+  // "add an option to have the max amount of pure pixels given the parcel": the
+  // most pixels a plot can keep is what the largest plots that fit keep.
+  const { largestPlots } = await import(path.join(BUILD, 'src/pixel-grid/suggest-design.mjs'));
+  const { trialFitsField } = await import(path.join(BUILD, 'src/pixel-grid/trial-seat.mjs'));
+  const design = { nSpecies: 4, nBlocks: 4, plotLength: 70, plotWidth: 70, plotAlley: 0, blockAlley: 0, blocksPerRow: 4, seed: 1 };
+  const inBox = (w, h) => (u, v) => u <= w + 1e-9 && v <= h + 1e-9;
+  const sq = largestPlots(design, inBox(300, 300));
+  ok('in a square field the plots grow until the trial is the field', sq.perRow === 4 && Math.abs(sq.scale * 70 - 75) < 0.01 && Math.abs(sq.footprint[0] - 300) < 0.05 && Math.abs(sq.footprint[1] - 300) < 0.05,
+    `plots ${(sq.scale * 70).toFixed(2)} m`);
+  const narrow = largestPlots(design, inBox(150, 1000));
+  ok('in a narrow field the blocks are arranged the way that lets the plots grow the most', narrow.perRow === 2 && Math.abs(narrow.scale * 70 - 75) < 0.01,
+    `${narrow.perRow} per row, plots ${(narrow.scale * 70).toFixed(2)} m, against ${(largestPlots({ ...design, nBlocks: 1 }, inBox(150, 1000)).scale * 70).toFixed(0)} m for one block`);
+  // Two species, two blocks in a 400 x 800 m field: stacked or side by side, the plots reach 200 m either way.
+  const two = { ...design, nSpecies: 2, nBlocks: 2 };
+  ok('the design\'s own arrangement is kept when another does no better, and left when another does',
+    largestPlots({ ...two, blocksPerRow: 1 }, inBox(400, 800)).perRow === 1 && largestPlots({ ...two, blocksPerRow: 2 }, inBox(400, 800)).perRow === 2
+    && Math.abs(largestPlots({ ...two, blocksPerRow: 1 }, inBox(400, 800)).scale * 70 - 200) < 0.01
+    && largestPlots({ ...design, blocksPerRow: 2 }, inBox(300, 300)).perRow === 4);
+  ok('alleys are kept as they are and only the plots grow',
+    (() => { const d = { ...design, plotAlley: 2, blockAlley: 6 }, g = largestPlots(d, inBox(300, 300)); return Math.abs(4 * (g.scale * 70) + 3 * 6 - 300) < 0.05 || Math.abs(4 * (g.scale * 70) + 3 * 2 - 300) < 0.05; })());
+  ok('a plot that is not square keeps its shape',
+    (() => { const g = largestPlots({ ...design, plotLength: 80, plotWidth: 40 }, inBox(400, 400)); return g.scale * 80 <= 100 + 0.01 && g.scale * 40 * 4 <= 400 + 0.01 && g.scale > 1; })());
+  ok('a field no size of the trial fits has no largest plots', largestPlots(design, inBox(1, 1)) === null && largestPlots(design, () => false) === null);
+  // The fit itself, on the page's field.
+  const E0 = 619280, N0 = 5600840, epsg = 32631;
+  const toLL = proj4('+proj=utm +zone=31 +datum=WGS84 +units=m +no_defs', 'EPSG:4326');
+  const ring = [[0, 0], [1500, 900], [1500, 1500], [1100, 1500]].map(([x, y]) => toLL.forward([E0 + x, N0 + y]));
+  const aoi = [Math.min(...ring.map(q => q[0])), Math.min(...ring.map(q => q[1])), Math.max(...ring.map(q => q[0])), Math.max(...ring.map(q => q[1]))];
+  const fits = margin => (u, v) => trialFitsField(ring, aoi, epsg, u, v, 0, margin);
+  const onKite = largestPlots(design, fits(10)), tight = largestPlots(design, fits(0));
+  ok('on a traced field the largest trial lies inside the outline, and a margin asked for makes it smaller',
+    onKite.scale > 1 && tight.scale > onKite.scale && fits(10)(onKite.footprint[0], onKite.footprint[1]) && !fits(10)(onKite.footprint[0] * 1.02, onKite.footprint[1] * 1.02),
+    `plots ${(onKite.scale * 70).toFixed(1)} m a pixel clear of the edge, ${(tight.scale * 70).toFixed(1)} m touching it`);
+  const box = [[aoi[0], aoi[1]], [aoi[2], aoi[1]], [aoi[2], aoi[3]], [aoi[0], aoi[3]]];
+  ok('a field that is a box holds a turned trial when it holds the trial\'s own box',
+    trialFitsField(box, aoi, epsg, 1000, 1000, 0) && !trialFitsField(box, aoi, epsg, 1200, 1200, 45) && trialFitsField(box, aoi, epsg, 1200, 1200, 0, 100) && !trialFitsField(box, aoi, epsg, 1200, 1200, 0, 200));
 }
 
 console.log('\n' + (bad ? `${bad} FAILURE(S)` : 'ALL PIXEL-GRID CHECKS PASSED'));

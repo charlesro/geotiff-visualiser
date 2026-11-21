@@ -734,5 +734,31 @@ function PixelHover({ grid, sim, mask, layout, names, held }: {
   );
 }
 
-export { BASEMAPS, AOI_STYLE, TruthOverlay, GridLines, PsfOverlay, SigmaRings, SignalDots, PixelPicker, RectDrawer, PolyDrawer, ViewTracker, PixelHover, purityText };
+/**
+ * Keeps the map the size of its box.
+ *
+ * Leaflet measures its container once and again only when the WINDOW is
+ * resized. The map's box changes without that: the panel beside it is dragged
+ * wider or narrower, the pane the page sits in is resized or shown again. The
+ * map then went on drawing for its old size and left a black band down the
+ * side where the box had grown ("at some window sizes the map can bug",
+ * 2026-11-21). Watching the box itself covers every such case. The top-left
+ * corner stays where it is, so a panel being dragged does not slide the map.
+ */
+function KeepSized() {
+  const map = useMap();
+  useEffect(() => {
+    if (typeof ResizeObserver === 'undefined') return;
+    let frame = 0;
+    const watch = new ResizeObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => map.invalidateSize({ pan: false, debounceMoveend: true }));
+    });
+    watch.observe(map.getContainer());
+    return () => { watch.disconnect(); cancelAnimationFrame(frame); };
+  }, [map]);
+  return null;
+}
+
+export { BASEMAPS, AOI_STYLE, TruthOverlay, GridLines, PsfOverlay, SigmaRings, SignalDots, PixelPicker, RectDrawer, PolyDrawer, ViewTracker, PixelHover, KeepSized, purityText };
 export type { BasemapKey };

@@ -10,7 +10,26 @@ import type { SuggestAsk, SuggestOutcome } from './SuggestDesign';
  * planting design step 3 owns; step 3 reports a purity that depends on step 2's
  * sensor), so a "minimal" per-step list would be neither minimal nor stable.
  */
-/** The folds of step 3. */
+/**
+ * The "Pixel grid & export" step is KEPT IN THE CODE AND NOT SHOWN ("remove
+ * the pixel grid and export tab (keep in the code just in case but dont show
+ * on interface)", 2026-11-21). Everything it owns still runs: the satellite,
+ * its blur and its geolocation error, the grid and its export are the page's
+ * state, not the panel's. What the reader loses with the panel is the place
+ * to type them. The satellite is still chosen in "Suggest a design" and by
+ * clicking a row of the satellites table; the blur and the CE90 stay at their
+ * defaults, or at what this browser last had.
+ *
+ * Set to true to bring the step back: the numbers the steps are shown under,
+ * the step a finished drawing opens and the sentences that name a step all
+ * follow from it.
+ */
+export const SHOW_GRID_STEP = false;
+
+/** The number each step is shown under. */
+export const STEP_NO = SHOW_GRID_STEP ? { area: 1, grid: 2, sim: 3, pca: 4 } : { area: 1, grid: 2, sim: 2, pca: 3 };
+
+/** The folds of the Simulate experiment step. */
 export type SimSection = 'design' | 'suggest' | 'size' | 'curves' | 'noise' | null;
 
 export interface StepProps {

@@ -4,7 +4,7 @@ import { crsToProj4Def } from '../lib/geo';
 import {
   BARE, CROP_COLORS, MAX_COVER, strideFieldSim, CROP_PRESETS, PATTERNS, TRUTH_TYPES, bestPhaseOffset, cropById, makeBetaSchedule, simulateField,
   makeTruth, parsOf, TMAX, coverStats, speciesChannel, meanPerSpecies,
-  blockPlacement, layoutKey, plantedAreaPx, stakeBlockPlan,
+  layoutKey, plantedAreaPx, stakeBlockPlan,
   type BlockDesign, type FieldParams, type FieldSim, type PatternType, type SensorParams, type SimLayout,
 } from './simulate';
 import { ce90Shifts, holdTracker } from './resolving';
@@ -19,6 +19,7 @@ import { importedTrialExtent, trialExtent } from './ladder';
 import { ladderKey } from './ladder-rung';
 import { OPTIMIZE_PLACEMENT, ladderSearch, ladderStep, type LadderContext } from './ladder-step';
 import { ladderPool } from './ladder-pool';
+import { seatedPlacement } from './trial-seat';
 import type { SweepStep } from './PcaSweep';
 import type { useFieldGrid } from './use-grid';
 import { arrayOf, inRange, isLngLat, isNum, oneOf, readSaved, shape, usePersistentState } from './persist';
@@ -99,8 +100,14 @@ type GridApi = ReturnType<typeof useFieldGrid>;
  */
 
 /** Planting design, crop curves and noise. Sigma is owned by step 2 and passed in. */
-export function useExperiment({ sigmaX, sigmaY, fieldBounds, fieldOrigin, pixelSize, epsg }: {
+export function useExperiment({ sigmaX, sigmaY, fieldBounds, fieldOrigin, pixelSize, epsg, aoi, fieldRing }: {
   sigmaX: number; sigmaY: number;
+  /**
+   * The field's box and its outline (use-area `fieldRing`): a block trial is
+   * seated inside the outline, not on the middle of the box (trial-seat.ts).
+   */
+  aoi: LngLatBounds | null;
+  fieldRing: Poly | null;
   /**
    * The grid's snapped UTM extent and the pattern origin. A block design is a
    * FINITE trial: it has to be anchored on the field, in the frame the ENGINE
@@ -247,10 +254,10 @@ export function useExperiment({ sigmaX, sigmaY, fieldBounds, fieldOrigin, pixelS
     // stakeBlockPlan). At any other angle there is no phase to choose and this
     // returns the same plan the snap would have. The sensor is part of it
     // because the answer depends on the blur, so it is in the deps too.
-    const place = blockPlacement(fieldBounds, fieldOrigin, rotation, pixelSize, OPTIMIZE_PLACEMENT);
+    const place = seatedPlacement(blockDesign, fieldRing, aoi, epsg, fieldBounds, fieldOrigin, rotation, pixelSize, OPTIMIZE_PLACEMENT);
     const sen: SensorParams = { sigmaX, sigmaY, mixThreshold: threshold / 100 };
     return stakeBlockPlan(blockDesign, place, fieldOrigin, rotation, pixelSize, sen, fieldBounds).plan;
-  }, [pattern, fieldBounds?.join(','), fieldOrigin?.[0], fieldOrigin?.[1], rotation, pixelSize,
+  }, [pattern, fieldBounds?.join(','), fieldOrigin?.[0], fieldOrigin?.[1], rotation, pixelSize, fieldRing, aoi?.join(','), epsg,
       sigmaX, sigmaY, threshold,
       blockDesign.nSpecies, blockDesign.nBlocks, blockDesign.plotLength, blockDesign.plotWidth,
       blockDesign.plotAlley, blockDesign.blockAlley, blockDesign.blocksPerRow, blockDesign.seed]); // eslint-disable-line react-hooks/exhaustive-deps

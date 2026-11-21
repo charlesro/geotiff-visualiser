@@ -2,6 +2,8 @@ import React, { useDeferredValue, useMemo } from 'react';
 import { Explain } from '../ui';
 import { fmt } from '../util';
 import { fewestPure, imageCases, importedPlotBoxes, pureScales, purestShare, type ImageCase, type Plot } from '../plot-size';
+import { largestPlots } from '../suggest-design';
+import { trialFitsField } from '../trial-seat';
 import type { StepProps } from './props';
 
 /**
@@ -17,6 +19,11 @@ import type { StepProps } from './props';
  * The same card is shown in step 2, under the blur it follows from, and in
  * step 3, beside the plot dimensions it judges. It holds no setting of its
  * own: the count typed in its last row lives in the page shell.
+ *
+ * For a block trial on a field it also reads the question the other way
+ * round: not "what size for so many pixels" but "the most pixels this parcel
+ * can give", which is the largest plots with which the trial still fits the
+ * field, and what a plot of that size keeps.
  */
 
 /** What the design calls a plot, as the rectangle the calculation needs. */
@@ -106,10 +113,30 @@ export function PlotSizeCard(p: StepProps) {
   const sigma = Math.max(psfSigmaXM, psfSigmaYM);
   const a = design?.plot.a ?? 0, b = design?.plot.b ?? 0, angle = design?.angle ?? 0, strip = !!design?.strip;
 
+  /**
+   * The largest plots this field holds, for a block trial: the design's plot,
+   * scaled, a pixel clear of the field's edge, in the arrangement of blocks
+   * that lets it grow the most. Sizes go DOWN to the decimetre, so that what
+   * is applied still fits.
+   */
+  const { aoi, fieldRing } = p.area;
+  const epsg = build?.epsg ?? null;
+  const { pattern, blockDesign: bd, rotation, setBlockDesign } = p.exp;
+  const largest = useMemo(() => {
+    if (pattern !== 'block' || !aoi || !epsg || !(res > 0)) return null;
+    const found = largestPlots(bd, (u, v) => trialFitsField(fieldRing, aoi, epsg, u, v, rotation, res));
+    if (!found) return null;
+    const down = (m: number) => Math.floor(m * 10 + 1e-6) / 10;
+    const la = down(bd.plotLength * found.scale), lb = down(bd.plotWidth * found.scale);
+    return la >= 0.5 && lb >= 0.5 ? { a: la, b: lb, perRow: found.perRow } : null;
+  }, [pattern, aoi?.join(','), fieldRing, epsg, rotation, res,   // eslint-disable-line react-hooks/exhaustive-deps
+      bd.nSpecies, bd.nBlocks, bd.blocksPerRow, bd.plotLength, bd.plotWidth, bd.plotAlley, bd.blockAlley]);
+  const maxA = largest?.a ?? 0, maxB = largest?.b ?? 0;
+
   // The numbers follow the inputs a moment behind, so a slider dragged in
   // another field never waits on them.
-  const inputs = useMemo(() => ({ res, sigma, geoErrM, threshold, a, b, angle, strip, wantPure }),
-    [res, sigma, geoErrM, threshold, a, b, angle, strip, wantPure]);
+  const inputs = useMemo(() => ({ res, sigma, geoErrM, threshold, a, b, angle, strip, wantPure, maxA, maxB }),
+    [res, sigma, geoErrM, threshold, a, b, angle, strip, wantPure, maxA, maxB]);
   // Nothing at all in the render that first shows the card (the page's first
   // one, when step 3 is the step left open): the three searches are a good
   // tenth of a second on a slow computer, and held up everything else the
@@ -122,7 +149,8 @@ export function PlotSizeCard(p: StepProps) {
     const rows = [...new Set([...(d.strip ? [1, 2, 3] : [1, 4, 9]), d.wantPure])].sort((x, y) => x - y);
     const cases = imageCases(d.sigma, d.geoErrM).map(c => {
       const v = { gsd: d.res, sigma: c.sigma, shift: c.shift, threshold: d.threshold / 100, angleDeg: d.angle };
-      return { id: c.id, scales: pureScales(plot, v, rows), now: fewestPure(plot, v), keeps: purestShare(plot, v) };
+      return { id: c.id, scales: pureScales(plot, v, rows), now: fewestPure(plot, v), keeps: purestShare(plot, v),
+               most: d.maxA > 0 && d.maxB > 0 ? fewestPure({ a: d.maxA, b: d.maxB }, v) : null };
     });
     return { rows, cases };
   }, [d]);
@@ -189,6 +217,36 @@ export function PlotSizeCard(p: StepProps) {
           </React.Fragment>
         ))}
       </div>
+
+      {/* The other way round: the most pixels this parcel can give. */}
+      {largest && result.cases[0]?.most && (() => {
+        const there = bd.plotLength === largest.a && bd.plotWidth === largest.b && bd.blocksPerRow === largest.perRow;
+        return (
+          <>
+            <div className="mb-0.5 mt-2 flex items-baseline justify-between gap-2 border-t border-white/5 pt-1.5 text-[12px] uppercase tracking-wide text-neutral-600">
+              <span className="min-w-0">
+                Most in this field: <span className="normal-case tracking-normal text-neutral-500">plots {largest.a} × {largest.b} m{largest.perRow !== bd.blocksPerRow ? `, ${largest.perRow} per row` : ''}</span>
+              </span>
+              <button type="button" disabled={there}
+                onClick={() => setBlockDesign(dd => ({ ...dd, plotLength: largest.a, plotWidth: largest.b, blocksPerRow: largest.perRow }))}
+                title={there ? 'The design already has these plots' : 'Set the design to these plots'}
+                className="shrink-0 rounded border border-white/10 px-1.5 py-0.5 text-[12px] normal-case tracking-normal text-neutral-300 transition-colors hover:border-sky-500/50 hover:text-sky-300 disabled:opacity-40 disabled:hover:border-white/10 disabled:hover:text-neutral-300">
+                {there ? 'In use' : 'Use these'}
+              </button>
+            </div>
+            <div className="grid items-baseline gap-x-2 gap-y-0.5" style={grid}>
+              <span className="text-neutral-400">
+                <Explain text="The most pure pixels a plot can keep in this experiment area: the largest plots, of the design's shape, with which the trial still fits inside the area, a pixel clear of its edge, in the arrangement of blocks that lets them grow the most. More than this needs a larger area, fewer plots or another plot shape.">
+                  <span className={term}>pure px in every plot</span>
+                </Explain>
+              </span>
+              {result.cases.map(c => (
+                <span key={c.id} className="text-right font-mono text-neutral-200">{c.most ? `${c.most.approx ? '≈ ' : ''}${fmt(c.most.count)}` : ''}</span>
+              ))}
+            </div>
+          </>
+        );
+      })()}
 
       <div className="mb-0.5 mt-2 border-t border-white/5 pt-1.5 text-[12px] uppercase tracking-wide text-neutral-600">
         Now: <span className="normal-case tracking-normal text-neutral-500">{design.now}</span>

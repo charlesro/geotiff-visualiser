@@ -2,6 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { polyBbox, type Poly } from './geometry';
 import type { LngLatBounds } from './s2-grid';
 import { isLngLat, isNum, readSaved, removeSaved, shape, usePersistentState, writeSaved } from './persist';
+import { SHOW_GRID_STEP } from './steps/props';
+
+/** The step a finished drawing opens: the grid it makes, or the simulation while the grid step is not shown. */
+const AFTER_DRAWING = SHOW_GRID_STEP ? 'grid' : 'sim';
 
 /**
  * Step 1: which field are we looking at, and how did the user say so.
@@ -58,7 +62,7 @@ interface Suggestion {
 }
 
 /** The experiment area: drawing it, tracing it, clearing it, pinning it. */
-export function useAoiField(onDrawComplete: (step: 'grid') => void) {
+export function useAoiField(onDrawComplete: (step: 'grid' | 'sim') => void) {
   const [drawKind, setDrawKind] = useState<null | 'rect' | 'poly'>(null);
   const drawMode = drawKind !== null;
   // The CURRENT field comes back on refresh. The pinned default (★) is what a
@@ -115,14 +119,14 @@ export function useAoiField(onDrawComplete: (step: 'grid') => void) {
     setAoiPoly(null);
     setDrawKind(null);
     forgetPreTrial();
-    onDrawComplete('grid');
+    onDrawComplete(AFTER_DRAWING);
   }, []);
   const onPolyDone = useCallback((pts: Poly) => {
     setAoi(polyBbox(pts));
     setAoiPoly(pts);
     setDrawKind(null);
     forgetPreTrial();
-    onDrawComplete('grid');
+    onDrawComplete(AFTER_DRAWING);
   }, []);
 
   /**

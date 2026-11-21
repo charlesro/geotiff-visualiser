@@ -5,8 +5,9 @@ import { ImportPanel } from './ImportPanel';
 import { PlotSizeCard } from './PlotSize';
 import { SuggestDesign } from './SuggestDesign';
 import { Suspense, lazy } from 'react';
-import type { SimSection, StepProps } from './props';
+import { STEP_NO, type SimSection, type StepProps } from './props';
 import { alignedWithin } from '../imported-rotate';
+import { PATTERNS } from '../simulate';
 
 /**
  * The season chart, fetched when the fold that holds it is first opened: it is
@@ -53,21 +54,23 @@ function SimStepBody(p: StepProps) {
   const NUM = 'w-full rounded-md border border-white/10 bg-neutral-900 px-2 py-1.5 text-[15px] text-neutral-100 focus:border-sky-500 focus:outline-none';
 
   /**
-   * The step is five folds, one open at a time, each named by what it holds
-   * now: the design reads "4 species × 4 blocks · plots 10.5 × 10.5 m" when it
-   * is shut, so nothing has to be open to be read. It was one column of
-   * everything, more than two screens of it.
+   * The step is five folds, one open at a time and all shut to begin with,
+   * each named by what it holds now: the design reads "4 species × 4 blocks ·
+   * plots 10.5 × 10.5 m" when it is shut, so nothing has to be open to be
+   * read. It was one column of everything, more than two screens of it.
    */
   const at = (id: SimSection) => simSection === id;
   const fold = (id: SimSection) => () => setSimSection(cur => (cur === id ? null : id));
+  // The arrangement by its name without the ratio in brackets: "Alternating rows", "Randomised blocks".
+  const layoutName = (PATTERNS.find(q => q.id === pattern)?.label ?? '').replace(/ \(.*\)$/, '');
   const designLabel = imported
-    ? `Trial file · ${importedDesign ? importedDesign.fileName : 'none yet'}`
+    ? `Design · ${layoutName} · ${importedDesign ? importedDesign.fileName : 'no file yet'}`
     : pattern === 'block'
-      ? `Design · ${blockDesign.nSpecies} species × ${blockDesign.nBlocks} blocks · plots ${blockDesign.plotLength} × ${blockDesign.plotWidth} m`
-      : `Design · ${stripWidth} m wide${spacing > 0 ? `, ${spacing} m alley` : ''} · ${rotation}°`;
+      ? `Design · ${layoutName} · ${blockDesign.nSpecies} species × ${blockDesign.nBlocks} · ${blockDesign.plotLength} × ${blockDesign.plotWidth} m`
+      : `Design · ${layoutName} · ${stripWidth} m wide${spacing > 0 ? `, ${spacing} m alley` : ''} · ${rotation}°`;
 
   return (
-        <Step n={3} title="Simulate experiment" summary={simSummary} open={activeStep === 'sim'} onClick={() => toggleStep('sim')} enabled>
+        <Step n={STEP_NO.sim} title="Simulate experiment" summary={simSummary} open={activeStep === 'sim'} onClick={() => toggleStep('sim')} enabled>
           {/* The step is open to work in with no experiment area: a design can
               be typed, and a trial built, before any ground is drawn. Only what
               is simulated ON an area waits for one, and says so here. */}
@@ -78,9 +81,11 @@ function SimStepBody(p: StepProps) {
               </p>
             )}
 
-            {/* Another layout is another design to fill in: its fold opens. */}
-            <LayoutSelect bare pattern={pattern} setPattern={v => { setPattern(v); setSimSection('design'); }} selectClass={SELECT} />
             <Disclosure label={designLabel} open={at('design')} onToggle={fold('design')}>
+            {/* The arrangement is part of the design and is chosen in its fold
+                ("put the tab where we select the arrangement in the design
+                subtab"); shut, the fold's title names it. */}
+            <LayoutSelect pattern={pattern} setPattern={setPattern} selectClass={SELECT} />
             {/* An imported trial's geometry is the file's: what it has is the
                 file, and the angle the whole trial is turned to. */}
             {imported && <ImportPanel design={importedDesign} varieties={varieties} {...p.importApi} />}
@@ -125,8 +130,11 @@ function SimStepBody(p: StepProps) {
             )}
             </Disclosure>
 
-            {/* The other way in: say what the trial has to hold, and have it built. */}
-            {pattern === 'block' && (
+            {/* The other way in: say what the trial has to hold, and have it built.
+                For every layout the page lays out itself ("the suggest design
+                should be available for every configuration"); a trial read
+                from a file is the file's, and has nothing to suggest. */}
+            {pattern !== 'imported' && (
               <Disclosure label="Suggest a design" open={at('suggest')} onToggle={fold('suggest')}>
                 <SuggestDesign {...p} />
               </Disclosure>

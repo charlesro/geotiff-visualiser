@@ -1,7 +1,7 @@
 import proj4 from 'proj4';
 import { crsToProj4Def } from '../lib/geo';
 import {
-  bestPhaseOffset, blockPlacement, coverStats, fieldVerdicts, plantedAreaPx, simulateField, speciesChannel, stakeBlockPlan, utmEnvelope,
+  MIXED, bestPhaseOffset, coverStats, fieldVerdicts, plantedAreaPx, simulateField, speciesChannel, stakeBlockPlan, utmEnvelope,
   type BlockDesign, type SensorParams, type SimLayout,
 } from './simulate';
 import { CE90_TO_SIGMA, ce90For, ce90Shifts, contrastInfo, heldMask, minPlotSideM, plantedPixels, plantedShare, plotTally, type PlotTally } from './resolving';
@@ -10,6 +10,7 @@ import { fieldOverlapTest, type Poly } from './geometry';
 import { pixelId } from './pca-field';
 import { importedTrialExtent, trialExtent } from './ladder';
 import { rungCellOrigin } from './ladder-rung';
+import { seatedPlacement } from './trial-seat';
 import { isAligned, nearestTurn, placementSearch, rotateImportedPlan, shiftImportedPlan, stakeOnGrid, type PlacementSearch } from './imported-rotate';
 import type { ImportedPlan } from './imported-types';
 import type { Rung } from './sensors';
@@ -236,7 +237,8 @@ export function ladderStep(ctx: LadderContext, rotationDeg: number, rung: Rung, 
     // put it at the 13th percentile of the available phases at 6 m and made
     // "turned onto the pixel grid" report worse than the same trial left at
     // 10 degrees. No phase to choose at any other angle, where it is a no-op.
-    const plan = stakeBlockPlan(blockDesign, blockPlacement([e0, n0, e1, n1], base, rotationDeg, r, OPTIMIZE_PLACEMENT),
+    // On its seat in the field, as the map puts it (trial-seat.ts).
+    const plan = stakeBlockPlan(blockDesign, seatedPlacement(blockDesign, fieldRing, aoi, epsg, [e0, n0, e1, n1], base, rotationDeg, r, OPTIMIZE_PLACEMENT),
       [ox, oy], rotationDeg, r, sensorL, [e0, n0, e1, n1]).plan;
     layoutL = { ...layoutL, block: plan };
     // Only the pixels that see the trial, which a rung reproduces exactly
@@ -411,4 +413,53 @@ export function ladderStep(ctx: LadderContext, rotationDeg: number, rung: Rung, 
            geoRobust, geoRobustPure, geoMean, geoMeanPure, ce90M: ce90 > 0 ? ce90 : undefined,
            plots: plots ?? undefined, plotsRobust: plotsRobust ?? undefined, minPlotM, plotSideM,
            proportionBySpecies, nSpecies: nSp, proportionOffTrial, pixelIds, partial, placement };
+}
+
+/**
+ * The plot-by-plot figures of a block trial's row and nothing else: the fewest
+ * pure pixels a plot keeps as `rung` sees the trial on this field at this
+ * angle, and the fewest that hold within the CE90 in force (null with none).
+ * Null for a trial the table does not count plot by plot (too many pixels).
+ *
+ * They are ladderStep's own `plots.min` and `plotsRobust.min`, to the pixel
+ * (suite section H35): the same placement, the same box, the same field mask,
+ * the same landings. What is left out is everything else a row carries, the
+ * shares, the contrast, the mean reading, the arrays a chart is drawn from,
+ * which is most of a row's cost. The design suggestion sizes a TURNED trial on
+ * this: there no plot stands for the others, every plot lying its own way
+ * across the pixels, so the whole trial is counted where it will lie, for
+ * every plot size tried.
+ */
+export function blockPlotCounts(ctx: LadderContext, rotationDeg: number, rung: Rung): { pure: number; held: number | null } | null {
+  const { aoi, epsg, layout, threshold, fieldRing, blockDesign } = ctx;
+  if (layout.pattern !== 'block') return null;
+  const r = rung.res;
+  const sensor: SensorParams = { sigmaX: rung.sigmaX, sigmaY: rung.sigmaY, mixThreshold: threshold / 100 };
+  const [minE, minN, maxE, maxN] = utmEnvelope(aoi, epsg);
+  const base = aoiUtmOrigin(aoi, epsg);
+  const field: [number, number, number, number] = [Math.floor(minE / r) * r, Math.floor(minN / r) * r, Math.ceil(maxE / r) * r, Math.ceil(maxN / r) * r];
+  const plan = stakeBlockPlan(blockDesign, seatedPlacement(blockDesign, fieldRing, aoi, epsg, field, base, rotationDeg, r, OPTIMIZE_PLACEMENT),
+    base, rotationDeg, r, sensor, field).plan;
+  const lay: SimLayout = { ...layout, rotationDeg, block: plan };
+  const [e0, n0, e1, n1] = trialExtent(plan, base, rotationDeg, r, sensor, field);
+  const nx = Math.round((e1 - e0) / r);
+  if (nx * Math.round((n1 - n0) / r) > LADDER_MAX_CELLS) return null;
+  const box = { res: r, utmBounds: [e0, n0, e1, n1] } as unknown as S2Grid;
+  const nominal = fieldVerdicts(box, base, lay, sensor);
+  // A pixel that does not overlap the field is not one of the row's: it counts for no plot.
+  if (fieldRing) {
+    const toUtm = proj4('EPSG:4326', crsToProj4Def(`EPSG:${epsg}`));
+    const overlaps = fieldOverlapTest(fieldRing.map(([lng, lat]) => toUtm.forward([lng, lat]) as [number, number]));
+    for (let k = 0; k < nominal.length; k++) {
+      const [cE, cN] = rungCellOrigin(k, nx, e0, n0, r);
+      if (!overlaps(cE, cN, r)) nominal[k] = MIXED;
+    }
+  }
+  const pure = plotTally(nominal, plan.nPlots)?.min ?? 0;
+  const ce90 = Math.round(ce90For(ctx.geoAuto, ctx.geoManual, r) * 100) / 100;
+  if (!(ce90 > 0)) return { pure, held: null };
+  if (ce90 >= Math.min(plan.design.plotLength, plan.design.plotWidth) / 2) return { pure, held: 0 };
+  const lands = ce90Shifts(ce90);
+  const mask = heldMask(nominal, lands.length, (q, need) => fieldVerdicts(box, [base[0] - lands[q][0], base[1] - lands[q][1]], lay, sensor, need));
+  return { pure, held: plotTally(nominal, plan.nPlots, mask)?.min ?? 0 };
 }

@@ -267,15 +267,28 @@ export function Chip({ tone = 'neutral', children }: { tone?: 'neutral' | 'amber
   return <span className={`rounded px-1.5 py-0.5 ${t}`}>{children}</span>;
 }
 
-/** A closed-by-default section. `open` lives in the page shell, since Step unmounts. */
+/**
+ * A closed-by-default section inside a step. `open` lives in the page shell,
+ * since Step unmounts.
+ *
+ * Its header is a row to press, drawn as one: a frame, a tint, and an arrow
+ * that points at the title while the section is shut and down at its content
+ * once it is open. It was a line of grey text with a three-pixel chevron, and
+ * read as a caption of what stood above it rather than as something that
+ * opens ("emphasise more the fact that they are subtabs and can be opened",
+ * 2026-11-21).
+ */
 export function Disclosure({ label, open, onToggle, children }: {
   label: string; open: boolean; onToggle: () => void; children: React.ReactNode;
 }) {
   return (
-    <div className="border-t border-white/5 pt-2">
-      <button onClick={onToggle}
-        className="flex w-full items-center gap-1 text-[14px] text-neutral-500 transition-colors hover:text-neutral-300">
-        <ChevronDown className={`h-3 w-3 transition-transform ${open ? 'rotate-180' : ''}`} />{label}
+    <div>
+      <button type="button" onClick={onToggle} aria-expanded={open} title={open ? 'Close' : 'Open'}
+        className={`group flex w-full items-center gap-2 rounded-md border px-2.5 py-1.5 text-left text-[14px] transition-colors ${open
+          ? 'border-sky-500/40 bg-sky-500/10 text-white'
+          : 'border-white/10 bg-white/[0.04] text-neutral-300 hover:border-white/25 hover:bg-white/[0.08] hover:text-white'}`}>
+        <ChevronDown className={`h-4 w-4 shrink-0 transition-transform ${open ? 'text-sky-400' : '-rotate-90 text-neutral-400 group-hover:text-neutral-200'}`} />
+        <span className="min-w-0 flex-1 truncate">{label}</span>
       </button>
       {open && <div className="mt-2 space-y-2">{children}</div>}
     </div>

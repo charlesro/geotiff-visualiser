@@ -12,6 +12,13 @@ import { Disclosure } from './ui';
 import { SYMS, axisSigns, fitCover, pointStyle, type ColorBy, type ShapeBy } from './pca-field';
 
 /**
+ * The "Chart settings" fold under the scatter (method, axes, colour, shape) is
+ * kept in the code and not shown ("remove the chart settings subtab",
+ * 2026-11-21). Set to true to bring it back.
+ */
+const SHOW_CHART_SETTINGS: boolean = false;
+
+/**
  * PCA of the grid cells, with the full scatter toolset: pick the DR method, the
  * axes, the colour/shape encodings, see the variance and loadings, and flag the
  * not-pure (mixed) pixels. What each pixel's season is, how it is embedded,
@@ -333,8 +340,10 @@ function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, plant
         )}
       </div>
 
-      {/* Chart controls, folded under the chart: the fold names what is drawn. */}
-      {tab === 'scatter' && (
+      {/* Chart controls, folded under the chart: the fold names what is drawn.
+          Not shown (SHOW_CHART_SETTINGS): the chart stays a PCA of the first two
+          axes, coloured and shaped as this browser last had it. */}
+      {SHOW_CHART_SETTINGS && tab === 'scatter' && (
         <Disclosure
           label={`Chart settings · ${DR_METHODS.find(m => m.id === method)?.label ?? method} · ${ax(cx)} × ${ax(cy)}`}
           open={controlsOpen} onToggle={() => setControlsOpen(v => !v)}>

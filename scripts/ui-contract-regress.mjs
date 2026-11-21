@@ -900,9 +900,9 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
   check('an imported trial found along the pixel rows is compared with the file\'s angle when nothing was remembered',
     /const fileFrom = importedNow && exp\.importedTurn !== 0 \? \{ deg: exp\.importedFileAngle, to: 0 \} : null;/.test(shell)
     && /const turnedFrom = adopted && adopted\.imported === importedNow \? \{ deg: adopted\.deg, to: adopted\.to \?\? 0 \} : fileFrom;/.test(shell));
-  // Three places: a file read, a file removed, and a trial built by "Suggest a design".
+  // Four places: a file read, a file removed, and a trial or strips built by "Suggest a design".
   check('another trial, or none, forgets it: it was the angle of the one before',
-    (shell.match(/setAdopted\(null\);/g) || []).length === 3
+    (shell.match(/setAdopted\(null\);/g) || []).length === 4
     && /const setAngleByHand = \(deg: number\) => \{ setCompareFrom\(null\); importApi\.setAngle\(deg\); \};/.test(shell));
   check('the step that turns the trial also offers the way back to the file\'s angle',
     /const turned = imported && importedTurn !== 0;/.test(pca)
@@ -1072,8 +1072,8 @@ console.log('\nU-suggest. a block trial built from what is asked of it');
   const panel = read('src/pixel-grid/steps/SuggestDesign.tsx');
   const shell = read('src/pixel-grid/PixelGridApp.tsx');
   const search = read('src/pixel-grid/suggest-design.ts');
-  check('the panel is offered where there is a block design to build, as one of step 3\'s folds',
-    /\{pattern === 'block' && \(\s*<Disclosure label="Suggest a design" open=\{at\('suggest'\)\} onToggle=\{fold\('suggest'\)\}>\s*<SuggestDesign \{\.\.\.p\} \/>/.test(step));
+  check('the panel is offered for every layout the page lays out itself, as one of the step\'s folds',
+    /\{pattern !== 'imported' && \(\s*<Disclosure label="Suggest a design" open=\{at\('suggest'\)\} onToggle=\{fold\('suggest'\)\}>\s*<SuggestDesign \{\.\.\.p\} \/>/.test(step));
   check('it holds nothing itself: step 3 forgets what it holds when folded', !/useState\(|useRef\(/.test(panel)
     && /usePersistentState<SuggestAsk>\('suggestAsk'/.test(shell));
   check('the four things asked: species, repetitions, pixels per plot, and a satellite of the table',
@@ -1086,10 +1086,10 @@ console.log('\nU-suggest. a block trial built from what is asked of it');
     /const ce90M = suggestAsk\.hold \? Math\.round\(gridApi\.ce90At\(r\) \* 100\) \/ 100 : 0;/.test(shell) && /\{ce90 > 0 && \(/.test(panel));
   // Four settings in one go, or the trial on the map is not the trial that was counted.
   check('a build writes the layout, the design, the angle and the satellite together',
-    /exp\.setPattern\('block'\);\s*exp\.setBlockDesign\(built\.design\);\s*exp\.setRotation\(0\);\s*setAdopted\(null\);\s*if \(sat\.id !== gridApi\.sourceId\) gridApi\.setSourceId\(sat\.id\);/.test(shell));
+    /exp\.setPattern\('block'\);\s*exp\.setBlockDesign\(built\.design\);\s*exp\.setRotation\(angle\);\s*setAdopted\(null\);\s*if \(sat\.id !== gridApi\.sourceId\) gridApi\.setSourceId\(sat\.id\);/.test(shell));
   check('the plot is counted at the phase the page will stake it at, on the area the trial ends up in',
     /return stakeMesh\(\[Math\.floor\(e0 \/ r\) \* r, Math\.floor\(n0 \/ r\) \* r, Math\.ceil\(e1 \/ r\) \* r, Math\.ceil\(n1 \/ r\) \* r\], r\)\?\.steps;/.test(shell)
-    && /let built = aoi && had \? ask\(field, stepsOn\(aoi\)\) : null;/.test(shell) && /const need = stepsOn\(box\);\s*if \(need === steps\) break;/.test(shell));
+    && /let built = aoi && had \? ask\(field, stepsOn\(aoi\), turned \? countOn\(aoi, fieldRing\) : undefined\) : null;/.test(shell) && /const need = stepsOn\(box\);\s*if \(need === steps\) break;/.test(shell));
   // The first version carried over the design's own alleys, the layout's
   // defaults, and built a trial with dirt strips nobody had asked for.
   check('the alleys are asked for in the panel, none by default, and never the design\'s leftovers',
@@ -1117,8 +1117,8 @@ console.log('\nU-suggest. a block trial built from what is asked of it');
     && /area = \{ how: aoi \? 'replaced' : 'made', u: e1 - e0, v: n1 - n0 \};/.test(shell));
   check('in the middle of the area there was, or of the map, with a margin that keeps the trial off the edge',
     /const centre: \[number, number\] = aoi \? \[\(aoi\[0\] \+ aoi\[2\]\) \/ 2, \(aoi\[1\] \+ aoi\[3\]\) \/ 2\]\s*: view \? \[view\.lng, view\.lat\]/.test(shell)
-    && /const margin = Math\.max\(3 \* r, 0\.05 \* Math\.max\(own\.footprint\[0\], own\.footprint\[1\]\), 5\);/.test(shell));
-  check('an area that holds the trial is left as the reader drew it', /let built = aoi && had \? ask\(field, stepsOn\(aoi\)\) : null;/.test(shell));
+    && /const margin = Math\.max\(3 \* r, 0\.05 \* Math\.max\(u, v\), 5\);/.test(shell) && /box = areaFor\(own\.footprint\[0\], own\.footprint\[1\]\);/.test(shell));
+  check('an area that holds the trial is left as the reader drew it', /let built = aoi && had \? ask\(field, stepsOn\(aoi\), turned \? countOn\(aoi, fieldRing\) : undefined\) : null;\s*if \(!built \|\| built\.fits === false\) \{/.test(shell));
   check('and the reader is told when the area was made or replaced', /Experiment area made around it/.test(panel) && /was too small: replaced by one of/.test(panel));
   check('a page-made area does not send the reader to step 2, as a drawn one does',
     /const setFieldBox = useCallback\(\(b: LngLatBounds\) => \{\s*setAoi\(b\);\s*setAoiPoly\(null\);\s*setDrawKind\(null\);\s*forgetPreTrial\(\);\s*\}, \[\]\);/.test(read('src/pixel-grid/use-area.ts')));
@@ -1139,12 +1139,29 @@ console.log('\nU-compact. step 3 is folds, one open at a time');
     `${folds} folds`);
   check('one open at a time, and the choice is remembered',
     /const fold = \(id: SimSection\) => \(\) => setSimSection\(cur => \(cur === id \? null : id\)\);/.test(step)
-    && /usePersistentState<SimSection>\('simSection', 'design',/.test(shell));
+    && /usePersistentState<SimSection>\('simFold', null,/.test(shell));
   // Nothing has to be open to be read.
   check('a shut fold says what it holds: the design by its figures, the noise by its threshold',
-    /`Design · \$\{blockDesign\.nSpecies\} species × \$\{blockDesign\.nBlocks\} blocks · plots \$\{blockDesign\.plotLength\} × \$\{blockDesign\.plotWidth\} m`/.test(step)
+    /`Design · \$\{layoutName\} · \$\{blockDesign\.nSpecies\} species × \$\{blockDesign\.nBlocks\} · \$\{blockDesign\.plotLength\} × \$\{blockDesign\.plotWidth\} m`/.test(step)
+    && /`Design · \$\{layoutName\} · \$\{stripWidth\} m wide/.test(step)
     && /label=\{`Noise & purity threshold · ε = \$\{100 - threshold\} %`\}/.test(step));
-  check('choosing another layout opens the design it has to be given', /setPattern=\{v => \{ setPattern\(v\); setSimSection\('design'\); \}\}/.test(step));
+  // "make all subtabs closed by default and emphasise more the fact that they
+  // are subtabs and can be opened"
+  check('every fold is shut to begin with, and choosing another layout opens none', !/setSimSection\('design'\)/.test(step)
+    && /<LayoutSelect pattern=\{pattern\} setPattern=\{setPattern\} selectClass=\{SELECT\} \/>/.test(step));
+  // "put the tab where we select the arrangement in the design subtab"
+  check('the arrangement is chosen inside the Design fold, whose title names it when shut',
+    /<Disclosure label=\{designLabel\} open=\{at\('design'\)\} onToggle=\{fold\('design'\)\}>\s*\{\/\*[\s\S]*?\*\/\}\s*<LayoutSelect pattern=\{pattern\}/.test(step)
+    && !/<LayoutSelect bare/.test(step)
+    && /const layoutName = \(PATTERNS\.find\(q => q\.id === pattern\)\?\.label \?\? ''\)\.replace\(/.test(step));
+  {
+    const ui = read('src/pixel-grid/ui.tsx');
+    check('a fold\'s header is drawn as a row to press: framed, tinted, with an arrow that turns when it opens',
+      /<button type="button" onClick=\{onToggle\} aria-expanded=\{open\}/.test(ui)
+      && /rounded-md border px-2\.5 py-1\.5/.test(ui) && /'border-white\/10 bg-white\/\[0\.04\] text-neutral-300 hover:border-white\/25/.test(ui)
+      && /\$\{open \? 'text-sky-400' : '-rotate-90 text-neutral-400/.test(ui));
+    check('and the open one stands out from the shut ones', /\? 'border-sky-500\/40 bg-sky-500\/10 text-white'/.test(ui));
+  }
   check('the plot-size card and the design summary are inside folds, not always on screen',
     /<Disclosure label="Plot size required" open=\{at\('size'\)\} onToggle=\{fold\('size'\)\}>\s*<PlotSizeCard \{\.\.\.p\} \/>/.test(step)
     && step.indexOf('<BlockSummary') < step.indexOf('</Disclosure>'));
@@ -1153,6 +1170,185 @@ console.log('\nU-compact. step 3 is folds, one open at a time');
     /const \{ threshold, setThreshold \} = p\.exp;/.test(panel) && /<NumField label="Purity" value=\{threshold\} onChange=\{setThreshold\} min=\{50\} max=\{99\} unit="%"/.test(panel)
     && /threshold: exp\.threshold \/ 100, ce90M,/.test(shell));
   check('a build described under the button is gone once the threshold is another', /&& suggestOutcome\.threshold === exp\.threshold/.test(shell));
+}
+
+console.log('\nU-seat. a block trial sits inside its field');
+{
+  // "sometimes it places the trials badly": the trial went on the middle of the
+  // field's box, which on a traced parcel can be at its edge. The map, the
+  // satellites table and the suggestion all place it through one function.
+  const hook = read('src/pixel-grid/use-simulation.ts');
+  const rung = read('src/pixel-grid/ladder-step.ts');
+  const shell = read('src/pixel-grid/PixelGridApp.tsx');
+  check('the map\'s trial and the table\'s are seated by the same function, on the field\'s outline',
+    /const place = seatedPlacement\(blockDesign, fieldRing, aoi, epsg, fieldBounds, fieldOrigin, rotation, pixelSize, OPTIMIZE_PLACEMENT\);/.test(hook)
+    && /seatedPlacement\(blockDesign, fieldRing, aoi, epsg, \[e0, n0, e1, n1\], base, rotationDeg, r, OPTIMIZE_PLACEMENT\)/.test(rung)
+    && !/blockPlacement\(/.test(hook) && !/blockPlacement\(/.test(rung));
+  check('the map\'s trial is placed again when the outline changes', /rotation, pixelSize, fieldRing, aoi\?\.join\(','\), epsg,/.test(hook));
+  check('the experiment is given the field\'s outline', /epsg: gridApi\.build\?\.epsg \?\? null, aoi, fieldRing,/.test(shell));
+  check('the suggestion asks whether the outline holds the trial, and shows the trial where it was seated',
+    /const seat = aoi \? fieldSeat\(fieldRing, aoi, epsg, u, v, angle\) : null;/.test(shell)
+    && /fitsField: field \? fitsField : undefined/.test(shell)
+    && /fieldSeat\(ring, ground, epsg, built\.footprint\[0\], built\.footprint\[1\], angle\)\?\.centre/.test(shell));
+}
+
+console.log('\nU-angle. a trial can be built at an angle');
+{
+  // "add a rotation possibility in the design trial"
+  const shell = read('src/pixel-grid/PixelGridApp.tsx');
+  const panel = read('src/pixel-grid/steps/SuggestDesign.tsx');
+  const search = read('src/pixel-grid/suggest-design.ts');
+  check('the build settings ask for the angle, beside the satellite',
+    /<NumField label="Angle" value=\{ask\.angle \?\? 0\} onChange=\{set\('angle'\)\} min=\{-90\} max=\{90\} unit="°"/.test(panel)
+    && /<select className=\{`\$\{SELECT\} col-span-2`\}/.test(panel));
+  check('a request saved before the angle existed is still read, as along the pixel rows',
+    /\(v as SuggestAsk\)\.angle === undefined \|\| inRange\(-90, 90\)\(\(v as SuggestAsk\)\.angle\)/.test(shell) && /const angle = suggestAsk\.angle \?\? 0;/.test(shell));
+  check('the trial is built at that angle, and the page is turned to it',
+    /rotationDeg: angle, countAt,/.test(shell) && /exp\.setRotation\(angle\);/.test(shell) && !/exp\.setRotation\(0\)/.test(shell));
+  check('a turned trial is sized on the satellites table\'s own count, on the ground it will lie on',
+    /const c = blockPlotCounts\(\{\s*aoi: ground, fieldRing: ring, epsg, threshold: exp\.threshold, blockDesign: design,/.test(shell)
+    && /own = ask\(null, steps, turned \? countOnOwn : undefined\);/.test(shell)
+    && /if \(Math\.abs\(deg\) > 1e-9\) return suggestTurned\(ask, nSpecies, nBlocks, pixels, deg\);/.test(search));
+  check('with the box unticked it holds against no geolocation error, as along the rows',
+    /geoAuto: suggestAsk\.hold \? gridApi\.geoAuto : false, geoManual: suggestAsk\.hold \? gridApi\.geoManual : 0,/.test(shell));
+  check('the area made for a turned trial holds the trial\'s own box',
+    /const halfBox = \(u: number, v: number\): \[number, number\] => \[\(u \* cosA \+ v \* sinA\) \/ 2, \(u \* sinA \+ v \* cosA\) \/ 2\];/.test(shell)
+    && /const \[bu, bv\] = halfBox\(u, v\), hu = bu \+ margin, hv = bv \+ margin;/.test(shell));
+  check('the summary says the angle, and that the figure is the worst plot\'s',
+    /\{b\.angle !== 0 && <>, turned \{b\.angle\}°<\/>\}/.test(panel) && /\{b\.angle !== 0 && 'at least '\}/.test(panel));
+  check('and it stands only while the page is at the angle it was built at', /exp\.rotation === suggestOutcome\.angle/.test(shell));
+  check('the table\'s figure under the summary is read at the same angle',
+    /layout: \{ pattern: 'block', width: exp\.stripWidth, spacing: exp\.spacing, rotationDeg: angle \},\s*importedAngle: 0, importedFileAngle: 0, importedBasePlan: undefined,\s*geoAuto: gridApi\.geoAuto, geoManual: gridApi\.geoManual,\s*\}, angle, sat, true\);/.test(shell));
+}
+
+console.log('\nU-strips. alternating rows and columns are suggested too');
+{
+  // "also do the suggest design for alternating row or column"
+  const shell = read('src/pixel-grid/PixelGridApp.tsx');
+  const panel = read('src/pixel-grid/steps/SuggestDesign.tsx');
+  const search = read('src/pixel-grid/suggest-design.ts');
+  check('for strips the panel asks for the pixels in a strip, the purity and the alley, and not for species or blocks',
+    /const strips = p\.exp\.pattern === 'row' \|\| p\.exp\.pattern === 'col';/.test(panel)
+    && /\) : strips \? \(\s*<div className="grid grid-cols-3 gap-2">\s*<NumField label="Pixels \/ strip" value=\{ask\.perStrip \?\? PER_STRIP_DEFAULT\} onChange=\{set\('perStrip'\)\}/.test(panel)
+    && /<NumField label="Alley" value=\{ask\.stripAlley \?\? 0\} onChange=\{set\('stripAlley'\)\}/.test(panel));
+  check('the alley between strips is its own figure, none unless asked for, and an older saved request still reads',
+    /spacing: suggestAsk\.stripAlley \?\? 0, rotationDeg: angle \};/.test(shell) && /suggestStrips\(\{ pattern: kind, \.\.\.sized, base, ring \}\)/.test(shell)
+    && /\(v as SuggestAsk\)\.stripAlley === undefined \|\| inRange\(0, 100\)\(\(v as SuggestAsk\)\.stripAlley\)/.test(shell));
+  check('the build goes to the strips for those two layouts, whichever the reader has selected',
+    /const kind = exp\.pattern === 'row' \|\| exp\.pattern === 'col' \|\| exp\.pattern === 'checker' \? exp\.pattern : null;\s*if \(kind\) \{ buildStrips\(kind, sat, epsg, centre, angle\); return; \}/.test(shell));
+  check('it writes the layout\'s own fields, the angle and the satellite together',
+    /exp\.setStripWidth\(found\.width\);\s*exp\.setSpacing\(found\.spacing\);\s*exp\.setRotation\(angle\);\s*setAdopted\(null\);\s*if \(sat\.id !== gridApi\.sourceId\) gridApi\.setSourceId\(sat\.id\);/.test(shell));
+  check('the strips are counted from the corner the page anchors them on',
+    /if \(aoi\) found = ask\(aoiUtmOrigin\(aoi, epsg\), fieldRing \? fieldRing\.map\(q => toUtm\.forward\(q\) as \[number, number\]\) : null\);/.test(shell) && /const corner = aoiUtmOrigin\(made, epsg\);\s*if \(corner\[0\] === base\[0\] && corner\[1\] === base\[1\]\) break;/.test(shell)
+    && /const \[du, dv\] = bestPhaseOffset\(pattern, res, width, spacing, sensor\.mixThreshold, base\[0\], base\[1\], sensor\);/.test(search));
+  check('with no experiment area the page makes one for them', /if \(made\) \{\s*setFieldBox\(made\);/.test(shell) && /Experiment area made for them/.test(panel));
+  check('the summary is the strips\' own, and stands only under the layout and the figures it was built for',
+    /if \(o\.strips\) return <StripOutcome o=\{o\} box=\{box\} \/>;/.test(panel)
+    && /builtStrips \? exp\.pattern === builtStrips\.pattern && holds\(builtStrips\.found\)/.test(shell)
+    && /const holds = \(f: \{ width: number; spacing: number \} \| null\) => !f \|\| \(sameSetting && exp\.stripWidth === f\.width && exp\.spacing === f\.spacing\);/.test(shell)
+    && /: exp\.pattern === 'block' && \(!builtDesign \|\| \(sameSetting/.test(shell));
+  check('turned strips are said to be counted on average', /\{!f\.whole && ' on average'\}/.test(panel));
+  // "this would also fit for 10 px, so why is the 10 px much wider": the count
+  // asked is the pixels in the whole strip, and the summary says over what
+  // length a strip holds it and how many of the field's strips are that long.
+  check('the count asked of a strip is its own figure, not the plot-size card\'s pixels across',
+    /const pixels = kind === 'checker' \? wantPure : suggestAsk\.perStrip \?\? PER_STRIP_DEFAULT;/.test(shell)
+    && /\(v as SuggestAsk\)\.perStrip === undefined \|\| inRange\(1, 2000\)\(\(v as SuggestAsk\)\.perStrip\)/.test(shell));
+  check('the summary says over what length a strip holds the count, and how many of the field\'s strips are that long',
+    /<b className=\{strong\}>\{o\.pixels\}<\/b> px over <b className=\{strong\}>\{m\(f\.lengthM\)\} m<\/b> of its length\./.test(panel)
+    && /On this field \{f\.onField\.enough\} of \{f\.onField\.strips\} strips are that long/.test(panel));
+  check('the area made for strips with no field is long enough for them to hold the count',
+    /'lengthM' in found \? \(Math\.abs\(angle % 90\) < 1e-9 \? 0\.5 : 0\.75\) \* found\.lengthM \+ 2 \* r : 0\)/.test(shell));
+  check('the thinnest strips are tried first, and widened only while the field\'s strips are too short',
+    /const first = at\(1\);\s*if \(!first \|\| does\(first\.out\)\) return first\?\.out \?\? null;/.test(search)
+    && /const does = \(o: StripSuggestion\) => !o\.onField \|\| o\.onField\.share >= STRIP_FIELD_SHARE \|\| o\.lengthM <= res \+ 1e-9;/.test(search)
+    && /const STRIP_FIELD_SHARE = 0\.9;/.test(search));
+  // "always put the thinnest rows or columns possible": a pitch between whole
+  // pixels lays the strips several ways in turn, and the figure is the fewest.
+  check('strips whose pitch is not whole pixels are said to keep at least the figure', /\{f\.whole && !f\.even && 'at least '\}/.test(panel));
+}
+
+console.log('\nU-nogrid. the Pixel grid & export step is kept in the code and not shown');
+{
+  // "remove the pixel grid and export tab (keep in the code just in case but dont show on interface)"
+  const props = read('src/pixel-grid/steps/props.ts');
+  const shell = read('src/pixel-grid/PixelGridApp.tsx');
+  const areaHook = read('src/pixel-grid/use-area.ts');
+  const hidden = /export const SHOW_GRID_STEP = false;/.test(props);
+  check('one switch says whether the step is shown, and it is off', hidden);
+  check('the step is still in the code, rendered only when the switch is on',
+    fs.existsSync(path.resolve(ROOT, 'src/pixel-grid/steps/GridStep.tsx')) && /\{SHOW_GRID_STEP && <GridStep \{\.\.\.stepProps\} \/>\}/.test(shell)
+    && !/^\s*<GridStep \{\.\.\.stepProps\} \/>/m.test(shell));
+  check('the steps left are numbered 1, 2, 3, from the same switch',
+    /STEP_NO = SHOW_GRID_STEP \? \{ area: 1, grid: 2, sim: 3, pca: 4 \} : \{ area: 1, grid: 2, sim: 2, pca: 3 \};/.test(props)
+    && /<Step n=\{STEP_NO\.area\}/.test(read('src/pixel-grid/steps/AreaStep.tsx')) && /<Step n=\{STEP_NO\.sim\}/.test(read('src/pixel-grid/steps/SimStep.tsx'))
+    && /<Step n=\{STEP_NO\.pca\}/.test(read('src/pixel-grid/steps/PcaStep.tsx')) && /<Step n=\{STEP_NO\.grid\}/.test(read('src/pixel-grid/steps/GridStep.tsx')));
+  check('a browser left on the hidden step opens the simulation instead, and so does a finished drawing',
+    /usePersistentState<'area' \| 'grid' \| 'sim' \| 'pca' \| null>\('activeStep', SHOW_GRID_STEP \? 'grid' : 'sim',/.test(shell)
+    && /\(SHOW_GRID_STEP \? oneOf\('area', 'grid', 'sim', 'pca'\) : oneOf\('area', 'sim', 'pca'\)\)\(v\)/.test(shell)
+    && /const AFTER_DRAWING = SHOW_GRID_STEP \? 'grid' : 'sim';/.test(areaHook) && (areaHook.match(/onDrawComplete\(AFTER_DRAWING\);/g) || []).length === 2);
+  // No sentence on the page sends the reader to a step that is not there.
+  const shown = ['src/pixel-grid/steps/AreaStep.tsx', 'src/pixel-grid/steps/SimStep.tsx', 'src/pixel-grid/steps/PcaStep.tsx', 'src/pixel-grid/steps/SuggestDesign.tsx',
+    'src/pixel-grid/steps/PlotSize.tsx', 'src/pixel-grid/steps/controls.tsx', 'src/pixel-grid/FieldMap.tsx', 'src/pixel-grid/PcaSweep.tsx', 'src/pixel-grid/ResTable.tsx'];
+  const strays = [];
+  for (const f of shown) {
+    read(f).split('\n').forEach((line, i) => {
+      const code = line.replace(/\/\/.*$/, '').replace(/\{\/\*.*?\*\/\}/g, '');
+      if (/^\s*(\*|\/\*)/.test(line)) return;
+      if (/step(&nbsp;| )2/.test(code) && !/SHOW_GRID_STEP/.test(code)) strays.push(`${f.split('/').pop()}:${i + 1}`);
+    });
+  }
+  check('no sentence of the steps shown names step 2 unless the switch is on', strays.length === 0, strays.join(', '));
+}
+
+console.log('\nU-nochart. the Chart settings fold is kept in the code and not shown');
+{
+  // "remove the chart settings subtab"
+  const visual = read('src/pixel-grid/PcaSimVisual.tsx');
+  check('one switch says whether the fold is shown, and it is off', /const SHOW_CHART_SETTINGS: boolean = false;/.test(visual));
+  check('the fold is still in the code, drawn only when the switch is on',
+    /\{SHOW_CHART_SETTINGS && tab === 'scatter' && \(\s*<Disclosure\s*label=\{`Chart settings ·/.test(visual));
+}
+
+console.log('\nU-noretune. the Retune design fold is kept in the code and not shown');
+{
+  // "remove the retune design"
+  const pca = read('src/pixel-grid/steps/PcaStep.tsx');
+  check('one switch says whether the fold is shown, and it is off', /const SHOW_RETUNE: boolean = false;/.test(pca));
+  check('the fold is still in the code, drawn only when the switch is on',
+    /\{SHOW_RETUNE && \(\s*<Disclosure\s*label=\{pattern === 'imported'\s*\? `Retune design:/.test(pca) && /<\/Disclosure>\s*\)\}\s*<\/div>\s*\) : pcaBusy \? \(/.test(pca));
+}
+
+console.log('\nU-every. a design is suggested for every layout, and the 2:2 layouts are not offered');
+{
+  // "the suggest design should be available for every configuration. also remove all the 2:2"
+  const shell = read('src/pixel-grid/PixelGridApp.tsx');
+  const panel = read('src/pixel-grid/steps/SuggestDesign.tsx');
+  const engine = read('src/pixel-grid/simulate.ts');
+  const list = (engine.match(/export const PATTERNS[^=]*= \[([\s\S]*?)\];/) || ['', ''])[1];
+  check('the layouts offered are rows, columns, checkerboard, blocks and a file: no 2:2',
+    /id: 'row'/.test(list) && /id: 'col'/.test(list) && /id: 'checker'/.test(list) && /id: 'block'/.test(list) && /id: 'imported'/.test(list) && !/2:2|strip-row-2|strip-col-2/.test(list));
+  check('the engine still knows the 2:2 strips: they are only out of the list', /case 'strip-row-2':/.test(engine) && /case 'strip-col-2':/.test(engine));
+  check('a checkerboard is asked for by the pixels in a cell, with the purity and the alley',
+    /const checker = p\.exp\.pattern === 'checker';/.test(panel)
+    && /\{checker \? \(\s*<div className="grid grid-cols-3 gap-2">\s*<NumField label="Pixels \/ cell" value=\{p\.wantPure\} onChange=\{p\.setWantPure\}/.test(panel));
+  check('its build sizes the cells and writes the layout\'s own fields',
+    /\? suggestChecker\(\{ \.\.\.sized, base \}\)/.test(shell) && /\? \{ cells: \{ found: found as CheckerSuggestion \| null \} \}/.test(shell));
+  check('its summary is the cells\' own, and stands only while the checkerboard still holds them',
+    /if \(o\.cells\) return <CellOutcome o=\{o\} box=\{box\} \/>;/.test(panel) && /: builtCells \? exp\.pattern === 'checker' && holds\(builtCells\.found\)/.test(shell));
+}
+
+console.log('\nU-most. the plot-size card says the most pixels the parcel can give');
+{
+  // "in the plot size required add an option to have the max amount of pure pixels given the parcel"
+  const card = read('src/pixel-grid/steps/PlotSize.tsx');
+  check('for a block trial on a field it finds the largest plots that fit, a pixel clear of the edge',
+    /largestPlots\(bd, \(u, v\) => trialFitsField\(fieldRing, aoi, epsg, u, v, rotation, res\)\)/.test(card) && /if \(pattern !== 'block' \|\| !aoi \|\| !epsg/.test(card));
+  check('it shows what a plot of that size keeps, by the card\'s own count, for each reading',
+    /most: d\.maxA > 0 && d\.maxB > 0 \? fewestPure\(\{ a: d\.maxA, b: d\.maxB \}, v\) : null/.test(card) && /Most in this field:/.test(card));
+  check('one press sets the design to those plots, arrangement included, rounded down so that they still fit',
+    /setBlockDesign\(dd => \(\{ \.\.\.dd, plotLength: largest\.a, plotWidth: largest\.b, blocksPerRow: largest\.perRow \}\)\)/.test(card)
+    && /const down = \(m: number\) => Math\.floor\(m \* 10 \+ 1e-6\) \/ 10;/.test(card));
 }
 
 console.log(bad ? `\n${bad} UI-CONTRACT CHECK(S) FAILED` : '\nALL UI-CONTRACT CHECKS PASSED');
