@@ -4,7 +4,7 @@ import { Boundary } from './Boundary';
 import { isBool, usePersistentState } from './persist';
 import { MapContainer, TileLayer, Rectangle, Polygon, GeoJSON, Pane, ScaleControl } from 'react-leaflet';
 import L from 'leaflet';
-import { AOI_STYLE, BASEMAPS, GridLines, KeepSized, PixelHover, PixelPicker, PolyDrawer, PsfOverlay, RectDrawer, SigmaRings, SignalDots, TruthOverlay, ViewTracker, purityText, type BasemapKey } from './map-layers';
+import { AOI_STYLE, BASEMAPS, GridLines, KeepSized, PixelHover, PixelPicker, PolyDrawer, RectDrawer, SigmaRings, SignalDots, TruthOverlay, ViewTracker, purityText, type BasemapKey } from './map-layers';
 import { BARE, OFF_TRIAL, pixelSources } from './simulate';
 import { SOURCE_DOTS, coverNamer, pixelIndexAt, shareText, sourceRows, type SourceRow } from './signal-sources';
 import type { useAoiField } from './use-area';
@@ -86,9 +86,9 @@ const inFieldStyle = {
  * this whole tree.
  */
 function FieldMapBody({
-  mapRef, initialCenter, initialZoom, onView, basemap, setBasemap, showField, setShowField, showPsf, setShowPsf, showSigmas, setShowSigmas,
+  mapRef, initialCenter, initialZoom, onView, basemap, setBasemap, showField, setShowField, showSigmas, setShowSigmas,
   showSources, setShowSources,
-  fieldOnly, setFieldOnly, showSim, setShowSim, simLocked, showPure, setShowPure, simOn, geoKey, area, gridApi, exp, sim, pca,
+  fieldOnly, setFieldOnly, showPure, setShowPure, geoKey, area, gridApi, exp, sim, pca,
 }: {
   mapRef: React.MutableRefObject<L.Map | null>;
   initialCenter: [number, number];
@@ -96,17 +96,14 @@ function FieldMapBody({
   onView: (center: [number, number], zoom: number) => void;
   basemap: BasemapKey; setBasemap: (b: BasemapKey) => void;
   showField: boolean; setShowField: (v: boolean | ((p: boolean) => boolean)) => void;
-  showPsf: boolean; setShowPsf: (v: boolean | ((p: boolean) => boolean)) => void;
   /** The three sigmas of the blur budget, drawn to scale as rings. */
   showSigmas: boolean; setShowSigmas: (v: boolean | ((p: boolean) => boolean)) => void;
   /** One pixel's signal as dots, each in the colour of what it lands on, with the share of each cover. */
   showSources: boolean; setShowSources: (v: boolean | ((p: boolean) => boolean)) => void;
   fieldOnly: boolean; setFieldOnly: (v: boolean | ((p: boolean) => boolean)) => void;
-  /** The map's own Simulation switch, and whether the open tab forces it on. */
-  showSim: boolean; setShowSim: (v: boolean | ((p: boolean) => boolean)) => void; simLocked: boolean;
   /** Outline the simulation's pure pixels and dim the others. */
   showPure: boolean; setShowPure: (v: boolean | ((p: boolean) => boolean)) => void;
-  simOn: boolean; geoKey: string;
+  geoKey: string;
   area: ReturnType<typeof useAoiField>;
   gridApi: ReturnType<typeof useFieldGrid>;
   exp: Experiment;
@@ -114,14 +111,14 @@ function FieldMapBody({
   pca: ReturnType<typeof usePcaSim>;
 }) {
   const { aoi, aoiPoly, fieldRing, drawKind, drawMode, onDrawDone, onPolyDone } = area;
-  const { build, geojson, fieldGeojson, lineBox, psfCenter, pickPixel, psfSigmaM, psfSigmaXM, psfSigmaYM, psfFwhmXM, psfFwhmYM, setViewBounds, renderGrid, inField, geoErrM, geoSigmaM } = gridApi;
+  const { build, geojson, fieldGeojson, lineBox, psfCenter, pickPixel, psfSigmaM, psfSigmaXM, psfSigmaYM, setViewBounds, renderGrid, inField, geoErrM, geoSigmaM } = gridApi;
   /**
-   * The blur overlays (the PSF haze and the three sigma rings) sit on the pixel
-   * nearest the middle of the field until a pixel is clicked, and then on that
-   * one. With both switched off there is nothing to move, and the next time one
-   * is switched on it starts from the middle again.
+   * The three sigma rings sit on the pixel nearest the middle of the field
+   * until a pixel is clicked, and then on that one. Switched off there is
+   * nothing to move, and the next time they start from the middle again.
+   * (They were two overlays: the PSF haze drew the same blur alone, and went.)
    */
-  const blurOn = (showPsf || showSigmas) && !!build && psfSigmaM > 0;
+  const blurOn = showSigmas && !!build && psfSigmaM > 0;
   const { layout, layoutSig, spacing, colors, names, sensor, sensorSig, threshold } = exp;
   const { patternOrigin, simGeojson, simCells, pureGeojson, pureHeld, heldBusy } = sim;
   /**
@@ -130,7 +127,7 @@ function FieldMapBody({
    * is every pixel of its extent, as the readout under the pointer does. No
    * blur is needed: a sharp sensor's signal is the pixel's own square.
    */
-  const srcOn = showSources && simOn && !!renderGrid && !!patternOrigin && !(renderGrid.stride && renderGrid.stride > 1);
+  const srcOn = showSources && !!renderGrid && !!patternOrigin && !(renderGrid.stride && renderGrid.stride > 1);
   // A click picks a pixel while anything that sits on one is shown.
   const pickOn = blurOn || srcOn;
   useEffect(() => { if (!pickOn) pickPixel(null); }, [pickOn, pickPixel]);
@@ -178,7 +175,7 @@ function FieldMapBody({
    * where out-of-field pixels really are drawn, and says so when it cannot act.
    */
   const shownSim = simGeojson;
-  const simTrimmed = simOn && !!simGeojson;
+  const simTrimmed = !!simGeojson;
   // react-leaflet never redraws a <GeoJSON> when its data changes, so the key
   // has to move with the toggle or the filtered overlay would not appear.
   const fieldKey = fieldOnly ? '-in' : '';
@@ -219,9 +216,6 @@ function FieldMapBody({
           {showField && lineBox && build && aoi && patternOrigin && (
             <TruthOverlay extent={lineBox} epsg={build.epsg} layout={layout} layoutSig={layoutSig} origin={patternOrigin.origin} colors={colors} clipPoly={fieldRing ?? undefined} />
           )}
-          {showPsf && psfCenter && psfSigmaM > 0 && (
-            <PsfOverlay center={psfCenter} sigmaXM={psfSigmaXM} sigmaYM={psfSigmaYM} fwhmXM={psfFwhmXM} fwhmYM={psfFwhmYM} light={BASEMAPS[basemap].light} />
-          )}
           {/* The PCA selection lives in its OWN pane above the overlay pane. On the
               shared canvas, layers paint in the order they were added, so anything
               that remounted the simulation layer (a basemap switch, the In field
@@ -252,7 +246,7 @@ function FieldMapBody({
               The key carries the CE90 because react-leaflet repaints a GeoJSON
               only when its key moves, and the CE90 is in none of geoKey's parts. */}
           <Pane name="pure" style={{ zIndex: 440 }}>
-            {simOn && showPure && pureGeojson && (
+            {showPure && pureGeojson && (
               <GeoJSON key={`${geoKey}-pure-${pureHeld ? geoErrM : 'nominal'}`} data={pureGeojson as any} style={pureStyle} />
             )}
           </Pane>
@@ -262,7 +256,7 @@ function FieldMapBody({
             )}
             {/* The pixel under the pointer, read off the simulation that is on the
                 map. Not while a field is being drawn: the pointer is the pen then. */}
-            {simOn && sim.sim && renderGrid && !drawMode && (
+            {sim.sim && renderGrid && !drawMode && (
               <PixelHover grid={renderGrid} sim={sim.sim} layout={layout} names={names}
                 mask={inField && inField.grid === renderGrid ? inField.mask : null}
                 held={showPure ? pureHeld : null} />
@@ -280,7 +274,7 @@ function FieldMapBody({
                 ? <GeoJSON key={geoKey + '-field' + fieldKey} data={d as any} style={fieldOutlineStyle} />
                 : gridLines;
             }
-            if (simOn && shownSim) return <GeoJSON key={geoKey + fieldKey} data={shownSim} style={simSetStyle} />;
+            if (shownSim) return <GeoJSON key={geoKey + fieldKey} data={shownSim} style={simSetStyle} />;
             // "In field only": draw the kept cells as squares instead of ruling
             // lines across the whole bounding box. Same colour as the lines so it
             // reads as the same grid, just trimmed.
@@ -321,18 +315,12 @@ function FieldMapBody({
                     : simTrimmed
                       ? 'The simulation already draws only the pixels that overlap the field'
                       : 'Show only the exported pixels (the ones that overlap the field)' },
-                { label: 'PSF blur', on: showPsf, flip: () => setShowPsf(v => !v), off: !build || psfSigmaM <= 0,
-                  title: "Show the sensor's blur footprint to scale; click a pixel to move it there" },
                 { label: 'σ PSF, geo, eff', on: showSigmas, flip: () => setShowSigmas(v => !v), off: !build || psfSigmaM <= 0,
-                  title: 'Draw the blur, the geolocation error and the two combined as rings of one σ, to scale, and, broken, the circles that hold 90 % of a pixel\'s signal; click a pixel to move them there' },
-                { label: 'Signal of a pixel', on: showSources && simOn, flip: () => setShowSources(v => !v), off: !build || !simOn,
-                  title: simOn
-                    ? "Draw a pixel's signal as 1000 dots, each in the colour of what it lands on, and list the share of each plot: the first is the purity; click a pixel to move them there"
-                    : 'Turn the simulation on to use this' },
-                { label: 'Simulation', on: simOn, flip: () => setShowSim(v => !v), off: !build || simLocked,
-                  title: simLocked ? 'Always shown in steps 3 and 4' : 'Show the simulated pixels in steps 1 and 2 too' },
-                { label: 'Pure pixels', on: showPure && simOn, flip: () => setShowPure(v => !v), off: !build || !simOn,
-                  title: simOn ? 'Outline the pure pixels and dim the others' : 'Turn the simulation on to use this' },
+                  title: 'Draw the blur, the geolocation error and the two combined as rings of one σ; click a pixel to move them there' },
+                { label: 'Signal of a pixel', on: showSources, flip: () => setShowSources(v => !v), off: !build,
+                  title: "Draw a pixel's signal as 1000 dots, coloured by whose ground each lands on, and list the share of each plot: the first is the purity; click a pixel to move them there" },
+                { label: 'Pure pixels', on: showPure, flip: () => setShowPure(v => !v), off: !build,
+                  title: 'Outline the pure pixels and dim the others' },
               ]).map(sw => (
                 <button key={sw.label} type="button" role="switch" aria-checked={sw.on} disabled={sw.off} title={sw.title} onClick={sw.flip}
                   className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left transition-colors hover:bg-white/5 disabled:opacity-40 disabled:hover:bg-transparent">
@@ -363,13 +351,13 @@ function FieldMapBody({
         )}
 
         {/* Map legend (simulation overlay colours), folded until asked for */}
-        {simOn && simGeojson && !showLegend && (
+        {simGeojson && !showLegend && (
           <button type="button" onClick={() => setShowLegend(true)}
             className="absolute bottom-7 left-2 z-[1000] rounded-md border border-white/10 bg-[#11151acc] px-2.5 py-1 text-[13px] text-slate-300 backdrop-blur transition-colors hover:text-white">
             Legend
           </button>
         )}
-        {simOn && simGeojson && showLegend && (
+        {simGeojson && showLegend && (
           <div className="absolute bottom-7 left-2 z-[1000] rounded-md border border-white/10 bg-[#11151a]/85 px-2.5 py-2 text-[14px] text-slate-200 backdrop-blur">
             <div className="mb-1 flex items-center justify-between gap-3 font-medium text-slate-300">
               Mixture
@@ -435,7 +423,7 @@ function FieldMapBody({
         )}
 
         {lineStepM > 0 && (
-          <div className={`pointer-events-none absolute left-2 z-[1000] rounded-md border border-white/10 bg-[#11151a]/85 px-2 py-1 text-[13px] text-slate-300 backdrop-blur ${simOn && simGeojson ? (showLegend ? 'bottom-[7.5rem]' : 'bottom-16') : 'bottom-7'}`}>
+          <div className={`pointer-events-none absolute left-2 z-[1000] rounded-md border border-white/10 bg-[#11151a]/85 px-2 py-1 text-[13px] text-slate-300 backdrop-blur ${simGeojson ? (showLegend ? 'bottom-[7.5rem]' : 'bottom-16') : 'bottom-7'}`}>
             grid ruled every {lineStepM >= 1000 ? `${+(lineStepM / 1000).toFixed(1)} km` : lineStepM < 10 ? `${+lineStepM.toFixed(2)} m` : `${Math.round(lineStepM)} m`}, not every pixel
           </div>
         )}
@@ -473,9 +461,6 @@ function SourcesCard({ rows, threshold, low }: { rows: SourceRow[]; threshold: n
           <span className="shrink-0 font-mono">{q === 0 ? purityText(Math.fround(r.share)) : shareText(r.share)}</span>
         </div>
       ))}
-      <div className="mt-1.5 text-[12px] text-slate-400">
-        The first line is the purity, the mark the {threshold} % it must reach. One dot is {100 / SOURCE_DOTS} % of the signal.
-      </div>
     </div>
   );
 }

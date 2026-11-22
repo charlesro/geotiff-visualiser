@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { Upload } from 'lucide-react';
-import { Explain, InfoDot, Spinner } from '../ui';
+import { Spinner } from '../ui';
 import { fmt } from '../util';
 import { VARIETY_GUESS_PREFIX } from '../design-import';
 import type { ImportedDesign, ImportedVariety } from '../imported-types';
@@ -100,10 +100,7 @@ export function ImportPanel({ design, varieties, busy, error, onFiles, onRemove,
           </div>
           <div className="mt-2 grid grid-cols-2 gap-2">
             <label className="block">
-              <span className="mb-1 flex items-center gap-1 text-neutral-500">
-                Variety column
-                <Explain text={<>Each distinct value is its own species, with its own curve, colour and purity count. Plots sharing a value are its repetitions.</>}><InfoDot /></Explain>
-              </span>
+              <span className="mb-1 block text-neutral-500">Variety column</span>
               <select className={SELECT} value={design.varietyColumn} onChange={e => setVarietyColumn(e.target.value)}>
                 {/* A real state the reader produces when no column groups the plots,
                     and the only way back to it once another column has been picked. */}
@@ -126,13 +123,6 @@ export function ImportPanel({ design, varieties, busy, error, onFiles, onRemove,
             <AttributeTable design={design} setVarietyColumn={setVarietyColumn} />
           </div>
 
-          {/* The field silently became the trial's outline the moment this file
-              was read, and it moves again on every turn of the trial. Saying so
-              here is the only place the user finds out why their drawn field is
-              gone, and that Remove is what gives it back. */}
-          <p className="mt-2 text-[13px] leading-snug text-neutral-500">
-            The area measured is now the trial's outline, not the field you drew. Remove puts yours back.
-          </p>
           {warnings.length > 0 && (
             <ul className="mt-2 space-y-0.5 text-amber-300/90">
               {warnings.map((w, i) => <li key={i}>{w}</li>)}

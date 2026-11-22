@@ -1,0 +1,102 @@
+{
+ "app": {
+  "w": 1320,
+  "h": 820
+ },
+ "chart-loadings": {
+  "w": 397,
+  "h": 260
+ },
+ "chart-purity": {
+  "w": 397,
+  "h": 277
+ },
+ "chart-scatter": {
+  "w": 397,
+  "h": 303
+ },
+ "chart-variance": {
+  "w": 397,
+  "h": 260
+ },
+ "fold-budget": {
+  "w": 397,
+  "h": 844
+ },
+ "fold-curves": {
+  "w": 397,
+  "h": 352
+ },
+ "fold-design": {
+  "w": 397,
+  "h": 360
+ },
+ "fold-design-rows": {
+  "w": 397,
+  "h": 174
+ },
+ "fold-import": {
+  "w": 397,
+  "h": 674
+ },
+ "fold-noise": {
+  "w": 397,
+  "h": 160
+ },
+ "fold-plot-size": {
+  "w": 397,
+  "h": 396
+ },
+ "fold-satellite": {
+  "w": 397,
+  "h": 283
+ },
+ "fold-suggest": {
+  "w": 397,
+  "h": 395
+ },
+ "layer-pure": {
+  "w": 560,
+  "h": 400
+ },
+ "layer-real-field": {
+  "w": 560,
+  "h": 400
+ },
+ "layer-sigmas": {
+  "w": 700,
+  "h": 520
+ },
+ "layer-signal": {
+  "w": 700,
+  "h": 520
+ },
+ "layer-simulation": {
+  "w": 560,
+  "h": 400
+ },
+ "layers-menu": {
+  "w": 240,
+  "h": 201
+ },
+ "map-import": {
+  "w": 650,
+  "h": 560
+ },
+ "step-area": {
+  "w": 429,
+  "h": 201
+ },
+ "table": {
+  "w": 397,
+  "h": 491
+ },
+ "table-charts": {
+  "w": 397,
+  "h": 782
+ },
+ "table-compare": {
+  "w": 397,
+  "h": 525
+ }
+}

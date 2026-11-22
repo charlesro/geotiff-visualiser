@@ -4337,10 +4337,15 @@ console.log('\nH30. the ladder\'s rows are satellites');
   ok('the six measured blurs are the note\'s FWHM to the last digit: 14, 1.9, 1.1, 5, 3 and 9.7 m',
     [['s2-10', 14], ['wv', 1.9], ['wv-ps', 1.1], ['pleiades', 5], ['pleiades-ps', 3], ['planet', 9.7]]
       .every(([id, fwhm]) => { const q = SOURCES.find(x => x.id === id); return q.psfMeasured && Math.abs(q.psf * q.res * 2.3548 - fwhm) < 1e-12; }));
-  // A few words under the picker; the documentation page says what they stand for.
-  ok('every pansharpened product says so in a few words, the two the note measured to size on the native row, and no native row does',
-    SOURCES.filter(q => q.warn).map(q => q.id).join() === 'wv-ps,pleiades-ps,skysat,spot' && SOURCES.filter(q => q.warn).every(q => /^Pansharpened: /.test(q.warn) && q.warn.split(' ').length <= 9)
-    && ['wv-ps', 'pleiades-ps'].every(id => /size the trial on the native row/.test(SOURCES.find(q => q.id === id).warn)) && ['skysat', 'spot'].every(id => /flatters a trial read through an index/.test(SOURCES.find(q => q.id === id).warn)));
+  // Nothing in the panel: the documentation page says what a pansharpened row flatters, and names each of them.
+  {
+    const docs = fs.readFileSync(path.resolve(ROOT, 'pixel-grid-docs.html'), 'utf8');
+    const pan = docs.slice(docs.indexOf('<section id="pansharpened">'), docs.indexOf('<section id="grid-position">'));
+    ok('every pansharpened product is one the documentation warns about, the two the note measured to size on the native row',
+      SOURCES.filter(q => /pansharpened/.test(q.provider)).map(q => q.id).join() === 'wv-ps,pleiades-ps,skysat,spot' && SOURCES.every(q => q.warn === undefined)
+      && /WorldView-2 and Pléiades pansharpened\.<\/b> Size a trial on the native row/.test(pan) && /SkySat and SPOT 6\/7 pansharpened\.<\/b> No blur was measured for their native bands/.test(pan)
+      && /sharp only in the panchromatic band/.test(pan) && ['wv', 'pleiades'].every(id => SOURCES.some(q => q.id === id && /native MS/.test(q.provider))));
+  }
   {
     // The documentation's table of satellites is written by hand: every figure of it is held against the list itself.
     const docs = fs.readFileSync(path.resolve(ROOT, 'pixel-grid-docs.html'), 'utf8');
@@ -4359,6 +4364,34 @@ console.log('\nH30. the ladder\'s rows are satellites');
       wrong.length === 0 && (docs.match(/<tr data-sat="/g) || []).length === SOURCES.length - 1);
     ok('and the links of that table are the list\'s own',
       SOURCES.filter(q => q.psfSrc?.url).every(q => docs.includes(`href="${q.psfSrc.url}"`)) && SOURCES.filter(q => q.geo?.url).every(q => docs.includes(`href="${q.geo.url}"`)));
+    // Its figures and its worked example are built by scripts/docs-figures.mjs from this same engine: the page must carry them as built.
+    const { docsParts, readParts, sameParts } = await import(path.join(ROOT, 'scripts/docs-figures.mjs'));
+    let built = null, why = '';
+    try { built = await docsParts(rel => import(path.join(BUILD, rel.replace(/\.ts$/, '.mjs')))); } catch (err) { why = String(err.message || err); }
+    const onPage = readParts(docs);
+    // Word for word, and number for number to the tenth: a coordinate's last digit may differ from one machine to the next (sameParts).
+    const stale = built ? Object.keys(built).filter(k => !sameParts(onPage[k], built[k])) : [];
+    ok('a part that differs by a count or by a word is not taken for the same',
+      sameParts('<rect x="12.3"/> 64 pure', '<rect x="12.4"/> 64 pure') && !sameParts('<rect x="12.3"/> 64 pure', '<rect x="12.3"/> 65 pure')
+      && !sameParts('64 pure', '64 held') && !sameParts('1,424 pure', '1,425 pure') && !sameParts('a 1 b', 'a 1 b 2')
+      // A figure that is read is text: only a coordinate inside a tag may move by a tenth.
+      && !sameParts('<td>90.1 %</td>', '<td>90.2 %</td>') && !sameParts('<text x="3">0.17</text>', '<text x="3">0.27</text>') && !sameParts('<rect x="12.3"/>', '<rect x="12.5"/>'));
+    ok(`every figure and the worked example of the documentation are the engine's own${why ? `: ${why}` : stale.length ? `: run node scripts/docs-figures.mjs (${stale.join(', ')})` : ''}`,
+      !!built && stale.length === 0 && Object.keys(onPage).length === Object.keys(built).length && Object.keys(built).length >= 8);
+    ok('and each of them is a drawing with its caption, with no script in it',
+      !!built && Object.entries(built).filter(([k]) => !/^(ex|shots)/.test(k)).every(([, h]) => /^<figure class="fig"/.test(h) && /<svg viewBox=/.test(h) && /<figcaption>[^<]/.test(h)) && Object.values(built).every(h => !/<script|\u2014/.test(h)));
+    // "every menu every concept should be illustrated [...] illustrate a lot" (2026-11-22): the drawings of the ideas, the worked examples, and the pictures of the menus.
+    ok('there is a drawing for each idea, six worked examples, and a picture of each menu',
+      !!built && Object.keys(built).filter(k => !/^(ex|shots)/.test(k)).length >= 30 && Object.keys(built).filter(k => /^ex/.test(k)).length === 6
+      && Object.entries(built).filter(([k]) => /^shots/.test(k)).reduce((a, [, h]) => a + (h.match(/<figure class="shot"/g) || []).length, 0) >= 24);
+    {
+      const sizes = JSON.parse(fs.readFileSync(path.resolve(ROOT, 'docs-img/shots.json'), 'utf8'));
+      const png = name => fs.readFileSync(path.resolve(ROOT, 'docs-img', `${name}.png`));
+      const off = Object.entries(sizes).filter(([name, q]) => { try { const b = png(name); return b.readUInt32BE(16) !== q.w || b.readUInt32BE(20) !== q.h; } catch { return true; } }).map(([name]) => name);
+      const stray = fs.readdirSync(path.resolve(ROOT, 'docs-img')).filter(f => f.endsWith('.png') && !sizes[f.slice(0, -4)]);
+      ok(`every picture the page shows is there, at the size written, and none is left over${off.length ? `: ${off.join(', ')}` : ''}${stray.length ? `: stray ${stray.join(', ')}` : ''}`,
+        off.length === 0 && stray.length === 0 && Object.keys(sizes).length >= 24 && Object.keys(sizes).every(name => docs.includes(`./docs-img/${name}.png`)));
+    }
   }
   ok('a fixed grid is counted where the trial is best placed on it, a tasked one where it is worst: the rung says which',
     rows.every(g => g.anyPosition === (SOURCES.find(x => x.id === g.id).kind !== 'catalog'))
@@ -6092,6 +6125,67 @@ console.log('\nH43. the shortcuts taken for speed give the figures the long way 
     const S = 4, count = 80, species = new Float32Array(count * S), bare = new Float32Array(count);
     for (let k = 0; k < count; k++) { if (k % 2) { species[k * S] = 0.5; species[k * S + 1] = 0.5; } else species[k * S + 2 + ((k / 2) % 2)] = 1; }
     ok('and two varieties always mixed half and half are still reported as one that cannot be told apart', contrastInfo({ species, bare, offTrial: null, nSpecies: S, count }).dead === true);
+  }
+}
+
+// The search for an imported trial's best placement tried a few angles on a coarse
+// mesh and let the engine look at the best of them. On a fixed grid it could rank
+// the plain answer, the trial turned onto the pixel rows and staked, too low to be
+// looked at, and its staking stepped over a position a few centimetres wide.
+// Found through the documentation's own example (an outside review, 2026-11-22).
+console.log('\nH44. the best placement of an imported trial is not missed on a fixed grid');
+{
+  const { pixelVerdicts } = await import(path.join(BUILD, 'src/pixel-grid/pixel-verdicts.mjs'));
+  const epsg = 32631, toUtm = proj4('EPSG:4326', '+proj=utm +zone=31 +datum=WGS84 +units=m +no_defs');
+  const s2 = SOURCES.find(q => q.id === 's2-10'), planet = SOURCES.find(q => q.id === 'planet'), CE = 7.15, ALL = [-Infinity, -Infinity, Infinity, Infinity];
+  /** 24 plots of a x b metres, six varieties in four repetitions, drawn at 17 degrees: no whole number of pixels from any lattice. */
+  const trial = (a, b) => {
+    const t = (17 * Math.PI) / 180, cos = Math.cos(t), sin = Math.sin(t), names = ['A', 'B', 'C', 'D', 'E', 'F'], order = [[0, 1, 2, 3, 4, 5], [3, 5, 0, 2, 1, 4], [4, 2, 5, 1, 3, 0], [1, 4, 3, 0, 5, 2]], plots = [];
+    for (let k = 0; k < 4; k++) for (let j = 0; j < 6; j++) {
+      plots.push({ rings: [[[k * a, j * b], [k * a + a, j * b], [k * a + a, j * b + b], [k * a, j * b + b]].map(([u, v]) => toUtm.inverse([619303.7 + u * cos - v * sin, 5600864.3 + u * sin + v * cos]))], props: { Plot: String(k * 6 + j + 1), Variety: names[order[k][j]] } });
+    }
+    const design = { fileName: 'h44.geojson', columns: ['Plot', 'Variety'], varietyColumn: 'Variety', nameColumn: 'Plot', warnings: [], plots };
+    return resolveImportedPlan(design, readerVarietiesOf(design), epsg);
+  };
+  const fixed = { sigmaX: s2.psf, sigmaY: s2.psf, mixThreshold: 0.9, anyPosition: false };
+  const flatOf = plan => rotateImportedPlan(plan, -trialAngle(plan));
+  const heldAt = plan => heldPixels(plan, 10, fixed, CE);
+  /** The plots that keep a pixel that holds. */
+  const plotsKept = plan => {
+    const v = pixelVerdicts({ res: 10, utmBounds: importedTrialExtent(plan, 10, fixed, ALL) }, [0, 0], { pattern: 'imported', width: 2, spacing: 0, rotationDeg: 0, imported: plan }, fixed, CE);
+    const seen = new Set(); v.robust.forEach((x, k) => { if (x) seen.add(v.cover[k]); });
+    return seen.size;
+  };
+  // 40 x 30 m: every plot holds a Sentinel-2 pixel at one position, a few centimetres wide.
+  {
+    const plan = trial(40, 30), best = bestPlacement(plan, 10, fixed, CE);
+    ok('plots of 40 x 30 m each hold a Sentinel-2 pixel at the best placement, where the search found a pixel in half of them',
+      best.pure === 24 && plotsKept(best.plan) === 24 && best.angle < 1e-6, `${best.pure} held, ${plotsKept(best.plan)} of 24 plots, at ${best.angle.toFixed(2)} degrees`);
+    const flat = flatOf(plan), mesh = stakeOnGrid(flat, 10, { ...fixed, placeHeldM: CE }, importedTrialExtent(flat, 10, fixed, ALL));
+    ok('the staking finds it too: the trial\'s edge on a pixel edge one way, through the middle of a pixel the other',
+      mesh.staked && heldAt(mesh.plan) === 24 && mesh.shift.every(v => v >= 0 && v < 10), `shift ${mesh.shift.map(v => v.toFixed(2)).join(', ')}`);
+    // The same sum by hand: the middle pixel of the 30 m side, pushed 7.15 m, times the centred pixel of the 40 m side.
+    const sig = s2.psf * 10, F = (L, x) => normCdfOf((L / 2 - x) / sig) + normCdfOf((L / 2 + x) / sig) - 1;
+    ok('and it holds by the note\'s own product, with little to spare', F(30, CE) * F(40, 0) >= 0.9 && F(30, CE) * F(40, 0) < 0.91 && F(30, CE + 0.5) * F(40, 0) < 0.9, `${(100 * F(30, CE) * F(40, 0)).toFixed(2)} %`);
+  }
+  // 45 x 35 m: the angle the stand-in liked best held fewer than the trial turned onto the rows.
+  {
+    const plan = trial(45, 35), best = bestPlacement(plan, 10, fixed, CE);
+    const flat = flatOf(plan), staked = stakeOnGrid(flat, 10, { ...fixed, placeHeldM: CE }, importedTrialExtent(flat, 10, fixed, ALL));
+    ok('the best placement is never below the trial turned onto the pixel rows and staked', best.pure >= heldAt(staked.plan) && best.pure >= 36 && best.pure > heldAt(plan),
+      `${best.pure} held by the best, ${heldAt(staked.plan)} turned and staked, ${heldAt(plan)} as drawn`);
+    // The table's search is handed a sensor that says nothing of what a trial is placed for: it must not stake for pure pixels and score on the ones that hold.
+    const said = bestPlacement(plan, 10, { ...fixed, placeHeldM: CE }, CE, 1_200_001);
+    ok('whether or not the sensor it is handed says what the trial is placed for', said.pure === best.pure, `${said.pure} against ${best.pure}`);
+    const pure = bestPlacement(plan, 10, fixed, 0);
+    ok('and with no geolocation error it is the pure pixels that are staked for and scored', pure.pure >= purePixels(plan, 10, fixed, importedTrialExtent(plan, 10, fixed, ALL)) && pure.pure > best.pure, `${pure.pure} pure`);
+  }
+  // A lattice that falls anywhere is counted at its worst: no position is looked for with more care than the mesh's.
+  {
+    const tasked = { sigmaX: planet.psf, sigmaY: planet.psf, mixThreshold: 0.9, anyPosition: true }, plan = trial(45, 35), flat = flatOf(plan);
+    const st = stakeOnGrid(flat, 3, tasked, importedTrialExtent(flat, 3, tasked, ALL));
+    const onMesh = v => [2, 3, 4, 5, 6, 7, 8, 9, 10].some(n => Math.abs((v * n) / 3 - Math.round((v * n) / 3)) < 1e-9);
+    ok('on a tasked satellite the staking keeps to its mesh', st.staked && st.shift.every(onMesh), `shift ${st.shift.map(v => v.toFixed(3)).join(', ')}`);
   }
 }
 

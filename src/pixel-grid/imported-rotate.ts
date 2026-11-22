@@ -242,16 +242,32 @@ export function stakeOnGrid(
   if (n === 1) return { plan, shift: [0, 0], staked: false };
   // The most pure pixels on a lattice that is known, the fewest on one that falls anywhere (SensorParams.anyPosition).
   let best = plan, bestShift: [number, number] = [0, 0], bestCount = noCountYet(sensor);
-  for (let i = 0; i < n; i++) {
-    for (let j = 0; j < n; j++) {
-      // The shift is returned rather than read back off the result: recovering
-      // it from a bbox of six-figure eastings loses its last digits, and the
-      // page saves this number and rebuilds the trial from it.
-      const shift: [number, number] = [(i * r) / n, (j * r) / n];
-      const candidate = shiftImportedPlan(plan, shift[0], shift[1]);
-      const count = holdM > 0 ? heldPixels(candidate, r, sensor, holdM) : purePixels(candidate, r, sensor, extent);
-      if (keepsCount(sensor, count, bestCount)) { bestCount = count; best = candidate; bestShift = shift; }
-    }
+  // The shift is returned rather than read back off the result: recovering
+  // it from a bbox of six-figure eastings loses its last digits, and the
+  // page saves this number and rebuilds the trial from it.
+  const shifts: [number, number][] = [];
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) shifts.push([(i * r) / n, (j * r) / n]);
+  /**
+   * On a lattice that is known, also the four positions a mesh cannot be
+   * trusted to land on: the trial's own edge on a pixel edge, or through the
+   * middle of a pixel, each way. Plots a whole number of pixels wide hold
+   * their pixels there and nowhere near: 40 x 30 m plots under Sentinel-2
+   * hold a pixel each over a few centimetres of position, and the mesh, a
+   * metre apart at best, stepped over it and found none (found by an outside
+   * review, 2026-11-22). After the mesh, and kept only when strictly better:
+   * a trial the mesh already places as well stays where it was put.
+   * Not on a lattice that falls anywhere: there the count is the worst, and a
+   * position looked for with more care than the others would be found worse
+   * than theirs for that reason alone.
+   */
+  if (!sensor.anyPosition) {
+    const snaps = (edge: number): number[] => { const onEdge = (((-edge) % r) + r) % r; return [onEdge, (onEdge + r / 2) % r]; };
+    for (const sx of snaps(b0)) for (const sy of snaps(b1)) shifts.push([sx, sy]);
+  }
+  for (const shift of shifts) {
+    const candidate = shiftImportedPlan(plan, shift[0], shift[1]);
+    const count = holdM > 0 ? heldPixels(candidate, r, sensor, holdM) : purePixels(candidate, r, sensor, extent);
+    if (keepsCount(sensor, count, bestCount)) { bestCount = count; best = candidate; bestShift = shift; }
   }
   return { plan: best, shift: bestShift, staked: true };
 }
@@ -714,6 +730,28 @@ function* searchSteps(
     if (taken.some(a => apart(a, c.angle) < 0.5)) continue;
     taken.push(c.angle);
     asked.push({ turn: c.turn, shift: c.shift });
+  }
+  /**
+   * On a lattice that is known, the trial turned onto the pixel rows and
+   * staked there is always asked about: it is what the page gives a trial
+   * turned by hand (stakeOnGrid), and the stand-in can rank it too low to be
+   * among the few the engine looks at, its mesh being the coarser. 24 plots
+   * of 45 x 35 m at 17 degrees under Sentinel-2: 30 pixels held by the best
+   * of the angles asked about, 36 by this placement, which "the best" then
+   * was not (found by an outside review, 2026-11-22). One more placement for
+   * the engine, past what the budget pays: it is the one most worth it.
+   */
+  if (!sensor.anyPosition) {
+    const turn = nearestTurn(fileAngle, 0);
+    const flat = rotateImportedPlan(base, turn);
+    // Staked for what this search scores on: the pixels that hold within `ce90`, or the pure ones when it is 0.
+    // The sensor a search is handed says nothing of that (the table's does not carry placeHeldM), and staked for
+    // pure pixels the placement was then scored on the ones that hold, and lost.
+    const staked = stakeOnGrid(flat, r, { ...sensor, placeHeldM: ce90 }, importedTrialExtent(flat, r, sensor, ALL));
+    if (staked.staked && !asked.some(c => c.turn === turn && c.shift[0] === staked.shift[0] && c.shift[1] === staked.shift[1])) {
+      asked.push({ turn, shift: staked.shift });
+    }
+    yield;
   }
   let won: Placement | null = null;
   for (let q = 0; q < asked.length; q++) {

@@ -27,7 +27,7 @@ import { AreaStep } from './steps/AreaStep';
 import { GridStep } from './steps/GridStep';
 import { SimStep } from './steps/SimStep';
 import { PcaStep } from './steps/PcaStep';
-import { docHref } from './docs';
+import { DOCS_PAGE } from './docs';
 
 /**
  * The Pixel Grid Designer.
@@ -76,12 +76,10 @@ export default function PixelGridApp() {
   const [activeStep, setActiveStep] = usePersistentState<'area' | 'grid' | 'sim' | 'pca' | null>('activeStep', SHOW_GRID_STEP ? 'grid' : 'sim',
     v => v === null || (SHOW_GRID_STEP ? oneOf('area', 'grid', 'sim', 'pca') : oneOf('area', 'sim', 'pca'))(v));
   const toggleStep = (s: 'area' | 'grid' | 'sim' | 'pca') => setActiveStep(cur => (cur === s ? null : s));
-  // The simulation is drawn in every step while the map's Simulation button is
-  // on, so a sensor or CE90 typed in step 2 can be watched on the map. Steps 3
-  // and 4 read its result, so there it runs whatever the button says.
-  const [showSim, setShowSim] = usePersistentState('showSim', true, isBool);
-  const simTabOpen = activeStep === 'sim' || activeStep === 'pca';
-  const simOn = showSim || simTabOpen;
+  // The simulation is on the map in every step. It had a switch of its own, off
+  // only in step 1 and only if asked: "Real field" is the way to see the trial
+  // as planted instead, and the switch doubled it ("PSF blur and simulation are
+  // duplicates of real field and the sigmas", 2026-11-22).
   // Outline the pure pixels of the simulation on the map and dim the others.
   const [showPure, setShowPure] = usePersistentState('showPure', false, isBool);
 
@@ -107,7 +105,6 @@ export default function PixelGridApp() {
   // of empty squares that says nothing about the trial underneath. It stays a
   // toggle, and stays persisted, so turning it off is remembered.
   const [showField, setShowField] = usePersistentState('showField', true, isBool);
-  const [showPsf, setShowPsf] = usePersistentState('showPsf', false, isBool);        // draw the sensor PSF footprint on the map
   const [showSigmas, setShowSigmas] = usePersistentState('showSigmas', false, isBool);  // the three sigmas of the blur budget, as rings
   const [showSources, setShowSources] = usePersistentState('showSources', false, isBool);  // one pixel's signal as dots, with the share of each cover
   const [fieldOnly, setFieldOnly] = usePersistentState('fieldOnly', false, isBool);  // trim the grid to the traced field
@@ -732,7 +729,7 @@ export default function PixelGridApp() {
   // Only what `geoKey` needs; the panels read the rest straight off `exp`.
   const { layoutSig, sensorSig, cropSig } = exp;
 
-  const simApi = useSimulation({ aoi, gridApi, exp, simOn, showPure, fieldOrigin });
+  const simApi = useSimulation({ aoi, gridApi, exp, simOn: true, showPure, fieldOrigin });
   /**
    * What the export says about each pixel. Assigned here, each render, because
    * only the shell holds both halves: the grid hook that writes the file and
@@ -741,7 +738,7 @@ export default function PixelGridApp() {
    * only, as it always was.
    */
   gridApi.exportAttrsRef.current = g => {
-    if (!simOn || !simApi.patternOrigin) return null;
+    if (!simApi.patternOrigin) return null;
     const v = pixelVerdicts(g, simApi.patternOrigin.origin, exp.layout, exp.sensor, gridApi.geoErrM);
     return [
       { name: 'PURE', values: v.pure },
@@ -759,7 +756,7 @@ export default function PixelGridApp() {
   // design's parameters, so a changed seed or plot size left the previous trial
   // on the map: react-leaflet only repaints when this key changes.
   const geoKey = renderGrid
-    ? `${renderGrid.epsg}-${renderGrid.res}-${renderGrid.utmBounds.join(',')}-${basemap}-${simOn ? 'sim' : 'off'}-${layoutSig}-${sensorSig}-${cropSig}`
+    ? `${renderGrid.epsg}-${renderGrid.res}-${renderGrid.utmBounds.join(',')}-${basemap}-sim-${layoutSig}-${sensorSig}-${cropSig}`
     : 'none';
 
   // The map reopens where it was left, but only if the FIELD is still in view
@@ -819,7 +816,7 @@ export default function PixelGridApp() {
   const shownExp = pendingAngle === null ? exp : { ...exp, importedAngle: pendingAngle };
 
   const stepProps = { activeStep, toggleStep, area, search, gridApi, exp: shownExp, sim: simApi, pca: pcaApi,
-                      areaSummary, gridSummary, simSummary, geoKey, showPsf, setShowPsf,
+                      areaSummary, gridSummary, simSummary, geoKey,
                       simSection, setSimSection, blurOpen, setBlurOpen, pcaRetuneOpen, setPcaRetuneOpen,
                       compareAligned, setCompareAligned, ladderView, setLadderView, compareFrom, setCompareFrom, setAngleByHand, setActiveStep,
                       pcaColorBy, setPcaColorBy, pcaShapeBy, setPcaShapeBy, importApi, curvesOpen, setCurvesOpen,
@@ -832,13 +829,11 @@ export default function PixelGridApp() {
         mapRef={mapRef} initialCenter={initialView.center} initialZoom={initialView.zoom} onView={saveView}
         basemap={basemap} setBasemap={setBasemap}
         showField={showField} setShowField={setShowField}
-        showPsf={showPsf} setShowPsf={setShowPsf}
         showSigmas={showSigmas} setShowSigmas={setShowSigmas}
         showSources={showSources} setShowSources={setShowSources}
         fieldOnly={fieldOnly} setFieldOnly={setFieldOnly}
-        showSim={showSim} setShowSim={setShowSim} simLocked={simTabOpen}
         showPure={showPure} setShowPure={setShowPure}
-        simOn={simOn} geoKey={geoKey}
+        geoKey={geoKey}
         area={area} gridApi={gridApi} exp={exp} sim={simApi} pca={pcaApi}
       />
 
@@ -851,8 +846,8 @@ export default function PixelGridApp() {
           <div className="flex items-center justify-between gap-2">
             <h1 className="text-[15px] font-semibold text-white">Pixel Grid Designer</h1>
             <div className="flex shrink-0 items-center gap-1.5">
-            {/* What every figure of the page means, on a page of its own: the panel says each thing in a few words. */}
-            <a href={docHref()} target="_blank" rel="noopener noreferrer" title="What the page computes, and what every figure means"
+            {/* What every figure of the page means, on a page of its own: the one link to it, and the panel explains nothing. */}
+            <a href={DOCS_PAGE} target="_blank" rel="noopener noreferrer" title="What the page computes, and what every figure means"
               className="rounded-md border border-white/10 px-2 py-1 text-[14px] text-slate-400 transition-colors hover:border-white/25 hover:text-slate-200">
               Docs
             </a>

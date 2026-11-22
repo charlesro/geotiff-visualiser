@@ -45,8 +45,6 @@ export interface StepProps {
   gridSummary: string;
   simSummary: string;
   geoKey: string;
-  showPsf: boolean;
-  setShowPsf: (v: boolean | ((p: boolean) => boolean)) => void;
   /**
    * Open/closed state for every disclosure and tab strip inside a step panel.
    * These live in the SHELL, not in the panels: `Step` renders {open && children},

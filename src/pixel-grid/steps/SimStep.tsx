@@ -1,4 +1,4 @@
-import { Disclosure, Explain, InfoDot, Step } from '../ui';
+import { Disclosure, Step } from '../ui';
 import { Boundary } from '../Boundary';
 import { BlockSummary, ImportedSummary, LayoutFields, LayoutSelect, SpeciesList, SELECT } from './controls';
 import { ImportPanel } from './ImportPanel';
@@ -96,7 +96,7 @@ function SimStepBody(p: StepProps) {
               <SensorPick {...p} />
               <BlurGeo {...p} budget={false} />
               {psfSigmaM > 0 && (
-                <Disclosure label="Every source of blur, and what is not simulated" open={blurOpen} onToggle={() => setBlurOpen(v => !v)}>
+                <Disclosure label="Every source of blur" open={blurOpen} onToggle={() => setBlurOpen(v => !v)}>
                   <BlurBudget {...p} />
                 </Disclosure>
               )}
@@ -136,10 +136,7 @@ function SimStepBody(p: StepProps) {
                   {imported ? 'vs best' : 'vs aligned'}
                 </button>
               </>}
-              spacingHint="Bare soil between strips, shown in brown."
-              rotationHint={imported
-                ? `The file draws the trial at ${importedFileAngle.toFixed(1)}°. Changing it turns the whole trial about its centre; 0° lines the plots up with the pixel rows.`
-                : 'Angle from the pixel rows; 0° runs along them.'} />
+              />
             )}
 
             {pattern === 'block' && (
@@ -182,10 +179,7 @@ function SimStepBody(p: StepProps) {
                   setSpeciesAt={setSpeciesAt} setPresetAt={setPresetAt} />
                 {ndviSeries && (
                   <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className="flex-1 text-[14px] text-neutral-400">NDVI season</span>
-                      <Explain align="right" text={<>Dashed: what a mixed pixel records{magnitude > 0 ? '; grey band: noise (±σ)' : ''}.</>}><InfoDot /></Explain>
-                    </div>
+                    <span className="block text-[14px] text-neutral-400">NDVI season</span>
                     <div style={{ height: 150 }}>
                       <Suspense fallback={null}>
                         <SeasonChart series={ndviSeries} lines={curveLines} colors={colors} names={names} noise={magnitude > 0} />
@@ -210,11 +204,7 @@ function SimStepBody(p: StepProps) {
                 {/* 90 % is the PHENET note's pure pixel. 100 is not offered: a
                     Gaussian never reaches zero, so at 100 % the answer was set by
                     where the kernel is cut off, not by the trial. */}
-                <span className="mb-1 block text-[14px] text-neutral-500">
-                  <Explain text="A pixel is pure when its contamination, the share of its signal that comes from other plots, is at most ε. The note uses 10 %, and 5 % as a stricter case.">
-                    <span className="underline decoration-neutral-700 decoration-dotted underline-offset-2">Threshold ε = {100 - threshold} %</span>
-                  </Explain>{' '}(pure ≥ {threshold} %)
-                </span>
+                <span className="mb-1 block text-[14px] text-neutral-500">Threshold ε = {100 - threshold} % (pure ≥ {threshold} %)</span>
                 <input type="range" min="50" max="99" step="1" value={threshold}
                   onChange={e => setThreshold(parseInt(e.target.value))} className="w-full accent-sky-500" />
               </div>

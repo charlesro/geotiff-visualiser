@@ -246,94 +246,6 @@ function GridLines({ box, res, epsg, color, weight, onStep }: {
 }
 
 /**
- * The sensor PSF drawn on the ground as a bold, smooth Gaussian glow (a real
- * exp(−r²/2σ²) footprint rendered to a canvas and placed as a georeferenced
- * ImageOverlay, so it scales with zoom), plus a crisp FWHM ring, so you can see
- * how far one ground point's signal actually spreads across the pixel grid.
- */
-function PsfOverlay({ center, sigmaXM, sigmaYM, fwhmXM, fwhmYM, light = false }: {
-  center: [number, number]; sigmaXM: number; sigmaYM: number; fwhmXM: number; fwhmYM: number;
-  /** True for a pale basemap: see the blend-mode note below. */
-  light?: boolean;
-}) {
-  const map = useMap();
-  const sMax = Math.max(sigmaXM, sigmaYM);
-  useEffect(() => {
-    if (sMax <= 0) return;
-    const K = 3.2;                       // draw out to ±3.2σ
-    const N = 220;
-    const cv = document.createElement('canvas'); cv.width = N; cv.height = N;
-    const ctx = cv.getContext('2d')!;
-    const img = ctx.createImageData(N, N);
-    const sPix = N / (2 * K);            // σ in canvas pixels
-    const c = (N - 1) / 2;
-    // The canvas holds a CIRCULAR unit Gaussian; the anisotropy comes from the
-    // geographic bounds below, which stretch it by σx and σy independently.
-    //
-    // Alpha carries a GAMMA rather than tracking the Gaussian linearly. Linear
-    // alpha falls to 32/255 by 2σ and 12/255 by 2.45σ, so the glow looked like
-    // it stopped at about 1.5σ, while 95% of a point's energy needs 2.45σ. The
-    // picture read as a far tighter footprint than the sensor actually has. The
-    // gamma only affects how far the haze stays *perceptible*; the two contour
-    // rings below carry the quantitative claim.
-    const GAMMA = 0.7;
-    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
-      const dx = x - c, dy = y - c;
-      const g = Math.exp(-0.5 * (dx * dx + dy * dy) / (sPix * sPix));
-      const o = (y * N + x) * 4;
-      // Screen-blended sky-400 over a dark map; multiply-blended deep blue over a
-      // pale one. A single colour cannot work for both: `screen` lightens, so on
-      // a white basemap it produced white on white and the footprint vanished.
-      if (light) { img.data[o] = 3; img.data[o + 1] = 105; img.data[o + 2] = 161; }   // sky-700
-      else { img.data[o] = 56; img.data[o + 1] = 189; img.data[o + 2] = 248; }        // sky-400
-      img.data[o + 3] = Math.round((light ? 210 : 235) * Math.pow(g, GAMMA));
-    }
-    ctx.putImageData(img, 0, 0);
-    const [lat, lng] = center;
-    const dLat = (K * sigmaYM) / 111320;
-    const dLng = (K * sigmaXM) / (111320 * Math.cos((lat * Math.PI) / 180));
-    const bounds = L.latLngBounds([lat - dLat, lng - dLng], [lat + dLat, lng + dLng]);
-    if (!map.getPane('psf')) { const p = map.createPane('psf'); p.style.zIndex = '460'; p.style.pointerEvents = 'none'; }
-    // Set every time, not just on creation: the pane outlives a basemap switch.
-    map.getPane('psf')!.style.mixBlendMode = light ? 'multiply' : 'screen';
-    const ov = L.imageOverlay(cv.toDataURL(), bounds, { pane: 'psf', interactive: false, opacity: 1 });
-    ov.addTo(map);
-    return () => { ov.remove(); };
-  }, [map, center[0], center[1], sigmaXM, sigmaYM, light]);
-  if (sMax <= 0) return null;
-
-  // Leaflet has no ellipse, and these contours of an anisotropic Gaussian are
-  // ellipses, so they are traced as polygons rather than faked with circles.
-  //
-  // TWO rings, because one was misleading. For a 2-D Gaussian the half-maximum
-  // radius (FWHM/2 = 1.177σ) encloses exactly HALF the energy: half of every
-  // ground point lands outside the inner ring. The outer ring is the 95%
-  // contour at σ·sqrt(-2·ln 0.05) = 2.448σ, the honest extent of the smear.
-  const [lat, lng] = center;
-  const mPerLat = 111320, mPerLng = 111320 * Math.cos((lat * Math.PI) / 180);
-  const R95 = Math.sqrt(-2 * Math.log(0.05)); // 2.448 σ
-  const ellipse = (rxM: number, ryM: number): [number, number][] =>
-    Array.from({ length: 72 }, (_, k) => {
-      const t = (k / 72) * 2 * Math.PI;
-      return [lat + (ryM * Math.sin(t)) / mPerLat, lng + (rxM * Math.cos(t)) / mPerLng] as [number, number];
-    });
-  const fmt = (v: number) => (v < 10 ? v.toFixed(1) : Math.round(v));
-  const aniso = Math.abs(fwhmXM - fwhmYM) >= 0.05;
-  const dim = (x: number, y: number) => (aniso ? `${fmt(x)} × ${fmt(y)}` : `${fmt(x)}`);
-  const label = `Sensor blur · half the signal within ${dim(fwhmXM, fwhmYM)} m · 95% within ${dim(2 * R95 * sigmaXM, 2 * R95 * sigmaYM)} m`;
-  return (
-    <>
-      <Polygon positions={ellipse(R95 * sigmaXM, R95 * sigmaYM)}
-        pathOptions={{ color: light ? '#075985' : '#7dd3fc', weight: 1, dashArray: '2 4', opacity: light ? 0.9 : 0.75, fill: false, interactive: false }} />
-      <Polygon positions={ellipse(fwhmXM / 2, fwhmYM / 2)}
-        pathOptions={{ color: light ? '#0c4a6e' : '#e0f2fe', weight: 2, dashArray: '5 4', fill: false, interactive: false }}>
-        <LTooltip permanent direction="top" offset={[0, -8]} className="psf-tip">{label}</LTooltip>
-      </Polygon>
-    </>
-  );
-}
-
-/**
  * The three spreads of the blur budget, to scale on the ground: sigma_PSF, the
  * blur of the optics; sigma_geo, how far the image may sit from where its
  * coordinates say; and sigma_eff, the two combined. One ring each, at one
@@ -768,5 +680,5 @@ function KeepSized() {
   return null;
 }
 
-export { BASEMAPS, AOI_STYLE, TruthOverlay, GridLines, PsfOverlay, SigmaRings, SignalDots, PixelPicker, RectDrawer, PolyDrawer, ViewTracker, PixelHover, KeepSized, purityText };
+export { BASEMAPS, AOI_STYLE, TruthOverlay, GridLines, SigmaRings, SignalDots, PixelPicker, RectDrawer, PolyDrawer, ViewTracker, PixelHover, KeepSized, purityText };
 export type { BasemapKey };

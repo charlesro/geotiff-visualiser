@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState, useTransition } from 'react';
-import { ChevronDown, Info } from 'lucide-react';
+import { ChevronDown } from 'lucide-react';
 import { CROP_COLORS, CROP_PRESETS, TRUTH_TYPES, type FieldParams } from './simulate';
-import { docHref, type DocId } from './docs';
 
 /**
  * The page's own chrome: the numbered stepper section, the labelled slider, the
@@ -206,78 +205,6 @@ function CropControl({ label, crop, preset, swatchColor, onCrop, onPreset, onCol
 const Spinner = ({ className = '' }: { className?: string }) => (
   <span className={`inline-block animate-spin rounded-full border-2 border-sky-400/25 border-t-sky-400 ${className || 'h-3.5 w-3.5'}`} />
 );
-
-/**
- * On-demand explanation.
- *
- * Deliberately NOT the Explain in src/components/ui.tsx: that one is
- * `pointer-events-none`, which is fine for a bare sentence and fatal here: the
- * popovers in this page are the only home for the ESA citation link, and a
- * pointer-events-none popover makes an <a href> permanently unclickable. It is
- * also hover-only, leaving no keyboard or touch path.
- *
- * So: hover to peek, click to pin, Escape or an outside click to dismiss, and
- * the panel itself is interactive so links inside it work.
- *
- * `align="right"` / `below` exist because the sidebar scroll container computes
- * to overflow-x: auto and will CLIP a popover that overhangs its edge, so use them
- * on anchors near the right edge or the top of the panel.
- *
- * `doc` names the section of the documentation page that says the rest: the
- * text here stays a sentence or two, and the popover ends on a link to it.
- */
-export function Explain({ text, children, align = 'left', below = false, doc }: {
-  text: React.ReactNode; children: React.ReactNode; align?: 'left' | 'right'; below?: boolean; doc?: DocId;
-}) {
-  const [open, setOpen] = useState(false);
-  const [pinned, setPinned] = useState(false);
-  const ref = useRef<HTMLSpanElement>(null);
-  useEffect(() => {
-    if (!pinned) return;
-    const doc = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) { setPinned(false); setOpen(false); }
-    };
-    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') { setPinned(false); setOpen(false); } };
-    document.addEventListener('mousedown', doc);
-    document.addEventListener('keydown', key);
-    return () => { document.removeEventListener('mousedown', doc); document.removeEventListener('keydown', key); };
-  }, [pinned]);
-  return (
-    <span ref={ref} className="relative inline-flex align-middle"
-      onMouseEnter={() => setOpen(true)} onMouseLeave={() => !pinned && setOpen(false)}>
-      <button type="button" aria-expanded={open}
-        onClick={() => { setPinned(p => !p); setOpen(true); }}
-        className="inline-flex min-h-4 min-w-4 cursor-help items-center gap-1 rounded text-left focus:outline-none focus-visible:ring-1 focus-visible:ring-sky-500">
-        {children}
-      </button>
-      {open && (
-        <span role="tooltip"
-          className={`absolute z-[1200] w-64 rounded-md border border-white/10 bg-neutral-900 px-2.5 py-2 text-left text-[14px] font-normal normal-case leading-snug tracking-normal text-neutral-300 shadow-xl ${below ? 'top-full mt-1.5' : 'bottom-full mb-1.5'} ${align === 'right' ? 'right-0' : 'left-0'}`}>
-          {text}
-          {doc && <a href={docHref(doc)} target="_blank" rel="noopener noreferrer" className="mt-1 block text-[13px] text-sky-400 hover:text-sky-300">Documentation ↗</a>}
-        </span>
-      )}
-    </span>
-  );
-}
-
-/**
- * A few words in the panel that open the documentation at the section saying
- * the rest. What stood here was the section itself, a paragraph under the
- * satellite picker.
- */
-export function DocChip({ to, tone = 'neutral', children }: { to: DocId; tone?: 'neutral' | 'amber'; children: React.ReactNode }) {
-  const t = tone === 'amber' ? 'text-amber-300 bg-amber-500/10 hover:bg-amber-500/20' : 'text-neutral-400 bg-white/[0.04] hover:bg-white/[0.08] hover:text-neutral-200';
-  return (
-    <a href={docHref(to)} target="_blank" rel="noopener noreferrer" title="Open the documentation at this section"
-      className={`rounded px-1.5 py-0.5 text-[13px] leading-snug transition-colors ${t}`}>
-      {children} <span aria-hidden="true">↗</span>
-    </a>
-  );
-}
-
-/** The affordance that says "there is more here if you want it". */
-export const InfoDot = () => <Info className="h-3.5 w-3.5 shrink-0 text-neutral-600 hover:text-sky-400" />;
 
 /** A one-word status token. Amber and rose are reserved for real warnings. */
 export function Chip({ tone = 'neutral', children }: { tone?: 'neutral' | 'amber' | 'rose'; children: React.ReactNode }) {

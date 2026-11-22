@@ -233,7 +233,7 @@ console.log('\nU2b. one sampling-position control, not two, and its effect is wh
   check('each panel prints what stays pure within the CE90, never a bare 0%',
     /within CE90 <span[^>]*>\{pct0\(c\.geoRobust\)\}<\/span>/.test(sweepSrc) && !/geoLo|geoHi/.test(sweepSrc));
   check('and its tooltip gives the count and the note\'s across-image mean',
-    /for any geolocation error within the CE90 \(\$\{c\.ce90M \?\? geoErrM\} m\)/.test(sweepSrc) && /pct0\(c\.geoMean\)/.test(sweepSrc));
+    /px hold within the CE90 \(\$\{c\.ce90M \?\? geoErrM\} m\)/.test(sweepSrc) && /with σeff: \$\{pct0\(c\.geoMean\)\}/.test(sweepSrc));
   // The plot is what a variety trial is read by: a fine share can still leave
   // whole plots with nothing to follow.
   // One figure on the panel: the fewest pure pixels any plot holds, or how
@@ -247,7 +247,7 @@ console.log('\nU2b. one sampling-position control, not two, and its effect is wh
   // arrived: it was one more line on each of nine panels, and the card gives
   // the size a design needs. A design under it still shows, in amber.
   check('and keeps the note\'s closed-form smallest plot one hover away, flagging a design under it',
-    /at least \$\{c\.minPlotM\.toFixed\(1\)\} m at this pixel size/.test(sweepSrc) && /c\.plotSideM < c\.minPlotM/.test(sweepSrc)
+    /closed form: a side of \$\{c\.minPlotM\.toFixed\(1\)\} m or more/.test(sweepSrc) && /c\.plotSideM < c\.minPlotM/.test(sweepSrc)
     && /small && t\.none === 0 \? 'text-amber-300\/80'/.test(sweepSrc));
   // Six or seven lines of caption stood over each small chart.
   check('a panel\'s caption is two short lines that never wrap',
@@ -342,8 +342,10 @@ console.log('\nU3. the aligned-vs-drawn verdict reads the number it prints, both
   ok('sampled rungs are not thrown out of the comparison',
     !/own\.partial \|\| al\.partial\) return \[\]/.test(src) && /sampled: !!\(own\.partial \|\| al\.partial\)/.test(src));
   ok('nor is the rung currently on the map', !/own\.current \|\|/.test(src));
+  // Marked on its row, said in the row's own hover, and the mark is named on the documentation page.
   ok('and a sampled rung says it was sampled, on its own row',
-    /s\.partial \? <span title="Sampled over the central part of a large field"> ◦<\/span>/.test(table));
+    /\{s\.res\} m\{s\.partial \? ' ◦' : null\}/.test(table) && /s\.partial \? 'sampled over the central part of a large field' : null/.test(table)
+    && /<dt>◦<\/dt><dd>Sampled over the central part of a large field\.<\/dd>/.test(fs.readFileSync(path.join(ROOT, 'pixel-grid-docs.html'), 'utf8')));
 
   // (8) With a geolocation error set it judges the WORST cases. The nominal is
   // one draw, and for a staked placement it is the lucky draw by construction:
@@ -358,7 +360,7 @@ console.log('\nU3. the aligned-vs-drawn verdict reads the number it prints, both
     /if \(own\.geoRobust == null \|\| al\.geoRobust == null\) return \[\];/.test(src));
   ok('the sentence says which basis it compared on, and the nominal stands beside it in the table',
     /\{worstCase \? 'On the pixels that hold within the CE90, ' : ''\}/.test(sentence)
-    && /<span className=\{TERM\}>pure<\/span>/.test(table) && /<span className=\{TERM\}>CE90<\/span>/.test(table));
+    && /<span className="text-right">pure<\/span>/.test(table) && /\{anyHeld && <span className="text-right">CE90<\/span>\}/.test(table));
   ok('a tie is stated plainly, with the tolerance it was judged at',
     /two placements are within \$\{TIE_POINTS\} points for every one of/.test(sentence));
 
@@ -459,18 +461,19 @@ console.log('\nU6. a measured PSF reproduces the FWHM it was measured at');
   }
   check('one rule turns a measured FWHM into a sigma in pixels, with the note\'s 2.3548',
     /const FWHM_PER_SIGMA = 2\.3548;/.test(src) && /const measured = \(fwhmM: number, res: number\): number => fwhmM \/ FWHM_PER_SIGMA \/ res;/.test(src));
-  // In a few words under the picker, which open the documentation's section: it was a paragraph there (2026-11-22).
-  check('the two pansharpened rows the note measured say so under the picker, and the documentation says what they are sharp in',
-    /note: 'Pansharpened\. Measured FWHM 1\.1 m\.', warn: PANSHARPENED \}/.test(src) && /note: 'Pansharpened\. Measured FWHM 3 m\.', warn: PANSHARPENED \}/.test(src)
-    && /const PANSHARPENED = 'Pansharpened: size the trial on the native row';/.test(src)
-    && /\{source\.warn && <DocChip to="pansharpened" tone="amber">\{source\.warn\}<\/DocChip>\}/.test(read('src/pixel-grid/steps/GridStep.tsx'))
+  // Nothing under the picker: what a pansharpened row flatters is said on the documentation page (2026-11-22).
+  check('the two pansharpened rows the note measured are named as such, and the documentation says what they are sharp in',
+    /note: 'Pansharpened\. Measured FWHM 1\.1 m\.' \}/.test(src) && /note: 'Pansharpened\. Measured FWHM 3 m\.' \}/.test(src)
+    && !/\bwarn\b/.test(src) && !/source\.warn/.test(read('src/pixel-grid/steps/GridStep.tsx'))
     && /sharp only in the panchromatic band/.test(read('pixel-grid-docs.html')) && /Size a trial on the native row/.test(read('pixel-grid-docs.html'))
     && /the note measured about 1 m between images/.test(read('pixel-grid-docs.html')));
   // A link would be a fabrication: the note is not published.
   check('and says it was measured rather than linking somewhere it is not',
     /const SRC_PHENET = \{ label: 'measured on PHENET images at Mauguio and Toulouse' \};/.test(src) && !/SRC_PHENET = \{ url/.test(src));
-  check('so the panel renders a plain label when there is no url',
-    /source\.psfSrc\.url\s*\?/.test(read('src/pixel-grid/steps/GridStep.tsx')));
+  // The panel says measured or published and links nowhere: the sources are the documentation's.
+  check('the panel says which of the two a blur is, with no link, and the documentation says the note is not published',
+    /\{source\.psfSrc && ownBlur\(p\.gridApi\) && <>, \{source\.psfMeasured \? 'measured' : 'from the published MTF'\}<\/>\}/.test(read('src/pixel-grid/steps/GridStep.tsx'))
+    && !/psfSrc\.url/.test(read('src/pixel-grid/steps/GridStep.tsx')) && /The note is not published\./.test(read('pixel-grid-docs.html')));
   // Pansharpened sharpness is spatial, borrowed from the panchromatic band.
   check('and the native MS row is the one offered first',
     src.indexOf("id: 'wv'") < src.indexOf("id: 'wv-ps'")
@@ -507,7 +510,9 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
     && /if \(followsSpot\(sensor\)\) \{\s*const spot = spotCovers\(/.test(read('src/pixel-grid/simulate.ts')));
   check('and the panel says which of the three the sigma came from',
     /'measured' \| 'published' \| 'typed'/.test(step)
-    && /source\.psfMeasured \? 'measured' : source\.psfSrc \? 'published' : 'typed'/.test(step));
+    // A blur typed over the satellite's own is the reader's: the panel went on calling it measured.
+    && /optFrom=\{!ownBlur\(p\.gridApi\) \? 'typed' : source\.psfMeasured \? 'measured' : source\.psfSrc \? 'published' : 'typed'\}/.test(step)
+    && /const ownBlur = \(\{ sigmaX, sigmaY, source \}: StepProps\['gridApi'\]\): boolean =>\s*Math\.abs\(sigmaX - source\.psf\) < 1e-6 && Math\.abs\(sigmaY - source\.psf\) < 1e-6;/.test(step));
 
   // A panel that printed only the clean total could disagree with the purity
   // numbers beside it: the row states what the simulation reads a pixel with.
@@ -532,25 +537,28 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
     ['"GSD"', '"FWHM"', '"r = FWHM/GSD"', '"α"', '"pure core L − 2b"', '"min. plot, any pixel"', '"grid phase"', '"grid rotation"']
       .every(n => step.includes(`name=${n}`))
     && ['σ<sub>PSF</sub>', 'σ<sub>geo</sub>', 'σ<sub>eff</sub>', 'buffer b = k σ<sub>eff</sub>'].every(n => step.includes(n))
-    && /Threshold <span className="normal-case">ε<\/span> = \{100 - threshold\} %/.test(step) && step.includes('<Head>Not simulated</Head>'));
+    && /Threshold <span className="normal-case">ε<\/span> = \{100 - threshold\} %/.test(step) && / id="not-simulated"/.test(read('pixel-grid-docs.html')));
   check('alpha is the MTF at Nyquist, exp(-0.890 r^2)', /Math\.exp\(-0\.890 \* r \* r\)/.test(step));
   // PlanetScope's alpha is about 9 x 10^-5. Two decimals printed it as 0.00.
   check('and a small alpha is never printed as 0.00', /val=\{small\(Math\.exp\(-0\.890 \* r \* r\)\)\}/.test(step)
     && /if \(!\(v > 0\) \|\| v >= 0\.01\) return v\.toFixed\(2\);/.test(step));
-  // Every term in the list carries its definition on hover: `tip` is a
-  // REQUIRED prop of Row, so a row added without one does not compile, and the
-  // counts below catch one removed by hand.
+  // A name and a figure per row, and nothing on hover: every term's definition
+  // is on the documentation page ("remove all additional info" whose place is
+  // in the documentation, 2026-11-22). The counts catch a row whose term the
+  // page does not define.
   {
     const list = step.slice(step.indexOf('function VarianceSources'), step.indexOf('function GridStepBody'));
-    const rows = (list.match(/<Row name=/g) || []).length, tips = (list.match(/\btip=/g) || []).length;
-    check('every row of the list has an explanation on hover', rows >= 15 && tips === rows, `${rows} rows, ${tips} tips`);
-    check('the definition is required by the row itself', /tip: React\.ReactNode; val: string/.test(list));
-    check('and so do the threshold and the four things not simulated',
-      (list.match(/<Explain below/g) || []).length >= 6);
+    const docs = read('pixel-grid-docs.html');
+    const rows = (list.match(/<Row name=/g) || []).length;
+    check('every row of the list is a name and a figure, with nothing on hover', rows >= 15 && !/\btip=/.test(list) && !/Explain/.test(list), `${rows} rows`);
+    const terms = ['GSD', 'FWHM', 'r = FWHM / GSD', 'α', 'Pixel footprint', 'σ simulated', 'k', 'Buffer b = k σ<sub>eff</sub>', 'Pure core L − 2b', 'Min. plot, any pixel',
+      'Grid phase', 'Grid rotation', 'Noise', 'Central pixel', 'Registered to ½ px', 'Any pixel, swept', 'On a 2 m grid', 'Largest pixel for L', 'Centred pixel', 'Random placements'];
+    const missing = terms.filter(t => !docs.includes(`<dt>${t}</dt>`));
+    check(`and the documentation defines each of them${missing.length ? `: not ${missing.join(', ')}` : ''}`, missing.length === 0 && /<dt>σ<sub>PSF<\/sub>, σ<sub>geo<\/sub>, σ<sub>eff<\/sub><\/dt>/.test(docs));
   }
-  check('and names each source the simulation leaves out',
-    ['per-band FWHM', 'heavier tails (adjacency effect)', 'variance between replicates', 'other grid rotations']
-      .every(t => step.includes(`<span className={term}>${t}</span>`)));
+  check('what the simulation leaves out is named on the documentation page, and no longer in the list',
+    ['Per-band FWHM', 'Heavier tails', 'Variance between replicates', 'Other grid rotations'].every(t => read('pixel-grid-docs.html').includes(`<dt>${t}</dt>`))
+    && !/Not simulated/.test(step));
   // A table of labels and numbers. It was a column of explanatory sentences,
   // which read as generated text rather than as an instrument.
   check('as a table of numbers, with no sentence in it',
@@ -580,8 +588,10 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
   check('the plot-size card is shown beside the plot dimensions, and only there',
     !/PlotSizeCard/.test(read('src/pixel-grid/steps/GridStep.tsx')) && /<PlotSizeCard \{\.\.\.p\} \/>/.test(read('src/pixel-grid/steps/SimStep.tsx')));
   check('with one column per reading of the geolocation error',
-    ['corrected', 'average', 'robust'].every(id => new RegExp(`\\b${id}: \\{`).test(card)) && /imageCases\(d\.sigma, d\.geoErrM, d\.geoSigmaM\)/.test(card));
-  check('each reading says what it is on hover', (card.match(/tip: /g) || []).length >= 4 && /co-registration/.test(card) && /9 images out of 10/.test(card));
+    ['corrected', 'average', 'robust'].every(id => new RegExp(`\\b${id}: <>`).test(card)) && /imageCases\(d\.sigma, d\.geoErrM, d\.geoSigmaM\)/.test(card));
+  check('what each reading is, the documentation says',
+    !/\btip\b/.test(card) && ['<dt>Shift corrected</dt>', '<dt>Average image</dt>', '<dt>9 images in 10</dt>'].every(t => read('pixel-grid-docs.html').includes(t))
+    && /co-registration/.test(read('pixel-grid-docs.html')) && /9 images out of 10/.test(read('pixel-grid-docs.html')));
   check('sized for the design\'s own plot, whatever the layout',
     ["pattern === 'block'", "pattern === 'imported'", "pattern === 'checker'"].every(t => card.includes(t)) && /b: Infinity/.test(card)
     && /importedPlotBoxes\(importedPlan, importedAngle\)/.test(card));
@@ -612,7 +622,7 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
     && /purity: agg\.cropMapPurity, dominant: agg\.cropMapMajority,/.test(engine));
   check('the map reads it for the pixel under the pointer, off the simulation that is drawn',
     /<PixelHover grid=\{renderGrid\} sim=\{sim\.sim\} layout=\{layout\} names=\{names\}/.test(map)
-    && /simOn && sim\.sim && renderGrid && !drawMode/.test(map));
+    && /\{sim\.sim && renderGrid && !drawMode && \(/.test(map));
   // One listener and two divisions, not a handler on each of tens of thousands of cells.
   check('with one listener on the map, the pixel found from the pointer\'s coordinates',
     /map\.on\('mousemove', move\)/.test(hover) && /Math\.floor\(\(E - e0\) \/ r\)/.test(hover) && /j \* nx \+ i/.test(hover)
@@ -646,10 +656,12 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
   const hook = read('src/pixel-grid/use-simulation.ts');
   const shell = read('src/pixel-grid/PixelGridApp.tsx');
   check('the map has a Pure pixels switch, saved like the others',
-    /\{ label: 'Pure pixels', on: showPure && simOn, flip: \(\) => setShowPure\(v => !v\), off: !build \|\| !simOn,/.test(map) && /usePersistentState\('showPure', false, isBool\)/.test(shell)
+    /\{ label: 'Pure pixels', on: showPure, flip: \(\) => setShowPure\(v => !v\), off: !build,/.test(map) && /usePersistentState\('showPure', false, isBool\)/.test(shell)
     && /showPure=\{showPure\} setShowPure=\{setShowPure\}/.test(shell));
-  check('it needs the simulation, and says so when there is none',
-    /off: !build \|\| !simOn,\s*title: simOn \? 'Outline the pure pixels and dim the others' : 'Turn the simulation on to use this'/.test(map));
+  // The simulation is on the map in every step since its own switch went (2026-11-22): nothing to turn on first.
+  check('the simulation it outlines is always there: no switch to turn on first',
+    /title: 'Outline the pure pixels and dim the others' \}/.test(map) && !/Turn the simulation on/.test(map) && !/simOn/.test(map)
+    && /useSimulation\(\{ aoi, gridApi, exp, simOn: true, showPure, fieldOrigin \}\)/.test(shell) && !/showSim/.test(shell));
   // One verdict for the whole page: the count, the ladder, the export and the map.
   check('the pixels it picks are the engine\'s own pure-for-a-crop verdict',
     /const pure = sim\.mixed\[k\] > MAX_COVER \? 0 : pureHeld && !pureHeld\[k\] \? 1 : 2;/.test(hook) && /if \(!showPure \|\| !sim \|\| !renderGrid\) return null;/.test(hook));
@@ -664,17 +676,20 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
     && map.indexOf('<Pane name="pure"') < map.indexOf('<Pane name="selection"'));
   check('and the legend says what the outline means', /pure pixel, the others dimmed/.test(map));
   // Six buttons stood in a column over the map's corner, on a map 340 px wide.
-  check('the basemap and the five switches open from one Layers button',
-    ['Real field', 'In field only', 'PSF blur', 'Simulation', 'Pure pixels'].every(l => map.includes(`{ label: '${l}', on: `))
+  // "PSF blur and simulation are duplicates of real field and the sigmas", then "remove the 2 things" (2026-11-22):
+  // the sigma rings draw the blur with the geolocation error, and Real field is the way to see the trial as planted.
+  check('the basemap and the five switches open from one Layers button, with no PSF blur and no Simulation among them',
+    ['Real field', 'In field only', 'σ PSF, geo, eff', 'Signal of a pixel', 'Pure pixels'].every(l => map.includes(`{ label: '${l}', on: `))
+    && (map.match(/\{ label: '[^']+', on: /g) || []).length === 5 && !/PSF blur|label: 'Simulation'/.test(map) && !/PsfOverlay/.test(map) && !/function PsfOverlay/.test(read('src/pixel-grid/map-layers.tsx')) && !/showPsf/.test(shell)
     && /\(Object\.keys\(BASEMAPS\) as BasemapKey\[\]\)\.map\(key => \(\s*<button key=\{key\} type="button" onClick=\{\(\) => setBasemap\(key\)\}/.test(map)
     && (map.match(/absolute right-3 top-/g) || []).length === 1);
   check('each switch keeps the rule it had as a button, and says why when it cannot act',
-    /off: !build \|\| !fieldGeojson \|\| simTrimmed,/.test(map) && /off: !build \|\| psfSigmaM <= 0,/.test(map) && /off: !build \|\| simLocked,/.test(map)
+    /off: !build \|\| !fieldGeojson \|\| simTrimmed,/.test(map) && /off: !build \|\| psfSigmaM <= 0,/.test(map)
     && /role="switch" aria-checked=\{sw\.on\} disabled=\{sw\.off\} title=\{sw\.title\} onClick=\{sw\.flip\}/.test(map));
   check('the panel closes on a click anywhere else, and on Escape',
     /if \(!layersBox\.current\?\.contains\(e\.target as Node\)\) setLayersOpen\(false\);/.test(map) && /if \(e\.key === 'Escape'\) setLayersOpen\(false\);/.test(map));
   check('the legend is folded behind its own button, and a refresh remembers it',
-    /usePersistentState\('showLegend', false, isBool\)/.test(map) && /simOn && simGeojson && !showLegend && \(/.test(map) && /onClick=\{\(\) => setShowLegend\(false\)\}/.test(map));
+    /usePersistentState\('showLegend', false, isBool\)/.test(map) && /\{simGeojson && !showLegend && \(/.test(map) && /onClick=\{\(\) => setShowLegend\(false\)\}/.test(map));
 }
 
 // The switch also tells apart the pure pixels that stay pure within the CE90.
@@ -810,12 +825,12 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
   const layers = read('src/pixel-grid/map-layers.tsx');
   const gridHook = read('src/pixel-grid/use-grid.ts');
   check('a click on the map is picked up only while an overlay that sits on one pixel is on, and never while drawing',
-    /const blurOn = \(showPsf \|\| showSigmas\) && !!build && psfSigmaM > 0;/.test(map)
+    /const blurOn = showSigmas && !!build && psfSigmaM > 0;/.test(map)
     && /const pickOn = blurOn \|\| srcOn;/.test(map)
     && /\{pickOn && !drawMode && <PixelPicker onPick=\{pickPixel\} \/>\}/.test(map)
     && /useMapEvents\(\{ click: e => onPick\(\[e\.latlng\.lat, e\.latlng\.lng\]\) \}\)/.test(layers));
-  check('both overlays follow it, because they share the one centre',
-    /<PsfOverlay center=\{psfCenter\}/.test(map) && /<SigmaRings center=\{psfCenter\}/.test(map)
+  check('the rings and the dots follow it, because they share the one centre',
+    /<SigmaRings center=\{psfCenter\}/.test(map) && /pixelIndexAt\(renderGrid, psfCenter\[0\], psfCenter\[1\]\)/.test(map)
     && /const picked = pickedPoint && pixelCentreAt\(pickedPoint\[1\], pickedPoint\[0\], build\.epsg, build\.utmBounds, build\.res\);\s*if \(picked\) return picked;/.test(gridHook));
   // A centre remembered from one lattice sits between two pixels of another.
   check('what is kept is the point clicked, read again against the grid in force',
@@ -825,7 +840,7 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
     /useEffect\(\(\) => \{ if \(!pickOn\) pickPixel\(null\); \}, \[pickOn, pickPixel\]\);/.test(map));
   check('the pointer says a pixel can be picked, and the switches say what a click does',
     /box\.style\.cursor = 'crosshair';/.test(layers) && /return \(\) => \{ box\.style\.cursor = was; \};/.test(layers)
-    && (map.match(/click a pixel to move (it|them) there/g) || []).length === 3);
+    && (map.match(/click a pixel to move (it|them) there/g) || []).length === 2);
 }
 
 // Where a pixel's purity comes from, as a picture. The circle that holds 90 %
@@ -843,17 +858,18 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
   const dots = layers.slice(layers.indexOf('function SignalDots'), layers.indexOf('function PixelPicker'));
   const card = map.slice(map.indexOf('function SourcesCard'), map.indexOf('export function FieldMap'));
   check('Layers has a switch for it, saved like the others, that needs the simulation it explains',
-    /\{ label: 'Signal of a pixel', on: showSources && simOn, flip: \(\) => setShowSources\(v => !v\), off: !build \|\| !simOn,/.test(map)
+    /\{ label: 'Signal of a pixel', on: showSources, flip: \(\) => setShowSources\(v => !v\), off: !build,/.test(map)
     && /usePersistentState\('showSources', false, isBool\)/.test(shell) && /showSources=\{showSources\} setShowSources=\{setShowSources\}/.test(shell)
-    && /const srcOn = showSources && simOn && !!renderGrid && !!patternOrigin && !\(renderGrid\.stride && renderGrid\.stride > 1\);/.test(map));
+    && /const srcOn = showSources && !!renderGrid && !!patternOrigin && !\(renderGrid\.stride && renderGrid\.stride > 1\);/.test(map));
   // A second way of working the shares out would sooner or later print another figure than the pointer's.
   check('the shares are the engine\'s own, for the pixel the other overlays sit on',
     /pixelSources\(renderGrid, origin, layout, sensor, at\.i, at\.j, SOURCE_DOTS\)/.test(map)
     && /const at = pixelIndexAt\(renderGrid, psfCenter\[0\], psfCenter\[1\]\);/.test(map)
     && /export function pixelSources\(/.test(engine) && /importedPixelCovers\(imported, wE, wN, wx, wy, res\)/.test(engine)
     && /buildCropMap\(wE, wN, wy \* g, cols, res \/ g, patternOrigin\[0\], patternOrigin\[1\], layout\)/.test(engine));
-  check('a thousand dots, so that one dot is a tenth of a percent, and the card says so',
-    /export const SOURCE_DOTS = 1000;/.test(src) && /One dot is \{100 \/ SOURCE_DOTS\} % of the signal\./.test(card));
+  // What a dot is worth, the first line and the mark are said on the documentation page: the card is figures only.
+  check('a thousand dots, so that one dot is a tenth of a percent, and the documentation says so',
+    /export const SOURCE_DOTS = 1000;/.test(src) && !/One dot is/.test(card) && /A pixel's signal as 1000 dots, one dot for 0\.1 % of it\./.test(read('pixel-grid-docs.html')));
   check('the dots are canvas markers added by hand, never one React element each',
     /L\.circleMarker\(\[lat, lng\], \{ \.\.\.first, pane, fillColor: colorOf\[sources\.dotCover\[m\]\], fillOpacity: 1, interactive: false \}\)\.addTo\(group\)/.test(dots)
     && !/<CircleMarker/.test(dots) && /return \(\) => \{ map\.off\('zoomend', resize\); group\.remove\(\); \};/.test(dots));
@@ -867,7 +883,8 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
     && !/CROP_COLORS/.test(src));
   // 90.39 % under the pointer and 90.4 % on the card would be two purities for one pixel.
   check('the first line is the purity, cut as the figure under the pointer is',
-    /q === 0 \? purityText\(Math\.fround\(r\.share\)\) : shareText\(r\.share\)/.test(card) && /The first line is the purity, the mark the \{threshold\} % it must reach\./.test(card));
+    /q === 0 \? purityText\(Math\.fround\(r\.share\)\) : shareText\(r\.share\)/.test(card) && !/The first line is the purity/.test(card)
+    && /Its first line is the pixel's purity, and the mark on its bar is the threshold the purity must reach\./.test(read('pixel-grid-docs.html')));
   check('the bar carries a mark at the threshold, so pure or not is read off it',
     /style=\{\{ left: `\$\{threshold\}%` \}\}/.test(card));
   // Fixed in a corner, the card sat on the dots of any pixel picked there.
@@ -1413,17 +1430,16 @@ console.log('\nU-review. what an outside review of the code found (2026-11-22), 
   check('each of those figures has a source that can be opened',
     (() => { const all = sensors.match(/const GEO_[A-Z0-9]+ = \{[\s\S]*?\};/g) || []; return all.length >= 6 && all.every(g => /ce90M:/.test(g) && /says: '/.test(g) && /label: '/.test(g) && /url: /.test(g)); })());
   check('the panel shows it beside the default, a click away, and says what it is',
-    /As delivered, with no ground control:/.test(gridStep) && /onClick=\{\(\) => setGeoProvider\(true\)\} disabled=\{asDelivered\}/.test(gridStep)
-    && /geo\.url\s*\? <a href=\{geo\.url\} target="_blank" rel="noopener noreferrer"/.test(gridStep));
+    /<span>As delivered:<\/span>\s*<span className="font-mono text-neutral-300">CE90 \{geo\.ce90M\} m<\/span>/.test(gridStep) && /onClick=\{\(\) => setGeoProvider\(true\)\} disabled=\{asDelivered\}/.test(gridStep)
+    // Whose statement it is, and the link to it, are the documentation's: no link in the panel.
+    && !/geo\.url/.test(gridStep) && /<dt>As delivered \(Use\)<\/dt>/.test(read('pixel-grid-docs.html')));
   check('the default is still the note\'s third of a pixel, and says so',
     /ce90For = \(auto: boolean, manualM: number, res: number\): number => \(auto \? \(CE90_TO_SIGMA \* res\) \/ 3 : manualM\);/.test(resolving)
-    && /title="The note's default, a third of a pixel: σgeo = GSD \/ 3, so CE90 = 0\.715 GSD\./.test(gridStep)
-    && /the note's figure when nothing is known/.test(read('pixel-grid-docs.html')));
+    && /the note's figure when nothing is known/.test(read('pixel-grid-docs.html')) && /CE90 = 0\.715 GSD/.test(read('pixel-grid-docs.html')));
   check('Sentinel-2\'s 20 m and 60 m bands take the 10 m bands\' geolocation, not a third of their own pixel',
     /export function geolocRes\(sourceId: string, res: number\): number \{\s*return sourceId\.startsWith\('s2-'\) \? Math\.min\(res, 10\) : res;/.test(sensors));
   check('a pansharpened product says so, and names the pixel an index is computed on',
     /id: 'spot', short: 'SPOT pan', provider: 'SPOT 6\/7 · pansharpened'/.test(sensors) && /id: 'skysat', short: 'SkySat pan', provider: 'SkySat · pansharpened'/.test(sensors)
-    && (sensors.match(/warn: UNMEASURED_PAN \}/g) || []).length === 2 && /const UNMEASURED_PAN = 'Pansharpened: flatters a trial read through an index';/.test(sensors)
     && /An index is computed on the native multispectral bands/.test(read('pixel-grid-docs.html')) && /about 1 m for SkySat, 6 m for SPOT/.test(read('pixel-grid-docs.html')));
 
   // One rule for "holds within the CE90", in the plots' own directions.
@@ -1529,7 +1545,7 @@ console.log('\nU-note. the page follows the PHENET note: a spot with no pixel bo
     /\} else if \(plan && rung\.anyPosition\) \{[\s\S]{0,400}const \[sE, sN\] = worstShift\(plan, r, sensorL, placedCe90\(ctx, rung\.id, r\)\);\s*if \(sE \|\| sN\) plan = shiftImportedPlan\(plan, sE, sN\);/.test(read('src/pixel-grid/ladder-step.ts'))
     && /export function worstShift\(plan: ImportedPlan, r: number, sensor: SensorParams, ce90 = 0\): \[number, number\]/.test(turn));
   check('and the page says so where the satellite is chosen, and no longer calls a tasked grid one\'s own',
-    /\{source\.kind !== 'catalog' && <DocChip to="grid-position">Tasked: counted at the worst grid position<\/DocChip>\}/.test(step)
+    /note=\{catalog \? 'counted at the best position' : 'counted at the worst position'\}/.test(step)
     && /Each image comes on a grid of its own, which cannot be known when the trial is planted/.test(read('pixel-grid-docs.html'))
     && /const TASK = 'Commercial, tasked: the grid falls where the image does';/.test(sensors) && !/you define the grid/.test(sensors) && !/grid you define/.test(step));
 }
@@ -1631,51 +1647,94 @@ console.log('\nU-speed. the shortcuts taken for speed on 2026-11-22 are still wh
 }
 
 // "remove all long text like this [...] and create a documentation page that
-// reference all of this" (2026-11-22). The panel says a thing in a few words
-// and links to the section of a page of its own, which says the rest.
-console.log('\nU-docs. the panel is short, and a documentation page says the rest (2026-11-22)');
+// reference all of this", then "dont put links just one doc link is enough.
+// remove all additional info" whose place is in the documentation (2026-11-22).
+// The panel is controls and figures. It explains nothing: no popover, no info
+// dot, no caption, no link but the header's one to the documentation page.
+console.log('\nU-docs. the panel explains nothing, and a documentation page says it all (2026-11-22)');
 {
   const docs = read('pixel-grid-docs.html');
-  const links = read('src/pixel-grid/docs.ts');
   const ui = read('src/pixel-grid/ui.tsx');
-  const step = read('src/pixel-grid/steps/GridStep.tsx');
   const vite = read('vite.config.ts');
+  const shell = read('src/pixel-grid/PixelGridApp.tsx');
   const ids = [...docs.matchAll(/ id="([^"]+)"/g)].map(m => m[1]);
-  const named = [...links.slice(links.indexOf('DOC_IDS = ['), links.indexOf('] as const')).matchAll(/'([a-z0-9-]+)'/g)].map(m => m[1]);
+  const PANEL = ['steps/AreaStep.tsx', 'steps/GridStep.tsx', 'steps/SimStep.tsx', 'steps/PcaStep.tsx', 'steps/PlotSize.tsx', 'steps/SuggestDesign.tsx', 'steps/ImportPanel.tsx',
+    'steps/AttributeTable.tsx', 'steps/controls.tsx', 'steps/SeasonChart.tsx', 'ResTable.tsx', 'PcaSweep.tsx', 'PcaSimVisual.tsx', 'PcaScatterCanvas.tsx', 'FieldMap.tsx', 'ui.tsx']
+    .map(f => [f, read(`src/pixel-grid/${f}`)]);
   check('the documentation is a page of its own, with no script, published wherever the designer is',
-    !/<script/.test(docs) && /<title>Pixel Grid Designer: documentation<\/title>/.test(docs)
+    !/<script/.test(docs) && !/\son[a-z]+=/.test(docs) && !/<link /.test(docs) && !/fonts\.g/.test(docs) && /<title>Pixel Grid Designer: documentation<\/title>/.test(docs)
     && (vite.match(/pixelGridDocs: path\.resolve\(__dirname, 'pixel-grid-docs\.html'\)/g) || []).length === 2
     && /href="\.\/pixel-grid\.html"/.test(docs));
-  check('every section the panel can point at exists on it, once',
-    named.length >= 20 && named.every(id => ids.filter(x => x === id).length === 1));
-  check('and every entry of its own contents leads to a section',
-    [...docs.matchAll(/href="#([^"]+)"/g)].every(m => ids.includes(m[1])));
-  // Typed, so a section that does not exist cannot be named: the page is checked above.
-  const used = ['src/pixel-grid/steps/GridStep.tsx', 'src/pixel-grid/steps/PlotSize.tsx', 'src/pixel-grid/steps/PcaStep.tsx', 'src/pixel-grid/ResTable.tsx']
-    .flatMap(f => [...read(f).matchAll(/\b(?:doc|to)="([a-z0-9-]+)"/g)].map(m => m[1]));
-  check('the pointers that were cut short name a section of it',
-    used.length >= 12 && used.every(id => named.includes(id))
-    && /export function Explain\(\{ text, children, align = 'left', below = false, doc \}/.test(ui)
-    && /\{doc && <a href=\{docHref\(doc\)\} target="_blank" rel="noopener noreferrer"/.test(ui));
+  check('it has its sections, each named once, and every entry of its contents leads to one',
+    ids.length >= 22 && new Set(ids).size === ids.length && [...docs.matchAll(/href="#([^"]+)"/g)].every(m => ids.includes(m[1])));
+  // "add illustrations and a case study as example" (2026-11-22). Drawn and worked out by scripts/docs-figures.mjs
+  // from the engine; the engine suite holds the page against what that script builds.
+  {
+    const gen = [...docs.matchAll(/<!-- gen:([a-zA-Z0-9]+) -->([\s\S]*?)<!-- \/gen:\1 -->/g)];
+    check('it is illustrated: a figure in each part of the model, of the satellites and of the designs',
+      ['spot', 'plot', 'sigmas', 'hold', 'sats', 'position', 'designs'].every(n => gen.some(g => g[1] === n && /^<figure class="fig"/.test(g[2]) && /<\/svg><figcaption>/.test(g[2])))
+      && ['pixel-model', 'purity', 'geolocation', 'hold', 'satellites', 'grid-position', 'designs'].every(id => new RegExp(`<section id="${id}">[\\s\\S]*?<figure class="fig"[\\s\\S]*?</section>`).test(docs)));
+    // "there are not enough illustrations. every menu every concept should be illustrated. also make an
+    // examples section where you showcase multiple things" (2026-11-22).
+    const ex = gen.find(g => g[1] === 'example')?.[2] ?? '';
+    check('it has an Examples section of six worked cases, each listed in the contents, the first with its steps, tables and figure',
+      /<section id="examples">\s*<h2 class="t">Examples<\/h2>/.test(docs)
+      && ['ex-varieties', 'ex-strips', 'ex-satellites', 'ex-file', 'ex-strict', 'ex-checker'].every(id => new RegExp(`<h3 id="${id}">`).test(docs) && new RegExp(`<a class="item" href="#${id}">`).test(docs))
+      && ['exStrips', 'exSats', 'exFile', 'exStrict', 'exChecker'].every(n => (gen.find(g => g[1] === n)?.[2] ?? '').length > 500)
+      && (ex.match(/<h4>/g) || []).length >= 6 && (ex.match(/<table/g) || []).length === 2 && /<figure class="fig"/.test(ex) && /What the example shows/.test(ex));
+    // A section with no picture is a section someone has to read: every one but the list of sources has at least one.
+    const bare = [...docs.matchAll(/<section id="([^"]+)">([\s\S]*?)<\/section>/g)].filter(m => m[1] !== 'sources' && !/<figure class="(fig|shot)"/.test(m[2])).map(m => m[1]);
+    check(`every section is illustrated${bare.length ? `: not ${bare.join(', ')}` : ''}`, bare.length === 0);
+    check('with drawings of the ideas and pictures of the menus, by the dozen',
+      (docs.match(/<figure class="fig"/g) || []).length >= 34 && (docs.match(/<figure class="shot"/g) || []).length >= 24
+      && /figure\.shot img \{ display: block; max-width: 100%; height: auto;/.test(docs) && (docs.match(/<img /g) || []).every(() => true)
+      && [...docs.matchAll(/<img ([^>]*)>/g)].every(m => /src="\.\/docs-img\/[a-z-]+\.png"/.test(m[1]) && /alt="[^"]+"/.test(m[1]) && /width="\d+" height="\d+"/.test(m[1]) && /loading="lazy"/.test(m[1])));
+    // Both ways round: no picture on the page that the folder does not hold, at the size the page gives it.
+    {
+      const sizes = JSON.parse(read('docs-img/shots.json'));
+      const lost = [...docs.matchAll(/<img src="\.\/docs-img\/([a-z-]+)\.png"[^>]* width="(\d+)" height="(\d+)"/g)].filter(m => !sizes[m[1]] || sizes[m[1]].w !== +m[2] || sizes[m[1]].h !== +m[3] || !fs.existsSync(path.resolve(ROOT, 'docs-img', `${m[1]}.png`))).map(m => m[1]);
+      check(`every picture the page names is in the folder, at the size the page gives it${lost.length ? `: not ${lost.join(', ')}` : ''}`, lost.length === 0);
+    }
+    check('the pictures are taken in English, whatever the computer that takes them', /locale: 'en-US'/.test(read('scripts/docs-screenshots.mjs')));
+    check('the pictures are taken by a script of the project, from the designer as it is built',
+      /execFileSync\('npx', \['vite', 'build'/.test(read('scripts/docs-screenshots.mjs')) && /ctx\.route\(u => !u\.href\.startsWith\(origin\), r => r\.abort\(\)\)/.test(read('scripts/docs-screenshots.mjs'))
+      && !/\/Users\//.test(read('scripts/docs-screenshots.mjs')) && !/\/Users\//.test(read('scripts/docs-figures.mjs')));
+    check('the hard ceiling is given with its own z, the two-sided one, and not the z of the closed form',
+      /GSD = L \/ \(2 c z<sub>c<\/sub>\)/.test(docs) && /z<sub>c<\/sub> = Q⁻¹\(\(1 − √\(1 − ε\)\) \/ 2\)/.test(docs)
+      && /const z = -probit\(\(1 - Math\.sqrt\(threshold\)\) \/ 2\);/.test(read('src/pixel-grid/note-model.ts')));
+    check('what the page says of the staking, of an imported trial and of the dots is what the code does',
+      /is tried at 24 positions a side \(at up to 6 with no blur at all, or a threshold of 50 %\)\. At another angle/.test(docs) && /export const SPOT_STAKE_N = 24;/.test(read('src/pixel-grid/simulate.ts')) && /const PHASE_MAX_N = 6;/.test(read('src/pixel-grid/simulate.ts'))
+      && /With more than 253 plots it is also tried on a second ring of eight, at half the CE90\./.test(docs) && /\[\.\.\.lands, \.\.\.ce90Shifts\(ce90 \/ 2, angleDeg \+ 22\.5\)\]/.test(read('src/pixel-grid/imported-rotate.ts'))
+      && /A dot's colour says whose ground it lands on, not what grows there/.test(docs) && !/in the colour of the ground it lands on/.test(docs)
+      && !/only the counts compare/.test(docs) && /its fonts \(Google Fonts\)/.test(docs));
+    check('the figures are drawn with the page\'s own colours, so that they print', /svg \.grid \{ stroke: var\(--grid\)/.test(docs) && (docs.match(/--grid: /g) || []).length === 2);
+  }
   check('the header links to it, in a tab of its own, by a path relative to the page',
-    /<a href=\{docHref\(\)\} target="_blank" rel="noopener noreferrer"[^>]*>\s*\{?\s*Docs/.test(read('src/pixel-grid/PixelGridApp.tsx').replace(/\s+className="[^"]*"/g, ''))
-    && /export const DOCS_PAGE = '\.\/pixel-grid-docs\.html';/.test(links));
-  check('no paragraph stands under the satellite picker any more',
-    !/\{source\.warn && <p /.test(step) && !/<p [^>]*>\s*Tasked:/.test(step) && /export function DocChip\(/.test(ui));
-  // What a pointer may hold: a sentence or two. The longest was 105 words.
-  const WORDS = 48;
+    /<a href=\{DOCS_PAGE\} target="_blank" rel="noopener noreferrer"[^>]*>\s*Docs\s*<\/a>/.test(shell.replace(/\s+className="[^"]*"/g, ''))
+    && /export const DOCS_PAGE = '\.\/pixel-grid-docs\.html';/.test(read('src/pixel-grid/docs.ts')));
+  // One link, and it is the header's.
+  const linked = PANEL.filter(([, src]) => /<a\s/.test(src) || /DOCS_PAGE|pixel-grid-docs/.test(src)).map(([f]) => f);
+  check(`and that is the only link of the panel${linked.length ? `: also in ${linked.join(', ')}` : ''}`,
+    linked.length === 0 && (shell.match(/DOCS_PAGE/g) || []).length === 2);
+  const explaining = PANEL.filter(([, src]) => /\bExplain\b|InfoDot|DocChip|\bhint=|\btip=/.test(src)).map(([f]) => f);
+  check(`no popover, no info dot and no hint anywhere on it${explaining.length ? `: still in ${explaining.join(', ')}` : ''}`,
+    explaining.length === 0 && !/export function Explain|export const InfoDot|export function DocChip/.test(ui));
+  check('nothing stands under the satellite picker, and no term is underlined as if it opened',
+    !/source\.warn/.test(read('src/pixel-grid/steps/GridStep.tsx')) && !/Tasked:/.test(read('src/pixel-grid/steps/GridStep.tsx'))
+    // The dotted line under a term said "hover me". (A text button and the attribute table's column heads keep theirs: they are clicked.)
+    && PANEL.every(([, src]) => !/decoration-neutral-700 decoration-dotted/.test(src)));
+  // What a button's own title may hold: what a click does, a reason it is off, a row's figures. Not a paragraph.
+  const WORDS = 40;
   const long = [];
-  for (const f of ['src/pixel-grid/steps/GridStep.tsx', 'src/pixel-grid/steps/PlotSize.tsx', 'src/pixel-grid/steps/SuggestDesign.tsx', 'src/pixel-grid/steps/SimStep.tsx',
-    'src/pixel-grid/steps/PcaStep.tsx', 'src/pixel-grid/steps/controls.tsx', 'src/pixel-grid/steps/ImportPanel.tsx', 'src/pixel-grid/ResTable.tsx', 'src/pixel-grid/FieldMap.tsx']) {
-    const src = read(f);
-    for (const m of src.matchAll(/\b(?:text|tip|hint|title)=(?:\{<>([\s\S]*?)<\/>\}|"([^"]*)"|\{`([^`]*)`\}|\{"([^"]*)"\}|\{'((?:[^'\\]|\\.)*)'\})/g)) {
-      const body = (m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[5] ?? '').replace(/<[^>]+>/g, ' ').replace(/\{[^}]*\}/g, 'X').trim();
+  for (const [f, src] of PANEL) {
+    for (const m of src.matchAll(/\btitle[=:]\s*(?:"([^"]*)"|\{"([^"]*)"\}|'((?:[^'\\]|\\.)*)'|\{'((?:[^'\\]|\\.)*)'\})/g)) {
+      const body = (m[1] ?? m[2] ?? m[3] ?? m[4] ?? '').trim();
       const n = body.split(/\s+/).filter(Boolean).length;
       if (n > WORDS) long.push(`${f}: ${n} words: ${body.slice(0, 60)}`);
     }
   }
-  check(`no pointer of the panel runs past ${WORDS} words${long.length ? `: ${long.join(' | ')}` : ''}`, long.length === 0);
-  check('the documentation keeps to the page\'s own rule on dashes', !/\u2014/.test(docs) && !/\u2014/.test(links));
+  check(`no button's title runs past ${WORDS} words${long.length ? `: ${long.join(' | ')}` : ''}`, long.length === 0);
+  check('the documentation keeps to the page\'s own rule on dashes', !/\u2014/.test(docs) && !/\u2014/.test(read('src/pixel-grid/docs.ts')));
 }
 
 console.log(bad ? `\n${bad} UI-CONTRACT CHECK(S) FAILED` : '\nALL UI-CONTRACT CHECKS PASSED');

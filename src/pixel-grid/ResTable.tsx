@@ -1,5 +1,4 @@
 import React from 'react';
-import { Explain } from './ui';
 import { fmt, pct0 } from './util';
 import type { SweepStep } from './PcaSweep';
 
@@ -31,7 +30,6 @@ function bar(s: SweepStep): React.CSSProperties {
   const rgb = v >= 70 ? '52, 211, 153' : v >= 40 ? '251, 191, 36' : '251, 113, 133';
   return { backgroundImage: `linear-gradient(to right, rgba(${rgb}, 0.16) ${v}%, transparent ${v}%)` };
 }
-const TERM = 'underline decoration-neutral-700 decoration-dotted underline-offset-2';
 
 /** What a rung says, as a panel's tooltips said it. */
 function about(s: SweepStep, geoErrM: number, threshold: number): string {
@@ -92,14 +90,12 @@ export function ResTable({ steps, pairWith, pairLabels, shown = 0, activeId, onP
     <span className="min-w-0 leading-tight">
       <span className={`block truncate text-[12.5px] ${isActive(s.id) ? 'text-sky-300' : 'text-neutral-300'}`}>{s.name}</span>
       <span className="block whitespace-nowrap font-mono text-[11px] text-neutral-500">
-        {s.res} m{s.partial ? <span title="Sampled over the central part of a large field"> ◦</span> : null}
+        {s.res} m{s.partial ? ' ◦' : null}
       </span>
     </span>
   );
   /** Wide enough for the longest name, and no wider. */
   const NAME = 'minmax(4.4rem, max-content)';
-  const pureTip = 'Pure pixels, as a share of the crop this design plants, for that satellite: its pixel size and its blur. A pixel is pure when its dominant plot holds at least the threshold of its signal.';
-  const heldTip = `Pixels that stay pure, for the same plot, wherever the image lands within its CE90${geoErrM > 0 ? ` (${geoErrM} m for the satellite shown)` : ''}.`;
   const head = 'text-[12px] text-neutral-500';
 
   // Two placements side by side: the share and what holds within the CE90, for each.
@@ -136,17 +132,11 @@ export function ResTable({ steps, pairWith, pairLabels, shown = 0, activeId, onP
         <span className={head}>satellite</span>
         {[0, 1].map(i => (
           <React.Fragment key={i}>
-            <span className={`px-1 text-right ${head}`}><Explain text={pureTip} align={i ? 'right' : 'left'}><span className={TERM}>pure</span></Explain></span>
-            {anyHeld && <span className={`px-1 text-right ${head}`}><Explain text={heldTip} align="right"><span className={TERM}>CE90</span></Explain></span>}
+            <span className={`px-1 text-right ${head}`}>pure</span>
+            {anyHeld && <span className={`px-1 text-right ${head}`}>CE90</span>}
           </React.Fragment>
         ))}
-        {anyPlace && (
-          <span className={`text-right ${head}`}>
-            <Explain align="right" doc="imported" text="The angle to the pixel rows that keeps the most pure pixels at this size; for a tasked satellite, the angle whose worst position keeps the most. A dot: not searched.">
-              <span className={TERM}>angle</span>
-            </Explain>
-          </span>
-        )}
+        {anyPlace && <span className={`text-right ${head}`}>angle</span>}
         {steps.map((s, k) => {
           const place = pairWith[k]?.placement;
           return (
@@ -174,15 +164,9 @@ export function ResTable({ steps, pairWith, pairLabels, shown = 0, activeId, onP
     <div className="space-y-0.5">
       <div className={`grid items-center gap-x-2 px-1 ${head}`} style={cols}>
         <span>satellite</span>
-        <span className="text-right"><Explain text={pureTip}><span className={TERM}>pure</span></Explain></span>
-        {anyHeld && <span className="text-right"><Explain text={heldTip}><span className={TERM}>CE90</span></Explain></span>}
-        <span className="text-right">
-          {anyPlots && (
-            <Explain align="right" text="Fewest pure pixels in a plot, counted over the pixels that hold within the CE90 when a geolocation error is set. In red, how many plots have none.">
-              <span className={TERM}>per plot</span>
-            </Explain>
-          )}
-        </span>
+        <span className="text-right">pure</span>
+        {anyHeld && <span className="text-right">CE90</span>}
+        <span className="text-right">{anyPlots && 'per plot'}</span>
       </div>
       {steps.map(s => {
         const t = s.current ? undefined : (s.plotsRobust ?? s.plots);

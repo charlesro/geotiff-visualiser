@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { CropControl, Explain, InfoDot } from '../ui';
-import { PATTERNS, cropById, type BlockDesign, type FieldParams, type PatternType } from '../simulate';
+import { CropControl } from '../ui';
+import { MAX_PLOTS, PATTERNS, cropById, type BlockDesign, type FieldParams, type PatternType } from '../simulate';
 import type { ImportedPlan } from '../imported-types';
 import { fmt } from '../util';
 
@@ -72,10 +72,10 @@ const NUM_COMMIT_DELAY = 450;
  * committed number back. The draft is dropped once it lands, so a preset or a
  * Reset moves the field immediately rather than being swallowed.
  */
-export function NumField({ label, value, onChange, min, max, step = 1, unit, hint, action }: {
+export function NumField({ label, value, onChange, min, max, step = 1, unit, action }: {
   label: string; value: number; onChange: (v: number) => void;
   min: number; max: number; step?: number; unit?: string;
-  hint?: React.ReactNode; action?: React.ReactNode;
+  action?: React.ReactNode;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
   const timer = useRef<number | null>(null);
@@ -95,7 +95,6 @@ export function NumField({ label, value, onChange, min, max, step = 1, unit, hin
     <div>
       <label className={LABEL}>
         {label}
-        {hint && <> <Explain text={hint}><InfoDot /></Explain></>}
         {action}
       </label>
       <div className="flex items-center gap-1">
@@ -131,15 +130,13 @@ export function NumField({ label, value, onChange, min, max, step = 1, unit, hin
  * Rotation stays: it turns the whole trial, and it is what switches the pixel
  * snapping off.
  */
-export function LayoutFields({ pattern, stripWidth, setStripWidth, spacing, setSpacing, rotation, setRotation, rotationLabel, spacingHint, rotationHint, rotationAction, blockDesign, setBlockDesign }: {
+export function LayoutFields({ pattern, stripWidth, setStripWidth, spacing, setSpacing, rotation, setRotation, rotationLabel, rotationAction, blockDesign, setBlockDesign }: {
   pattern: PatternType;
   stripWidth: number; setStripWidth: (v: number) => void;
   spacing: number; setSpacing: (v: number) => void;
   rotation: number; setRotation: (v: number) => void;
   rotationLabel: string;
   /** Optional on-demand notes, so the explanations stop living as body prose. */
-  spacingHint?: React.ReactNode;
-  rotationHint?: React.ReactNode;
   /** Rendered on the rotation row: the "compare with aligned" toggle. */
   rotationAction?: React.ReactNode;
   blockDesign?: BlockDesign;
@@ -147,7 +144,7 @@ export function LayoutFields({ pattern, stripWidth, setStripWidth, spacing, setS
 }) {
   const rotationField = (
     <NumField label={rotationLabel} value={rotation} onChange={setRotation} min={-90} max={90} unit="°"
-      hint={rotationHint} action={rotationAction} />
+      action={rotationAction} />
   );
 
   // An imported trial's geometry is the file's; only its angle can be changed.
@@ -157,7 +154,7 @@ export function LayoutFields({ pattern, stripWidth, setStripWidth, spacing, setS
       // Two columns rather than three: its label carries two actions.
       <div className="grid grid-cols-2 gap-2">
         <NumField label={rotationLabel} value={Math.round(rotation * 10) / 10} onChange={setRotation}
-          min={0} max={90} step={0.1} unit="°" hint={rotationHint} action={rotationAction} />
+          min={0} max={90} step={0.1} unit="°" action={rotationAction} />
       </div>
     );
   }
@@ -168,12 +165,9 @@ export function LayoutFields({ pattern, stripWidth, setStripWidth, spacing, setS
     return (
       <div className="space-y-2">
         <div className="grid grid-cols-3 gap-2">
-          <NumField label="Species" value={d.nSpecies} onChange={set('nSpecies')} min={2} max={8}
-            hint="How many treatments each block contains. Every block gets all of them, in a random order." />
-          <NumField label="Blocks" value={d.nBlocks} onChange={set('nBlocks')} min={1} max={20}
-            hint="Repetitions. Each is a complete set of the species." />
-          <NumField label="Per row" value={d.blocksPerRow} onChange={set('blocksPerRow')} min={1} max={20}
-            hint="How many blocks sit side by side before the next row starts." />
+          <NumField label="Species" value={d.nSpecies} onChange={set('nSpecies')} min={2} max={8} />
+          <NumField label="Blocks" value={d.nBlocks} onChange={set('nBlocks')} min={1} max={20} />
+          <NumField label="Per row" value={d.blocksPerRow} onChange={set('blocksPerRow')} min={1} max={20} />
         </div>
         <div className="grid grid-cols-3 gap-2">
           <NumField label="Plot length" value={d.plotLength} onChange={set('plotLength')} min={0.5} max={1000} step={0.5} unit="m" />
@@ -181,11 +175,9 @@ export function LayoutFields({ pattern, stripWidth, setStripWidth, spacing, setS
           {rotationField}
         </div>
         <div className="grid grid-cols-3 gap-2">
-          <NumField label="Plot alley" value={d.plotAlley} onChange={set('plotAlley')} min={0} max={100} step={0.5} unit="m"
-            hint="Bare soil between plots inside a block, shown in brown." />
+          <NumField label="Plot alley" value={d.plotAlley} onChange={set('plotAlley')} min={0} max={100} step={0.5} unit="m" />
           <NumField label="Block alley" value={d.blockAlley} onChange={set('blockAlley')} min={0} max={100} step={0.5} unit="m" />
-          <NumField label="Seed" value={d.seed} onChange={set('seed')} min={0} max={9999}
-            hint="Changes the randomisation. The same seed always replays the same layout." />
+          <NumField label="Seed" value={d.seed} onChange={set('seed')} min={0} max={9999} />
         </div>
       </div>
     );
@@ -194,7 +186,7 @@ export function LayoutFields({ pattern, stripWidth, setStripWidth, spacing, setS
   return (
     <div className="grid grid-cols-3 gap-2">
       <NumField label="Strip width" value={stripWidth} onChange={setStripWidth} min={0.5} max={1000} step={0.5} unit="m" />
-      <NumField label="Row spacing" value={spacing} onChange={setSpacing} min={0} max={1000} step={0.5} unit="m" hint={spacingHint} />
+      <NumField label="Row spacing" value={spacing} onChange={setSpacing} min={0} max={1000} step={0.5} unit="m" />
       {rotationField}
     </div>
   );
@@ -276,7 +268,7 @@ export function ImportedSummary({ plan, angle, res }: {
       </div>
       {!plan.plotIds && (
         <div className="mt-1 text-neutral-400">
-          More plots than the simulation can tell apart one by one: a pixel spanning two plots of the same variety counts as pure.
+          Over {MAX_PLOTS} plots: counted by variety, not plot by plot.
         </div>
       )}
     </div>

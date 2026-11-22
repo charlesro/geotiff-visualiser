@@ -1,6 +1,6 @@
 import { Suspense, lazy, useMemo } from 'react';
 import { Boundary } from '../Boundary';
-import { Disclosure, Explain, InfoDot, Step, Spinner } from '../ui';
+import { Disclosure, Step, Spinner } from '../ui';
 import { LayoutFields, LayoutSelect, SpeciesList, SELECT } from './controls';
 import { ImportPanel } from './ImportPanel';
 import { ResTable } from '../ResTable';
@@ -299,15 +299,7 @@ function PcaStepBody(p: StepProps) {
 
             <div className="rounded-lg border border-white/10 bg-black/20 p-2">
               <div className="mb-1.5 flex items-center gap-2">
-                <span className="flex items-center gap-1.5 text-[14px] text-neutral-400">
-                  Across satellites
-                  {/* While comparing, the panels are labelled with counts, and the legend has to say so. */}
-                  <Explain doc="satellites-table" text={sweepAligned
-                    ? imported
-                      ? <>One PCA per satellite, twice: your trial, and the same trial at the angle and position that keep the most pure pixels for that satellite{worstCase ? ' within the CE90' : ''}. Click a row to put the trial there.</>
-                      : <>One PCA per satellite, twice: your design, and the same design along the pixel rows. Click a row to select that satellite.</>
-                    : <>One PCA per satellite, at its own pixel size and blur (% = pure pixels). Click a row to select that satellite.</>}><InfoDot /></Explain>
-                </span>
+                <span className="text-[14px] text-neutral-400">Across satellites</span>
                 {sweepBusy && <Spinner className="h-3 w-3" />}
                 {/* The same rungs, as a table of their figures or as the small
                     scatter plots: the table is what fits a narrow panel. */}

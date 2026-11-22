@@ -1,5 +1,4 @@
 import React, { useDeferredValue, useMemo } from 'react';
-import { Explain } from '../ui';
 import { fmt } from '../util';
 import { fewestPure, imageCases, importedPlotBoxes, pureScales, purestShare, type ImageCase, type Plot } from '../plot-size';
 import { largestPlots } from '../suggest-design';
@@ -88,19 +87,11 @@ function designPlot(exp: StepProps['exp']): DesignPlot | null {
   };
 }
 
-const HEADS: Record<ImageCase['id'], { label: React.ReactNode; tip: (ce90: number) => React.ReactNode }> = {
-  corrected: {
-    label: <>shift<br />corrected</>,
-    tip: () => <>Each image is put back in place before its pixels are read (co-registration). Only the blur is left: σ<sub>PSF</sub>, with no shift.</>,
-  },
-  average: {
-    label: <>average<br />image</>,
-    tip: () => <>The PHENET note&rsquo;s reading: blur and shift merged in σ<sub>eff</sub>. Right for a mean over many images. In one image a pixel can take more from its neighbours, or less.</>,
-  },
-  robust: {
-    label: <>9 images<br />in 10</>,
-    tip: ce90 => <>The same pixels stay pure in 9 images out of 10: blur σ<sub>PSF</sub>, with the image anywhere within its CE90 ({ce90} m). The reading a list of pixels chosen by their coordinates needs.</>,
-  },
+/** The three readings of a geolocation error, as column heads. What each one is, is on the documentation page. */
+const HEADS: Record<ImageCase['id'], React.ReactNode> = {
+  corrected: <>shift<br />corrected</>,
+  average: <>average<br />image</>,
+  robust: <>9 images<br />in 10</>,
 };
 
 export function PlotSizeCard(p: StepProps) {
@@ -161,7 +152,6 @@ export function PlotSizeCard(p: StepProps) {
   if (!d) return <div className="rounded-md border border-white/10 bg-white/[0.02] px-2.5 py-2 text-[13px] uppercase tracking-wide text-neutral-600" style={{ minHeight: '10.5rem' }}>Plot size required</div>;
   if (!result) return null;
   const eps = 100 - threshold;
-  const term = 'underline decoration-neutral-700 decoration-dotted underline-offset-2';
   const cols = result.cases.length;
   // Two sides per cell need more room than one.
   const both = !design.strip && design.plot.a !== design.plot.b;
@@ -175,9 +165,7 @@ export function PlotSizeCard(p: StepProps) {
   return (
     <div className={`rounded-md border border-white/10 bg-white/[0.02] px-2.5 py-2 text-[14px] transition-opacity ${stale ? 'opacity-60' : ''}`}>
       <div className="mb-1 flex items-baseline justify-between gap-2 text-[13px] uppercase tracking-wide text-neutral-500">
-        <Explain below doc="plot-size" text={<>The smallest {design.strip ? 'strip' : 'plot, of the same shape as the design’s,'} that keeps at least this many pure pixels wherever the pixel grid falls.</>}>
-          <span className={term}>{design.strip ? 'Strip width required' : both ? 'Plot size required, m' : 'Plot side required'}</span>
-        </Explain>
+        <span>{design.strip ? 'Strip width required' : both ? 'Plot size required, m' : 'Plot side required'}</span>
         <span className="normal-case tracking-normal">ε = {eps} %</span>
       </div>
 
@@ -185,9 +173,7 @@ export function PlotSizeCard(p: StepProps) {
         <span />
         {result.cases.map(c => (
           <span key={c.id} className="text-right text-[12px] leading-tight text-neutral-500">
-            {cols > 1
-              ? <Explain below align="right" text={HEADS[c.id].tip(geoErrM)}><span className={`${term} text-right`}>{HEADS[c.id].label}</span></Explain>
-              : 'no shift'}
+            {cols > 1 ? HEADS[c.id] : 'no shift'}
           </span>
         ))}
 
@@ -235,11 +221,7 @@ export function PlotSizeCard(p: StepProps) {
               </button>
             </div>
             <div className="grid items-baseline gap-x-2 gap-y-0.5" style={grid}>
-              <span className="text-neutral-400">
-                <Explain doc="plot-size" text="The most pure pixels a plot can keep in this experiment area: the largest plots, of the design's shape, with which the trial still fits inside it.">
-                  <span className={term}>pure px in every plot</span>
-                </Explain>
-              </span>
+              <span className="text-neutral-400">pure px in every plot</span>
               {result.cases.map(c => (
                 <span key={c.id} className="text-right font-mono text-neutral-200">{c.most ? `${c.most.approx ? '≈ ' : ''}${fmt(c.most.count)}` : ''}</span>
               ))}
@@ -252,23 +234,13 @@ export function PlotSizeCard(p: StepProps) {
         Now: <span className="normal-case tracking-normal text-neutral-500">{design.now}</span>
       </div>
       <div className="grid items-baseline gap-x-2 gap-y-0.5" style={grid}>
-        <span className="text-neutral-400">
-          <Explain text={design.strip
-            ? 'Fewest pure pixels across a strip, over every placement of the pixel grid.'
-            : 'Fewest pure pixels in a plot, over every placement of the pixel grid. A trial has many plots and each one sits differently on the grid, so this is what every plot can count on.'}>
-            <span className={term}>{design.strip ? 'pure px across' : 'pure px in every plot'}</span>
-          </Explain>
-        </span>
+        <span className="text-neutral-400">{design.strip ? 'pure px across' : 'pure px in every plot'}</span>
         {result.cases.map(c => (
           <span key={c.id} className={`text-right font-mono ${c.now.count === 0 ? 'text-amber-300' : 'text-neutral-200'}`}>
             {c.now.approx ? '≈ ' : ''}{fmt(c.now.count)}
           </span>
         ))}
-        <span className="text-neutral-400">
-          <Explain doc="plot-size" text={<>Share of its signal that the purest pixel takes from outside its plot, at the worst grid placement. Pure once at most ε = {eps} %.</>}>
-            <span className={term}>purest pixel, from outside</span>
-          </Explain>
-        </span>
+        <span className="text-neutral-400">purest pixel, from outside</span>
         {result.cases.map(c => (
           <span key={c.id} className={`text-right font-mono ${1 - c.keeps > eps / 100 ? 'text-amber-300' : 'text-neutral-200'}`}>{outside(c.keeps)}</span>
         ))}

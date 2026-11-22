@@ -59,7 +59,11 @@ function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, plant
   // momentary and deliberately do not.
   const [tab, setTab] = usePersistentState<'scatter' | 'variance' | 'loadings' | 'purity'>('pcaTab', 'scatter', oneOf('scatter', 'variance', 'loadings', 'purity'));
   // Validated against the real list: an unknown method would make embed() throw.
-  const [method, setMethodState] = usePersistentState<DrMethod>('pcaMethod', 'pca', v => DR_METHODS.some(m => m.id === v));
+  const [methodKept, setMethodState] = usePersistentState<DrMethod>('pcaMethod', 'pca', v => DR_METHODS.some(m => m.id === v));
+  // With the settings fold not shown there is no way back from a method or an
+  // axis this browser kept from before: the chart is then what the fold's
+  // comment says it is, a PCA of the first two axes (found by an outside review, 2026-11-22).
+  const method: DrMethod = SHOW_CHART_SETTINGS ? methodKept : 'pca';
   const [pending, startTransition] = useTransition();
   // Switching the DR method re-embeds (slow for the nonlinear ones), so run it as a
   // transition so the spinner shows and the old chart stays until it's ready.
@@ -93,7 +97,7 @@ function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, plant
   const abbr = AXIS_ABBR[method] ?? 'C';
   const ax = (i: number) => `${abbr}${i + 1}`;
   const axLabel = (i: number) => `${ax(i)} (${(fit.explained[i] ?? 0).toFixed(0)}%)`;
-  const cx = Math.min(pcX, nComp - 1), cy = Math.min(pcY, nComp - 1);
+  const cx = Math.min(SHOW_CHART_SETTINGS ? pcX : 0, nComp - 1), cy = Math.min(SHOW_CHART_SETTINGS ? pcY : 1, nComp - 1);
 
   const hasSel = selected.size > 0;
   const points = useMemo(() => {
@@ -272,7 +276,6 @@ function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, plant
                 </BarChart>
               </ResponsiveContainer>
             </div>
-            <p className="mt-1 text-[14px] text-neutral-500">Variance carried by each axis.</p>
           </div>
         )}
 
@@ -291,7 +294,6 @@ function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, plant
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
-                <p className="mt-1 text-[14px] text-neutral-500">How each season time-step weights into the components.</p>
               </>
             ) : (
               <p className="text-[14px] text-neutral-500">Loadings aren’t defined for {DR_METHODS.find(m => m.id === method)?.label}.</p>

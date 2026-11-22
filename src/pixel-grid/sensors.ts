@@ -120,12 +120,6 @@ interface Source {
   group: string;
   note: string;
   /**
-   * What a reader must know before sizing a trial on this row, in a few words:
-   * shown under the picker as a link to the documentation's section on it,
-   * which says the rest (pixel-grid-docs.html, "Pansharpened products").
-   */
-  warn?: string;
-  /**
    * Default Gaussian PSF σ, in PIXELS, from each sensor's published MTF at Nyquist
    * via a Gaussian model: MTF(½) = exp(−π²σ²/2) ⇒ σ = √(−2·ln M)/π.
    * S2 MSI spec M≈0.15–0.3 (→σ≈0.53 at 0.25); Landsat OLI M≈0.30 (σ≈0.49);
@@ -220,24 +214,19 @@ const GEO_PLANET = { ce90M: rmseToCe90(10), says: 'ortho products: less than 10 
  * worked out from, and the one kept here.
  */
 const SRC_PHENET = { label: 'measured on PHENET images at Mauguio and Toulouse' };
-/**
- * The pansharpened products the note did not measure, which have no native
- * row here to turn to: the row flatters a trial read through an index, whose
- * bands are the native ones (about 1 m for SkySat, 6 m for SPOT).
- */
-const UNMEASURED_PAN = 'Pansharpened: flatters a trial read through an index';
 /** A Gaussian's full width at half maximum, in its standard deviations: the note's K. */
 const FWHM_PER_SIGMA = 2.3548;
 /** A measured FWHM in metres as a sigma in pixels of `res` metres. */
 const measured = (fwhmM: number, res: number): number => fwhmM / FWHM_PER_SIGMA / res;
-/**
- * What the note says of a pansharpened product, for the two it measured: the
- * blur is the panchromatic band's, an index is computed on the native bands,
- * and the default geolocation error is not the product's (about 1 m measured
- * between images). A figure sized on this row flatters the trial twice over.
- * The few words under the picker; the documentation page says it in full.
+/*
+ * Pansharpened rows: sharp only in the panchromatic band, while an index is
+ * computed on the native multispectral bands. The two the note measured
+ * (WorldView-2, Pleiades) have a native row to size a trial on, and the
+ * default geolocation error is too kind for them (about 1 m measured between
+ * images); SkySat and SPOT have no native row and no measured blur. All of it
+ * is said on the documentation page ("Pansharpened products"), which the
+ * suite holds against this list.
  */
-const PANSHARPENED = 'Pansharpened: size the trial on the native row';
 const SOURCES: Source[] = [
   { id: 's2-10', short: 'Sentinel-2', provider: 'Sentinel-2', resLabel: '10 m', res: 10, kind: 'catalog', group: FIXED, offlinePhase0: true, offlineSouth: 'false-northing', psf: measured(14, 10), psfSrc: SRC_PHENET, psfMeasured: true, geo: GEO_S2,
     note: 'Blue, green, red and NIR bands: B02, B03, B04, B08.',
@@ -259,15 +248,15 @@ const SOURCES: Source[] = [
   { id: 'wv', short: 'WV-2 MS', provider: 'WorldView-2 · native MS', resLabel: '1.6 m', res: 1.6, kind: 'custom', group: TASK, psf: measured(1.9, 1.6), psfSrc: SRC_PHENET, psfMeasured: true, geo: GEO_WV,
     note: 'Native multispectral. Measured FWHM 1.9 m.' },
   { id: 'wv-ps', short: 'WV-2 pan', provider: 'WorldView-2 · pansharpened', resLabel: '0.4 m', res: 0.4, kind: 'custom', group: TASK, psf: measured(1.1, 0.4), psfSrc: SRC_PHENET, psfMeasured: true, geo: GEO_WV,
-    note: 'Pansharpened. Measured FWHM 1.1 m.', warn: PANSHARPENED },
+    note: 'Pansharpened. Measured FWHM 1.1 m.' },
   { id: 'pleiades', short: 'Pléiades MS', provider: 'Pléiades · native MS', resLabel: '2 m', res: 2, kind: 'custom', group: TASK, psf: measured(5, 2), psfSrc: SRC_PHENET, psfMeasured: true, geo: GEO_PLEIADES,
     note: 'Native multispectral. Measured FWHM 5 m.' },
   { id: 'pleiades-ps', short: 'Pléiades pan', provider: 'Pléiades · pansharpened', resLabel: '0.5 m', res: 0.5, kind: 'custom', group: TASK, psf: measured(3, 0.5), psfSrc: SRC_PHENET, psfMeasured: true, geo: GEO_PLEIADES,
-    note: 'Pansharpened. Measured FWHM 3 m.', warn: PANSHARPENED },
+    note: 'Pansharpened. Measured FWHM 3 m.' },
   { id: 'skysat', short: 'SkySat pan', provider: 'SkySat · pansharpened', resLabel: '0.5 m', res: 0.5, kind: 'custom', group: TASK, psf: 0.62, psfSrc: eo('skysat'), geo: GEO_PLANET,
-    note: 'Pansharpened ortho product. Blur from the published MTF.', warn: UNMEASURED_PAN },
+    note: 'Pansharpened ortho product. Blur from the published MTF.' },
   { id: 'spot', short: 'SPOT pan', provider: 'SPOT 6/7 · pansharpened', resLabel: '1.5 m', res: 1.5, kind: 'custom', group: TASK, psf: 0.60, psfSrc: eo('spot-6-7'), geo: GEO_SPOT,
-    note: 'Panchromatic and pansharpened products. Blur from the published MTF.', warn: UNMEASURED_PAN },
+    note: 'Panchromatic and pansharpened products. Blur from the published MTF.' },
   { id: 'planet', short: 'PlanetScope', provider: 'PlanetScope', resLabel: '3 m', res: 3, kind: 'custom', group: TASK, psf: measured(9.7, 3), psfSrc: SRC_PHENET, psfMeasured: true, geo: GEO_PLANET,
     note: 'Measured FWHM 9.7 m.' },
   { id: 'custom', short: 'Custom', provider: 'Custom', resLabel: '', res: 1, kind: 'custom', group: TASK, psf: 0.55,

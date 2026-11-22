@@ -244,8 +244,10 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
         className={`rounded-md border p-1 text-left transition-colors ${active ? 'border-sky-400 bg-sky-500/10 ring-1 ring-sky-400/40' : 'border-white/10 bg-black/30 hover:border-sky-500/40 hover:bg-white/[0.04]'}`}
       >
         <div className="truncate px-0.5 text-[12px] leading-tight text-neutral-400">{c.name}</div>
-        <div className="flex items-baseline justify-between px-0.5 text-[13px]">
-          <span className="font-mono text-neutral-300">{c.res} m{active ? ' ·' : ''}{c.partial ? ' ◦' : ''}</span>
+        {/* Wraps as two whole pieces: in a card a third of a narrow panel wide the
+            size broke after each word and ran into the share ("0.496%", found by an outside review, 2026-11-22). */}
+        <div className="flex flex-wrap items-baseline justify-between gap-x-1 px-0.5 text-[13px]">
+          <span className="whitespace-nowrap font-mono text-neutral-300">{c.res} m{active ? ' ·' : ''}{c.partial ? ' ◦' : ''}</span>
           {/* TWO numbers, never one. The SHARE is how many of the pixels that
               are ON THE CROP come out clean; a pixel of nothing but alley soil
               is not counted against it. The COUNT beside it is not decoration:
@@ -256,7 +258,7 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
               measured denominator moves when the trial does and hid a 10.2%
               gain in pure pixels behind a 4.5% change. */}
           {c.resolvingPct !== undefined && (
-            <span className="flex items-baseline gap-1"
+            <span className="flex items-baseline gap-1 whitespace-nowrap"
               title={[
                 c.resolvingPct === null
                   ? 'This design plants less than one pixel of crop at this size'
@@ -285,7 +287,7 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
             77 pure at every position, 16 of them the same pixels). */}
         {c.geoRobust !== undefined && (
           <div className="whitespace-nowrap px-0.5 font-mono text-[12px] leading-tight tracking-tight text-neutral-500"
-            title={`Pixels that stay pure, for the same plot, for any geolocation error within the CE90 (${c.ce90M ?? geoErrM} m): ${fmt(c.geoRobustPure ?? 0)} px.${c.geoMean !== undefined ? ` Pure share computed with σeff instead: ${pct0(c.geoMean)}.` : ''}`}>
+            title={`${fmt(c.geoRobustPure ?? 0)} px hold within the CE90 (${c.ce90M ?? geoErrM} m)${c.geoMean !== undefined ? ` · with σeff: ${pct0(c.geoMean)}` : ''}`}>
             within CE90 <span className={c.geoRobust < 0.5 ? 'text-rose-400' : 'text-neutral-300'}>{pct0(c.geoRobust)}</span>
           </div>
         )}
@@ -299,7 +301,7 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
           const small = c.minPlotM !== undefined && c.plotSideM !== undefined && c.plotSideM < c.minPlotM;
           return (
             <div className={`whitespace-nowrap px-0.5 font-mono text-[12px] leading-tight tracking-tight ${small && t.none === 0 ? 'text-amber-300/80' : 'text-neutral-500'}`}
-              title={`Number of pure pixels in each plot: minimum ${t.min}, median ${t.median}. A plot without any pure pixel is unusable: ${t.none} of ${t.plots}.${c.minPlotM !== undefined ? ` The note's closed form asks for a plot side of at least ${c.minPlotM.toFixed(1)} m at this pixel size (GSD + 2 z σeff, ε = ${100 - threshold} %)${c.plotSideM !== undefined ? `; here L = ${c.plotSideM} m` : ''}.` : ''}`}>
+              title={`Pure pixels per plot: minimum ${t.min}, median ${t.median} · ${t.none} of ${t.plots} plots have none${c.minPlotM !== undefined ? ` · closed form: a side of ${c.minPlotM.toFixed(1)} m or more${c.plotSideM !== undefined ? `, here ${c.plotSideM} m` : ''}` : ''}`}>
               {t.none > 0
                 ? <span className="text-rose-400">{t.none}/{t.plots} plots empty</span>
                 : <>min <span className="text-neutral-300">{t.min}</span> px / plot</>}
