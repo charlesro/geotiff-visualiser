@@ -35,52 +35,66 @@ import type { FieldSim } from './simulate';
  */
 
 /**
- * Cyclic Jacobi eigenvalue decomposition for a small SYMMETRIC matrix.
- *
- * Everything here is at most (species + 3) on a side, so an O(n^3) sweep that
- * is obviously correct beats anything faster. Returns eigenvalues with their
- * vectors as COLUMNS of `vectors`, which is what the pseudo-inverse needs.
+ * Cyclic Jacobi eigenvalue decomposition for a small SYMMETRIC matrix, held
+ * flat (entry i, j at i * n + j). Returns the eigenvalues, and their vectors
+ * as COLUMNS when asked for (the pseudo-inverse needs them; the contrast
+ * score does not).
  *
  * Symmetric input is a precondition, not a request: every matrix this file
  * builds is a Gram matrix (X'X) or a congruence of one, so it holds by
  * construction and is never re-checked at runtime.
+ *
+ * It stops when what is left off the diagonal is a part in 1e26 of the
+ * diagonal's own square. It used to wait for an absolute 1e-30, which a matrix
+ * with entries in the hundreds never reaches in double precision: every call
+ * ran all its hundred sweeps where six do (found by an outside review,
+ * 2026-11-22).
  */
-function jacobi(input: number[][], n: number): { values: number[]; vectors: number[][] } {
-  const a = input.map(r => r.slice());
-  const v: number[][] = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => (i === j ? 1 : 0)));
+function jacobi(input: Float64Array, n: number, withVectors: boolean): { values: Float64Array; vectors: Float64Array | null } {
+  const a = input.slice();
+  const v = withVectors ? new Float64Array(n * n) : null;
+  if (v) for (let i = 0; i < n; i++) v[i * n + i] = 1;
+  let diag2 = 0;
+  for (let i = 0; i < n; i++) diag2 += a[i * n + i] * a[i * n + i];
+  const stop = Math.max(1e-30, 1e-26 * diag2);
   for (let sweep = 0; sweep < 100; sweep++) {
     let off = 0;
-    for (let p = 0; p < n; p++) for (let q = p + 1; q < n; q++) off += a[p][q] * a[p][q];
-    if (off <= 1e-30) break;
+    for (let p = 0; p < n; p++) for (let q = p + 1; q < n; q++) off += a[p * n + q] * a[p * n + q];
+    if (off <= stop) break;
     for (let p = 0; p < n; p++) {
       for (let q = p + 1; q < n; q++) {
-        if (Math.abs(a[p][q]) < 1e-300) continue;
-        const theta = (a[q][q] - a[p][p]) / (2 * a[p][q]);
+        const apq = a[p * n + q];
+        if (Math.abs(apq) < 1e-300) continue;
+        const theta = (a[q * n + q] - a[p * n + p]) / (2 * apq);
         const t = Math.sign(theta || 1) / (Math.abs(theta) + Math.sqrt(theta * theta + 1));
         const c = 1 / Math.sqrt(t * t + 1), s = t * c;
         for (let k = 0; k < n; k++) {
-          const akp = a[k][p], akq = a[k][q];
-          a[k][p] = c * akp - s * akq;
-          a[k][q] = s * akp + c * akq;
+          const akp = a[k * n + p], akq = a[k * n + q];
+          a[k * n + p] = c * akp - s * akq;
+          a[k * n + q] = s * akp + c * akq;
         }
         for (let k = 0; k < n; k++) {
-          const apk = a[p][k], aqk = a[q][k];
-          a[p][k] = c * apk - s * aqk;
-          a[q][k] = s * apk + c * aqk;
+          const apk = a[p * n + k], aqk = a[q * n + k];
+          a[p * n + k] = c * apk - s * aqk;
+          a[q * n + k] = s * apk + c * aqk;
         }
-        for (let k = 0; k < n; k++) {
-          const vkp = v[k][p], vkq = v[k][q];
-          v[k][p] = c * vkp - s * vkq;
-          v[k][q] = s * vkp + c * vkq;
+        if (v) {
+          for (let k = 0; k < n; k++) {
+            const vkp = v[k * n + p], vkq = v[k * n + q];
+            v[k * n + p] = c * vkp - s * vkq;
+            v[k * n + q] = s * vkp + c * vkq;
+          }
         }
       }
     }
   }
-  return { values: Array.from({ length: n }, (_, i) => a[i][i]), vectors: v };
+  const values = new Float64Array(n);
+  for (let i = 0; i < n; i++) values[i] = a[i * n + i];
+  return { values, vectors: v };
 }
 
 /**
- * Moore-Penrose pseudo-inverse of a small symmetric matrix.
+ * Moore-Penrose pseudo-inverse of a small symmetric matrix (flat).
  *
  * A true inverse is not safe here. The nuisance block below can be exactly
  * singular for a real design: with no alleys the bare column is identically
@@ -90,37 +104,18 @@ function jacobi(input: number[][], n: number): { values: number[]; vectors: numb
  * not adjust for a direction the data cannot see). It would be the wrong thing
  * for the contrast block, which is why that one is tested for collapse instead.
  */
-function pinvSym(m: number[][], n: number): number[][] {
-  const { values, vectors } = jacobi(m, n);
-  const max = Math.max(...values.map(Math.abs), 0);
+function pinvSym(m: Float64Array, n: number): Float64Array {
+  const { values, vectors } = jacobi(m, n, true);
+  let max = 0;
+  for (let k = 0; k < n; k++) max = Math.max(max, Math.abs(values[k]));
   const tol = 1e-12 * (max || 1);
-  const out: number[][] = Array.from({ length: n }, () => new Array(n).fill(0));
+  const out = new Float64Array(n * n), V = vectors!;
   for (let k = 0; k < n; k++) {
     if (Math.abs(values[k]) <= tol) continue;
     const inv = 1 / values[k];
-    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) out[i][j] += vectors[i][k] * inv * vectors[j][k];
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) out[i * n + j] += V[i * n + k] * inv * V[j * n + k];
   }
   return out;
-}
-
-/**
- * Orthonormal Helmert basis: an S x (S-1) matrix whose columns span every
- * difference between varieties and contain no overall level.
- *
- * Working in this subspace is what makes the score about telling varieties
- * apart. The overall level, which the soil endmember and the season both move,
- * is orthogonal to it and cannot flatter the answer.
- */
-function helmert(S: number): number[][] {
-  const H: number[][] = Array.from({ length: S }, () => new Array(S - 1).fill(0));
-  for (let k = 1; k < S; k++) {
-    const col = new Array(S).fill(0);
-    for (let i = 0; i < k; i++) col[i] = 1 / k;
-    col[k] = -1;
-    const norm = Math.hypot(...col);
-    for (let i = 0; i < S; i++) H[i][k - 1] = col[i] / norm;
-  }
-  return H;
 }
 
 /** What `contrastInfo` measured, before it is turned into a percentage. */
@@ -172,10 +167,8 @@ export function contrastInfo(args: {
   if (!species || S < 2 || count <= 0) return { nEff: 0, dead: true, total: 0 };
 
   const NZ = 3;                                    // intercept, bare, off-trial
-  const TtT: number[][] = Array.from({ length: S }, () => new Array(S).fill(0));
-  const TtZ: number[][] = Array.from({ length: S }, () => new Array(NZ).fill(0));
-  const ZtZ: number[][] = Array.from({ length: NZ }, () => new Array(NZ).fill(0));
-  const zMass = new Array(NZ).fill(0);
+  const TtT = new Float64Array(S * S), TtZ = new Float64Array(S * NZ), ZtZ = new Float64Array(NZ * NZ);
+  const zMass = new Float64Array(NZ);
   const t = new Float64Array(S), z = new Float64Array(NZ);
   /** The species present in the pixel in hand: one inside a plot, two or three on a border. */
   const present = new Int32Array(S);
@@ -192,11 +185,11 @@ export function contrastInfo(args: {
     // Only the species that are there: a share of 0 adds 0 to every sum it is
     // in, and with forty varieties that was 1,600 additions of 0 per pixel.
     for (let a = 0; a < m; a++) {
-      const i = present[a], ti = t[i], rowT = TtT[i], rowZ = TtZ[i];
-      for (let b = 0; b < m; b++) { const j = present[b]; rowT[j] += ti * t[j]; }
-      for (let j = 0; j < NZ; j++) rowZ[j] += ti * z[j];
+      const i = present[a], ti = t[i];
+      for (let b = 0; b < m; b++) { const j = present[b]; TtT[i * S + j] += ti * t[j]; }
+      for (let j = 0; j < NZ; j++) TtZ[i * NZ + j] += ti * z[j];
     }
-    for (let i = 0; i < NZ; i++) for (let j = 0; j < NZ; j++) ZtZ[i][j] += z[i] * z[j];
+    for (let i = 0; i < NZ; i++) for (let j = 0; j < NZ; j++) ZtZ[i * NZ + j] += z[i] * z[j];
   }
   if (total === 0) return { nEff: 0, dead: true, total: 0 };
 
@@ -209,37 +202,107 @@ export function contrastInfo(args: {
   for (let i = 0; i < NZ; i++) if (zMass[i] > 1e-9) keep.push(i);
   const nz = keep.length;
 
-  const C: number[][] = TtT.map(r => r.slice());
+  const C = TtT;                                   // swept in place: T'T is read nowhere else
   if (nz > 0) {
-    const Zg = keep.map(a => keep.map(b => ZtZ[a][b]));
+    const Zg = new Float64Array(nz * nz);
+    for (let a = 0; a < nz; a++) for (let b = 0; b < nz; b++) Zg[a * nz + b] = ZtZ[keep[a] * NZ + keep[b]];
     const Zi = pinvSym(Zg, nz);
+    // (Z'Z)^+ Z'T once, then T'Z against it: S^2 nz terms where the triple product had S^2 nz^2.
+    const right = new Float64Array(S * nz);
+    for (let j = 0; j < S; j++) {
+      for (let a = 0; a < nz; a++) {
+        let acc = 0;
+        for (let b = 0; b < nz; b++) acc += Zi[a * nz + b] * TtZ[j * NZ + keep[b]];
+        right[j * nz + a] = acc;
+      }
+    }
     for (let i = 0; i < S; i++) {
       for (let j = 0; j < S; j++) {
         let acc = 0;
-        for (let a = 0; a < nz; a++) for (let b = 0; b < nz; b++) acc += TtZ[i][keep[a]] * Zi[a][b] * TtZ[j][keep[b]];
-        C[i][j] -= acc;
+        for (let a = 0; a < nz; a++) acc += TtZ[i * NZ + keep[a]] * right[j * nz + a];
+        C[i * S + j] -= acc;
       }
     }
   }
 
-  const H = helmert(S), D = S - 1;
-  const Ch: number[][] = Array.from({ length: D }, () => new Array(D).fill(0));
-  for (let p = 0; p < D; p++) {
-    for (let q = 0; q < D; q++) {
-      let acc = 0;
-      for (let i = 0; i < S; i++) for (let j = 0; j < S; j++) acc += H[i][p] * C[i][j] * H[j][q];
-      Ch[p][q] = acc;
+  /**
+   * C_h = H'CH, with H the orthonormal Helmert basis: an S x (S-1) matrix
+   * whose columns span every difference between varieties and contain no
+   * overall level (working in this subspace is what makes the score about
+   * telling varieties apart: the overall level, which the soil endmember and
+   * the season both move, is orthogonal to it and cannot flatter the answer).
+   *
+   * Column k - 1 of H is 1 / sqrt(k (k + 1)) on its first k rows and
+   * -k / sqrt(k (k + 1)) on row k, so a product with it is a running sum less
+   * k times one entry: the congruence is two passes of S^2 terms, where
+   * multiplying the matrices out was S^4 (8.5 million products per satellite
+   * for 54 varieties, found by an outside review, 2026-11-22).
+   */
+  const D = S - 1;
+  const scale = new Float64Array(D);
+  for (let p = 0; p < D; p++) scale[p] = 1 / Math.sqrt((p + 1) * (p + 2));
+  const CH = new Float64Array(S * D);
+  for (let i = 0; i < S; i++) {
+    let run = C[i * S];
+    for (let p = 0; p < D; p++) { const v = C[i * S + p + 1]; CH[i * D + p] = (run - (p + 1) * v) * scale[p]; run += v; }
+  }
+  const Ch = new Float64Array(D * D);
+  for (let q = 0; q < D; q++) {
+    let run = CH[q];
+    for (let p = 0; p < D; p++) { const v = CH[(p + 1) * D + q]; Ch[p * D + q] = (run - (p + 1) * v) * scale[p]; run += v; }
+  }
+  for (let p = 0; p < D; p++) for (let q = p + 1; q < D; q++) { const v = 0.5 * (Ch[p * D + q] + Ch[q * D + p]); Ch[p * D + q] = v; Ch[q * D + p] = v; }
+
+  /**
+   * The score is D over the sum of 1 / eigenvalue, and that sum is the trace
+   * of the inverse: with C_h = L L' (Cholesky) it is the sum of the squares of
+   * L's inverse, with no eigenvalue worked out. When that sum times the trace
+   * is under a billion, no eigenvalue can be within a billionth of the
+   * largest (the smallest is at least 1 over the sum, and the largest at most
+   * the trace), so nothing has collapsed and the score stands. Otherwise, or
+   * when C_h is not positive definite to begin with, the eigenvalues decide,
+   * as they always did.
+   */
+  let trace = 0;
+  for (let i = 0; i < D; i++) trace += Ch[i * D + i];
+  if (trace > 0) {
+    const L = new Float64Array(D * D), floor = 1e-12 * trace;
+    let definite = true;
+    for (let i = 0; i < D && definite; i++) {
+      for (let j = 0; j <= i; j++) {
+        let s = Ch[i * D + j];
+        for (let k = 0; k < j; k++) s -= L[i * D + k] * L[j * D + k];
+        if (i === j) { if (!(s > floor)) { definite = false; break; } L[i * D + i] = Math.sqrt(s); }
+        else L[i * D + j] = s / L[j * D + j];
+      }
+    }
+    if (definite) {
+      // Column by column of L's inverse: x solves L x = e_j.
+      const x = new Float64Array(D);
+      let sum = 0;
+      for (let j = 0; j < D; j++) {
+        x[j] = 1 / L[j * D + j];
+        sum += x[j] * x[j];
+        for (let i = j + 1; i < D; i++) {
+          let s = 0;
+          for (let k = j; k < i; k++) s -= L[i * D + k] * x[k];
+          x[i] = s / L[i * D + i];
+          sum += x[i] * x[i];
+        }
+      }
+      if (sum > 0 && sum * trace < 1e9) return { nEff: D / sum, dead: false, total };
     }
   }
 
-  const { values } = jacobi(Ch, D);
-  const lmax = Math.max(...values);
+  const { values } = jacobi(Ch, D, false);
+  let lmax = -Infinity;
+  for (let i = 0; i < D; i++) if (values[i] > lmax) lmax = values[i];
   // A collapsed eigenvalue is a variety comparison that the imagery cannot make
   // at all. Reported as dead rather than as a very small number, because the
   // pseudo-inverse would otherwise drop it and the score would RISE.
   if (!(lmax > 0) || values.some(v => v <= 1e-9 * lmax)) return { nEff: 0, dead: true, total };
   let harm = 0;
-  for (const v of values) harm += 1 / v;
+  for (let i = 0; i < D; i++) harm += 1 / values[i];
   return { nEff: D / harm, dead: false, total };
 }
 
@@ -450,18 +513,32 @@ export function minPlotSideM(res: number, sigmaEffM: number, threshold: number):
 }
 
 /**
- * Where the imagery can land: `n` shifts on the circle of radius CE90.
+ * Where the imagery can land: `n` shifts on the circle of radius CE90, the
+ * first one along `angleDeg`.
  *
  * NOT clamped to half a pixel, unlike a count. A count is periodic in the
  * lattice, so past half a pixel it stops changing. A pixel chosen by its
  * coordinates is not: one whole pixel of shift hands it its neighbour's ground.
  * The boundary is enough because a plot's pure region is convex (a superlevel
  * set of a log-concave share), so a disc lies inside it as soon as its rim does.
+ * That holds for ONE plot. Where the same cover comes back further on (the next
+ * strip of the same crop), a rim point can land in the next one with a strip of
+ * something else in between: see `landings` in pixel-verdicts.ts, which is
+ * what every caller with a layout in hand should ask instead.
+ *
+ * `angleDeg` is the direction the plots lie along (the layout's rotation, or
+ * an imported trial's own angle). The eight shifts are then the plot's own
+ * eight: four square to its borders, which is the push each border fears most,
+ * and four towards its corners. With the directions fixed on the grid's axes,
+ * a plot lying 22.5 degrees off them was never pushed further than 0.924 of the
+ * CE90 towards a border, and "holds within the CE90" was read at about a CE86
+ * (found by an outside review, 2026-11-22).
  */
-export function ce90Shifts(ce90M: number, n = 8): [number, number][] {
+export function ce90Shifts(ce90M: number, angleDeg = 0, n = 8): [number, number][] {
   if (!(ce90M > 0) || n < 1) return [];
+  const t0 = Number.isFinite(angleDeg) ? (angleDeg * Math.PI) / 180 : 0;
   return Array.from({ length: n }, (_, i) => {
-    const t = (2 * Math.PI * i) / n;
+    const t = t0 + (2 * Math.PI * i) / n;
     return [ce90M * Math.cos(t), ce90M * Math.sin(t)] as [number, number];
   });
 }

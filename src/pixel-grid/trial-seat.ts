@@ -180,7 +180,9 @@ export function seatRect(ring: [number, number][], w: number, h: number, rotatio
     if (bm > 0) break;
   }
   // Then towards the best place between the lattice's points, by halving steps.
-  let step = Math.max(gu > 1 ? (cu1 - cu0) / (gu - 1) : 0, gv > 1 ? (cv1 - cv0) / (gv - 1) : 0) / 2;
+  // A rectangle too long for the field both ways has one centre on the lattice
+  // and nothing to halve: it is still moved, from an eighth of the field's span.
+  let step = (Math.max(gu > 1 ? (cu1 - cu0) / (gu - 1) : 0, gv > 1 ? (cv1 - cv0) / (gv - 1) : 0) || span / 4) / 2;
   for (let it = 0; it < 90 && step > 1e-7 * span; it++) {
     let mx = bx, my = by, mm = bm;
     for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
@@ -204,6 +206,27 @@ export function seatRect(ring: [number, number][], w: number, h: number, rotatio
   return { x: ox + bx * cos - by * sin, y: oy + bx * sin + by * cos, clearance: bm };
 }
 
+/**
+ * True when an outline IS its own bounding box: its four corners, each once (a
+ * closing repeat of the first aside). Asking only that every vertex be a corner
+ * of the box also passes a right-angled triangle on three of them, which is
+ * half the box: a trial was then seated on the middle of the box, on the
+ * triangle's long side, and said to fit a field half its size (found by an
+ * outside review, 2026-11-22).
+ */
+function isBoxRing(ring: Poly, [w, s, e, n]: LngLatBounds): boolean {
+  if (w === e || s === n) return true; // no area either way: the box is all there is
+  const last = ring[ring.length - 1];
+  const pts = ring.length > 1 && ring[0][0] === last[0] && ring[0][1] === last[1] ? ring.slice(0, -1) : ring;
+  if (pts.length !== 4) return false;
+  let corners = 0;
+  for (const [x, y] of pts) {
+    if (!((x === w || x === e) && (y === s || y === n))) return false;
+    corners |= 1 << ((x === w ? 0 : 1) + (y === s ? 0 : 2));
+  }
+  return corners === 15;
+}
+
 /** The last seats found, by what they were found from: every satellite of the table asks for the same one. */
 const seats = new Map<string, { centre: [number, number]; clearance: number }>();
 
@@ -215,8 +238,7 @@ const seats = new Map<string, { centre: [number, number]; clearance: number }>()
 export function fieldSeat(fieldRing: Poly | null, aoi: LngLatBounds, epsg: number, totalU: number, totalV: number, rotationDeg: number):
   { centre: [number, number]; clearance: number } | null {
   if (!fieldRing || fieldRing.length < 3) return null;
-  const [w, s, e, n] = aoi;
-  if (fieldRing.length <= 5 && fieldRing.every(([x, y]) => (x === w || x === e) && (y === s || y === n))) return null;
+  if (isBoxRing(fieldRing, aoi)) return null;
   let sum = 0;
   for (let i = 0; i < fieldRing.length; i++) sum += (i + 1) * fieldRing[i][0] + (i + 1.37) * fieldRing[i][1];
   const key = `${epsg}|${totalU}|${totalV}|${rotationDeg}|${fieldRing.length}|${sum}`;

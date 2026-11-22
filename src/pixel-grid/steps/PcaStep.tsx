@@ -6,7 +6,6 @@ import { ImportPanel } from './ImportPanel';
 import { ResTable } from '../ResTable';
 import { fmt } from '../util';
 import { FIXED, SOURCES, TASK } from '../sensors';
-import PcaSweep from '../PcaSweep';
 import { SHOW_GRID_STEP, STEP_NO, type StepProps } from './props';
 import { alignedWithin } from '../imported-rotate';
 
@@ -23,6 +22,12 @@ const SHOW_RETUNE: boolean = false;
  * page's script, which the first three steps never use.
  */
 const PcaSimVisual = lazy(() => import('../PcaSimVisual'));
+/**
+ * The satellites as small charts, fetched when that view is first asked for.
+ * The table is what the step opens on; the charts fit a PCA each, with a
+ * matrix library that was a sixth of the page's first script for it.
+ */
+const PcaSweep = lazy(() => import('../PcaSweep'));
 
 /**
  * How far apart two purities have to be, in percentage POINTS, before the panel
@@ -297,11 +302,11 @@ function PcaStepBody(p: StepProps) {
                 <span className="flex items-center gap-1.5 text-[14px] text-neutral-400">
                   Across satellites
                   {/* While comparing, the panels are labelled with counts, and the legend has to say so. */}
-                  <Explain text={sweepAligned
+                  <Explain doc="satellites-table" text={sweepAligned
                     ? imported
-                      ? <>One PCA per satellite, at its own pixel size and blur, twice: your trial, and the same trial at the angle and position that keep the most pure pixels for that satellite{worstCase ? ' wherever the image lands within the CE90' : ''} (px = pure pixels). The best placement is searched for each satellite, so its angle changes from one row to the next. Click a row to select that satellite and put the trial at that placement on the map.</>
-                      : <>One PCA per satellite, at its own pixel size and blur, twice: your design and the same design along the pixel rows (px = pure pixels). The two placements catch different numbers of edge pixels, so their totals differ and only the counts compare. Click a row to select that satellite.</>
-                    : <>One PCA per satellite, at its own pixel size and blur (% = pure pixels). The satellite selected is taken as it stands{SHOW_GRID_STEP && ' in step 2'}. Click a row to select that satellite.</>}><InfoDot /></Explain>
+                      ? <>One PCA per satellite, twice: your trial, and the same trial at the angle and position that keep the most pure pixels for that satellite{worstCase ? ' within the CE90' : ''}. Click a row to put the trial there.</>
+                      : <>One PCA per satellite, twice: your design, and the same design along the pixel rows. Click a row to select that satellite.</>
+                    : <>One PCA per satellite, at its own pixel size and blur (% = pure pixels). Click a row to select that satellite.</>}><InfoDot /></Explain>
                 </span>
                 {sweepBusy && <Spinner className="h-3 w-3" />}
                 {/* The same rungs, as a table of their figures or as the small
@@ -323,7 +328,9 @@ function PcaStepBody(p: StepProps) {
                       pairLabels={[`${angleLabel}° as drawn`, imported ? 'best placement' : '0° on the grid']} shown={onMap}
                       activeId={sourceId} onPick={sweepAligned ? pickOwn : pickSat} onPickPair={pickAligned}
                       geoErrM={geoErrM} threshold={threshold} />
-                  ) : sweepAligned ? (
+                  ) : (
+                  <Suspense fallback={<p className="flex items-center gap-2 text-[14px] text-neutral-500"><Spinner className="h-3 w-3" /> Loading the charts</p>}>
+                  {sweepAligned ? (
                     // One row per resolution: your design on the left, the same design
                     // with the rows along the pixels on the right, so 0.5 m sits next
                     // to 0.5 m, 1 m next to 1 m, and only the angle differs in a pair.
@@ -335,6 +342,8 @@ function PcaStepBody(p: StepProps) {
                   ) : (
                   <PcaSweep steps={sweep} species={speciesD} colors={colors} magnitude={magnitude} threshold={threshold} colorBy={pcaColorBy}
                     activeId={sourceId} activeSim={activeSim} onPick={pickSat} geoErrM={geoErrM} />
+                  )}
+                  </Suspense>
                   )}
                   {/* The verdict of the comparison, in one sentence. The figures it
                       used to lead with are the table's own rows now; said again

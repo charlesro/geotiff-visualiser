@@ -1,19 +1,20 @@
 import proj4 from 'proj4';
 import { crsToProj4Def } from '../lib/geo';
 import {
-  MIXED, bestPhaseOffset, coverStats, fieldVerdicts, plantedAreaPx, simulateField, speciesChannel, stakeBlockPlan, utmEnvelope,
+  MIXED, bestPhaseOffset, coverStats, fieldShares, fieldVerdicts, plantedAreaPx, speciesChannel, stakeBlockPlan, utmEnvelope,
   type BlockDesign, type SensorParams, type SimLayout,
 } from './simulate';
-import { CE90_TO_SIGMA, ce90For, ce90Shifts, contrastInfo, heldMask, minPlotSideM, plantedPixels, plantedShare, plotTally, type PlotTally } from './resolving';
+import { CE90_TO_SIGMA, ce90Shifts, contrastInfo, heldMask, minPlotSideM, plantedPixels, plantedShare, plotTally, type PlotTally } from './resolving';
+import { landings } from './pixel-verdicts';
 import { aoiUtmOrigin, type LngLatBounds, type S2Grid } from './s2-grid';
 import { fieldOverlapTest, type Poly } from './geometry';
-import { pixelId } from './pca-field';
+import { pixelId } from './ladder-rung';
 import { importedTrialExtent, trialExtent } from './ladder';
 import { rungCellOrigin } from './ladder-rung';
 import { seatedPlacement } from './trial-seat';
-import { isAligned, nearestTurn, placementSearch, rotateImportedPlan, shiftImportedPlan, stakeOnGrid, type PlacementSearch } from './imported-rotate';
+import { isAligned, nearestTurn, placementSearch, rotateImportedPlan, shiftImportedPlan, stakeOnGrid, worstShift, type PlacementSearch } from './imported-rotate';
 import type { ImportedPlan } from './imported-types';
-import type { Rung } from './sensors';
+import { latticePhase, sourceCe90, type Rung } from './sensors';
 import type { SweepStep } from './PcaSweep';
 
 /**
@@ -87,6 +88,19 @@ export interface LadderContext {
   /** The geolocation error: the note's default per pixel size, or the figure typed (ce90For). */
   geoAuto: boolean;
   geoManual: number;
+  /** Each satellite at its own provider's figure instead (sensors.ts sourceCe90). */
+  geoProvider?: boolean;
+  /**
+   * What a trial is placed for at each rung: the most pixels that hold within
+   * that rung's CE90 (the default), or the most pure pixels (use-grid `placeFor`).
+   */
+  placeFor?: 'pure' | 'held';
+  /**
+   * The page's own geolocation setting, where it is not the one above: a
+   * design sized with no error to hold against (geoManual 0) is still placed,
+   * on the page, for the CE90 the page has. None: the setting above.
+   */
+  pageGeo?: { auto: boolean; manualM: number; provider?: boolean };
 }
 
 /**
@@ -96,11 +110,23 @@ export interface LadderContext {
  * the two have to be asking about the same search. Null with no trial.
  */
 export function ladderSearch(ctx: LadderContext, rung: Rung): PlacementSearch | null {
+  // Searched on THIS satellite's lattice: the trial is moved by where its edges
+  // fall instead of the lattice (see ladderStep), and a placement is a turn and
+  // a shift from the file, which read the same in either frame.
+  const [pE, pN] = latticePhase(rung.id, rung.res, ctx.epsg);
   return ctx.importedBasePlan
-    ? placementSearch(ctx.importedBasePlan, rung.res, { sigmaX: rung.sigmaX, sigmaY: rung.sigmaY, mixThreshold: ctx.threshold / 100 },
-        Math.round(ce90For(ctx.geoAuto, ctx.geoManual, rung.res) * 100) / 100)
+    ? placementSearch(pE || pN ? shiftImportedPlan(ctx.importedBasePlan, -pE, -pN) : ctx.importedBasePlan, rung.res, { sigmaX: rung.sigmaX, sigmaY: rung.sigmaY, mixThreshold: ctx.threshold / 100, anyPosition: rung.anyPosition },
+        placedCe90(ctx, rung.id, rung.res))
     : null;
 }
+
+/** The CE90 a rung is held against: the page's setting, for that satellite (sensors.ts sourceCe90). */
+const rungCe90 = (ctx: LadderContext, id: string, res: number): number =>
+  sourceCe90(id, res, { auto: ctx.geoAuto, manualM: ctx.geoManual, provider: ctx.geoProvider });
+
+/** The CE90 a rung's trial is PLACED for, to the centimetre: that rung's own, or 0 when the page places for pure pixels. */
+const placedCe90 = (ctx: LadderContext, id: string, res: number): number =>
+  (ctx.placeFor === 'pure' ? 0 : Math.round((ctx.pageGeo ? sourceCe90(id, res, ctx.pageGeo) : rungCe90(ctx, id, res)) * 100) / 100);
 
 /**
  * ONE satellite of the ladder at a GIVEN rotation, the unit the sweep is split
@@ -114,15 +140,35 @@ export function ladderSearch(ctx: LadderContext, rung: Rung): PlacementSearch | 
 export function ladderStep(ctx: LadderContext, rotationDeg: number, rung: Rung, asDrawn = true): SweepStep {
   const { aoi, epsg, layout, threshold, fieldRing, blockDesign, importedAngle, importedFileAngle, importedBasePlan } = ctx;
   const pattern = layout.pattern, stripWidth = layout.width, spacing = layout.spacing;
-  const ce90At = (res: number) => ce90For(ctx.geoAuto, ctx.geoManual, res);
+  const ce90At = (res: number) => rungCe90(ctx, rung.id, res);
   const r = rung.res;
   // The SHARED layout, with only the rotation overridden: "vs aligned" reruns
   // this identical code at 0 degrees. Rebuilding it from primitives would drop
   // the block plan, so a randomised design would be invisible to the ladder.
   let layoutL: SimLayout = { ...layout, rotationDeg };
-  const sensorL: SensorParams = { sigmaX: rung.sigmaX, sigmaY: rung.sigmaY, mixThreshold: threshold / 100 };
+  // A tasked satellite's lattice falls anywhere: every slide below then goes to the position that keeps the fewest.
+  // And every slide is for what the page places for: the pixels that hold within this rung's CE90, or the pure ones.
+  const sensorL: SensorParams = { sigmaX: rung.sigmaX, sigmaY: rung.sigmaY, mixThreshold: threshold / 100, anyPosition: rung.anyPosition, placeHeldM: placedCe90(ctx, rung.id, r) };
   const [minE, minN, maxE, maxN] = utmEnvelope(aoi, epsg);
   const base = aoiUtmOrigin(aoi, epsg);
+  /**
+   * Where THIS satellite's pixel edges fall (sensors.ts latticePhase). Zero for
+   * every grid but native Landsat (half a pixel off) and, south of the equator,
+   * the 30 and 60 m ones. Every rung used to be laid on whole multiples of its
+   * pixel, so Landsat C2 was measured on the HLS lattice and read the same
+   * figures (found by an outside review, 2026-11-22).
+   *
+   * Rows, columns, checkerboards and block trials are measured on a box laid
+   * on the real lattice: the slide, the staking and the trial's extent all
+   * take the lattice from the box they are given (simulate.ts latticeOffset).
+   * An imported trial is moved the other way instead and measured on whole
+   * multiples, which is the same picture: its staking and its placement search
+   * count from zero.
+   */
+  const [pE, pN] = latticePhase(rung.id, r, epsg);
+  const moved = layout.pattern === 'imported';
+  const bE = moved ? 0 : pE, bN = moved ? 0 : pN;
+  const offLattice = (pl: ImportedPlan): ImportedPlan => (pE || pN ? shiftImportedPlan(pl, -pE, -pN) : pl);
   const t = (rotationDeg * Math.PI) / 180, cos = Math.cos(t), sin = Math.sin(t);
   // Each size gets its own purity-optimal placement (matches the map when picked).
   let ox = base[0], oy = base[1];
@@ -131,7 +177,7 @@ export function ladderStep(ctx: LadderContext, rotationDeg: number, rung: Rung, 
   // with `& 1`, so it would optimise "species 0 or 1 coverage" and ignore the
   // rest.
   if (OPTIMIZE_PLACEMENT && layout.pattern !== 'block' && layout.pattern !== 'imported') {
-    const [du, dv] = bestPhaseOffset(pattern, r, stripWidth, spacing, threshold / 100, base[0], base[1], sensorL);
+    const [du, dv] = bestPhaseOffset(pattern, r, stripWidth, spacing, threshold / 100, base[0] - pE, base[1] - pN, sensorL);
     ox = base[0] + du * cos - dv * sin; oy = base[1] + du * sin + dv * cos;
   }
   /**
@@ -140,8 +186,8 @@ export function ladderStep(ctx: LadderContext, rotationDeg: number, rung: Rung, 
    * the export use (geometry.ts fieldOverlapTest). It used to be "centre
    * inside", which left a tilted field's corners covered by no kept pixel.
    */
-  let e0 = Math.floor(minE / r) * r, n0 = Math.floor(minN / r) * r;
-  let e1 = Math.ceil(maxE / r) * r, n1 = Math.ceil(maxN / r) * r;
+  let e0 = Math.floor((minE - bE) / r) * r + bE, n0 = Math.floor((minN - bN) / r) * r + bN;
+  let e1 = Math.ceil((maxE - bE) / r) * r + bE, n1 = Math.ceil((maxN - bN) / r) * r + bN;
   /** Pixels counted are those overlapping this ring (UTM), else those overlapping the field. */
   let trialRing: [number, number][] | null = null;
   /** Where a best-placement rung puts the trial. */
@@ -184,7 +230,7 @@ export function ladderStep(ctx: LadderContext, rotationDeg: number, rung: Rung, 
      * thing before and after it is acted on, so which ladder this is decides
      * it, not where the design currently sits.
      */
-    let plan = layout.imported;
+    let plan = layout.imported && offLattice(layout.imported);
     const turn = nearestTurn(importedFileAngle, rotationDeg);
     const asStands = asDrawn && Math.abs(rotationDeg - importedAngle) < 1e-9;
     if (!asDrawn && importedBasePlan) {
@@ -202,10 +248,16 @@ export function ladderStep(ctx: LadderContext, rotationDeg: number, rung: Rung, 
       plan = best.plan;
       placement = { turn: best.turn, shift: best.shift, angle: best.angle, searched: best.searched };
     } else if (!asStands && importedBasePlan) {
-      plan = rotateImportedPlan(importedBasePlan, turn);
+      plan = rotateImportedPlan(offLattice(importedBasePlan), turn);
       if (isAligned(importedFileAngle + turn)) {
         plan = stakeOnGrid(plan, r, sensorL, importedTrialExtent(plan, r, sensorL, UNCLIPPED)).plan;
       }
+    } else if (plan && rung.anyPosition) {
+      // The trial as it stands, for a satellite whose lattice falls anywhere:
+      // where the file puts it on the lattice drawn is one position among all
+      // of them, and the row counts it at the one that keeps the fewest.
+      const [sE, sN] = worstShift(plan, r, sensorL, placedCe90(ctx, rung.id, r));
+      if (sE || sN) plan = shiftImportedPlan(plan, sE, sN);
     }
     if (plan) {
       layoutL = { ...layoutL, imported: plan };
@@ -253,23 +305,27 @@ export function ladderStep(ctx: LadderContext, rotationDeg: number, rung: Rung, 
     const cx = (e0 + e1) / 2, cy = (n0 + n1) / 2;
     const side = Math.floor(Math.sqrt(LADDER_MAX_CELLS)) * r;
     const w = Math.min(side, e1 - e0), h = Math.min(side, n1 - n0);
-    e0 = Math.floor((cx - w / 2) / r) * r; n0 = Math.floor((cy - h / 2) / r) * r;
+    e0 = Math.floor((cx - w / 2 - bE) / r) * r + bE; n0 = Math.floor((cy - h / 2 - bN) / r) * r + bN;
     e1 = e0 + Math.round(w / r) * r; n1 = n0 + Math.round(h / r) * r;
   }
-  // simulateField reads only the pixel size and the snapped extent.
+  // The engine reads only the pixel size and the snapped extent.
   const box = { res: r, utmBounds: [e0, n0, e1, n1] } as unknown as S2Grid;
-  const all = simulateField(box, [ox, oy], layoutL, sensorL);
-  const nx = Math.round((e1 - e0) / r);
-  const toUtm = proj4('EPSG:4326', crsToProj4Def(`EPSG:${epsg}`));
-  const ringUtm = trialRing ?? (fieldRing ? fieldRing.map(([lng, lat]) => toUtm.forward([lng, lat]) as [number, number]) : null);
+  const nx = Math.round((e1 - e0) / r), cells = nx * Math.round((n1 - n0) / r);
+  const ringUtm = trialRing ?? (fieldRing
+    ? (() => { const toUtm = proj4('EPSG:4326', crsToProj4Def(`EPSG:${epsg}`)); return fieldRing.map(([lng, lat]) => toUtm.forward([lng, lat]) as [number, number]); })()
+    : null);
   // Pixels overlapping the ring, by the rule the whole page uses (geometry.ts).
   const overlaps = ringUtm ? fieldOverlapTest(ringUtm) : null;
   const keep: number[] = [];
-  for (let k = 0; k < all.mixed.length; k++) {
-    if (!overlaps) { keep.push(k); continue; }
+  const kept = overlaps ? new Uint8Array(cells) : null;
+  for (let k = 0; k < cells; k++) {
+    if (!overlaps || !kept) { keep.push(k); continue; }
     const [cE, cN] = rungCellOrigin(k, nx, e0, n0, r);
-    if (overlaps(cE, cN, r)) keep.push(k);
+    if (overlaps(cE, cN, r)) { keep.push(k); kept[k] = 1; }
   }
+  // Only the pixels kept are simulated: the box of a turned trial is half
+  // ground the row never reads, and it was all worked out and thrown away.
+  const all = fieldShares(box, [ox, oy], layoutL, sensorL, kept);
   const nSp = all.nSpecies, n = keep.length;
   const proportionA = new Float32Array(n), proportionBare = new Float32Array(n), mixed = new Uint8Array(n);
   const proportionBySpecies = all.proportionBySpecies ? new Float32Array(n * nSp) : null;
@@ -282,7 +338,8 @@ export function ladderStep(ctx: LadderContext, rotationDeg: number, rung: Rung, 
     if (proportionBySpecies && all.proportionBySpecies) for (let s = 0; s < nSp; s++) proportionBySpecies[j * nSp + s] = all.proportionBySpecies[k * nSp + s];
     if (proportionOffTrial && all.proportionOffTrial) proportionOffTrial[j] = all.proportionOffTrial[k];
     const [cE, cN] = rungCellOrigin(k, nx, e0, n0, r);
-    pixelIds[j] = pixelId(Math.round(cE / r), Math.round(cN / r));
+    // A moved trial's pixels are named where they really lie.
+    pixelIds[j] = pixelId(Math.round((moved ? cE + pE : cE) / r), Math.round((moved ? cN + pN : cN) / r));
   });
   const st = coverStats({ mixed, coverSpecies: speciesChannel(layoutL).coverSpecies, nSpecies: nSp, offTrial: proportionOffTrial });
   /**
@@ -340,9 +397,14 @@ export function ladderStep(ctx: LadderContext, rotationDeg: number, rung: Rung, 
     ? Math.min(layoutL.block.design.plotLength, layoutL.block.design.plotWidth)
     : layoutL.pattern === 'imported' ? undefined : stripWidth;
   // This rung's own CE90: with the note's default it follows the pixel size
-  // (sigma_geo = GSD / 3), so it is not one figure for the whole ladder.
-  const ce90 = Math.round(ce90At(r) * 100) / 100;
-  const sigGeoM = ce90 > 0 ? ce90 / CE90_TO_SIGMA : 0;
+  // (sigma_geo = GSD / 3), so it is not one figure for the whole ladder. The
+  // pixel it follows is the one the satellite's geolocation goes by (geolocRes).
+  // To the centimetre for what is shown and for where an image is landed; the
+  // sigma from the figure before it is rounded, so that the default is the
+  // note's third of a pixel exactly (use-grid does the same for the panel).
+  const ce90Exact = ce90At(r);
+  const ce90 = Math.round(ce90Exact * 100) / 100;
+  const sigGeoM = ce90Exact > 0 ? ce90Exact / CE90_TO_SIGMA : 0;
   const minPlotM = minPlotSideM(r, Math.hypot(Math.max(rung.sigmaX, rung.sigmaY) * r, sigGeoM), threshold / 100) ?? undefined;
 
   /**
@@ -374,23 +436,25 @@ export function ladderStep(ctx: LadderContext, rotationDeg: number, rung: Rung, 
      * worked out, and only their verdict (fieldVerdicts): the others read mixed.
      */
     const needBox = new Uint8Array(all.mixed.length);
-    const verdictAt = (lay: SimLayout, org: [number, number], sen: SensorParams, need: ArrayLike<number> | null): Uint8Array => {
+    const verdictAt = (lay: SimLayout, org: [number, number], sen: SensorParams, need: ArrayLike<number> | null, on: S2Grid = box): Uint8Array => {
       needBox.fill(0);
       for (let j = 0; j < n; j++) if (!need || need[j]) needBox[keep[j]] = 1;
-      const v = fieldVerdicts(box, org, lay, sen, needBox);
+      const v = fieldVerdicts(on, org, lay, sen, needBox);
       const mx = new Uint8Array(n);
       for (let j = 0; j < n; j++) mx[j] = v[keep[j]];
       return mx;
     };
     const importedPlan = layoutL.pattern === 'imported' ? layoutL.imported : undefined;
-    // A shift of half the short plot side carries the plot's own centre line
-    // onto its edge, so nothing can survive it: no need to simulate that.
-    const hopeless = plotSideM != null && ce90 >= plotSideM / 2;
-    // robustMask over the eight placements, each asked only about the pixels
-    // still pure for their plot at every placement before it (heldMask).
-    const lands = ce90Shifts(ce90);
+    // Where the image can land, in the plots' own directions, and whether
+    // anything can survive it (pixel-verdicts.ts landings: one rule with the
+    // map and the export). robustMask over those placements, each asked only
+    // about the pixels still pure for their plot at every one before it.
+    const { lands, hopeless } = landings(layoutL, ce90);
+    // An imported trial is not moved for a landing: the pixels are, the other
+    // way, which is the same ground under each. Moving the plan made a new
+    // plan of it eight times a row, each prepared for the engine from nothing.
     const mask = hopeless ? new Uint8Array(n) : heldMask(mixed, lands.length, (q, need) => (importedPlan
-      ? verdictAt({ ...layoutL, imported: shiftImportedPlan(importedPlan, -lands[q][0], -lands[q][1]) }, [ox, oy], sensorL, need)
+      ? verdictAt(layoutL, [ox, oy], sensorL, need, { res: r, utmBounds: [e0 + lands[q][0], n0 + lands[q][1], e1 + lands[q][0], n1 + lands[q][1]] } as unknown as S2Grid)
       : verdictAt(layoutL, [ox - lands[q][0], oy - lands[q][1]], sensorL, need)));
     // Crop only, exactly as coverStats counts the nominal: robustMask already
     // leaves out mixed, bare and off-trial verdicts.
@@ -434,10 +498,13 @@ export function blockPlotCounts(ctx: LadderContext, rotationDeg: number, rung: R
   const { aoi, epsg, layout, threshold, fieldRing, blockDesign } = ctx;
   if (layout.pattern !== 'block') return null;
   const r = rung.res;
-  const sensor: SensorParams = { sigmaX: rung.sigmaX, sigmaY: rung.sigmaY, mixThreshold: threshold / 100 };
+  const sensor: SensorParams = { sigmaX: rung.sigmaX, sigmaY: rung.sigmaY, mixThreshold: threshold / 100, anyPosition: rung.anyPosition, placeHeldM: placedCe90(ctx, rung.id, rung.res) };
   const [minE, minN, maxE, maxN] = utmEnvelope(aoi, epsg);
   const base = aoiUtmOrigin(aoi, epsg);
-  const field: [number, number, number, number] = [Math.floor(minE / r) * r, Math.floor(minN / r) * r, Math.ceil(maxE / r) * r, Math.ceil(maxN / r) * r];
+  // On this satellite's own lattice, as ladderStep lays its box.
+  const [pE, pN] = latticePhase(rung.id, r, epsg);
+  const field: [number, number, number, number] = [Math.floor((minE - pE) / r) * r + pE, Math.floor((minN - pN) / r) * r + pN,
+    Math.ceil((maxE - pE) / r) * r + pE, Math.ceil((maxN - pN) / r) * r + pN];
   const plan = stakeBlockPlan(blockDesign, seatedPlacement(blockDesign, fieldRing, aoi, epsg, field, base, rotationDeg, r, OPTIMIZE_PLACEMENT),
     base, rotationDeg, r, sensor, field).plan;
   const lay: SimLayout = { ...layout, rotationDeg, block: plan };
@@ -456,10 +523,10 @@ export function blockPlotCounts(ctx: LadderContext, rotationDeg: number, rung: R
     }
   }
   const pure = plotTally(nominal, plan.nPlots)?.min ?? 0;
-  const ce90 = Math.round(ce90For(ctx.geoAuto, ctx.geoManual, r) * 100) / 100;
+  const ce90 = Math.round(rungCe90(ctx, rung.id, r) * 100) / 100;
   if (!(ce90 > 0)) return { pure, held: null };
   if (ce90 >= Math.min(plan.design.plotLength, plan.design.plotWidth) / 2) return { pure, held: 0 };
-  const lands = ce90Shifts(ce90);
+  const lands = ce90Shifts(ce90, rotationDeg);
   const mask = heldMask(nominal, lands.length, (q, need) => fieldVerdicts(box, [base[0] - lands[q][0], base[1] - lands[q][1]], lay, sensor, need));
   return { pure, held: plotTally(nominal, plan.nPlots, mask)?.min ?? 0 };
 }

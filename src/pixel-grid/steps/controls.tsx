@@ -169,11 +169,11 @@ export function LayoutFields({ pattern, stripWidth, setStripWidth, spacing, setS
       <div className="space-y-2">
         <div className="grid grid-cols-3 gap-2">
           <NumField label="Species" value={d.nSpecies} onChange={set('nSpecies')} min={2} max={8}
-            hint="How many treatments each block contains. Every block gets all of them, in a random order that never puts a species beside itself in the next block." />
+            hint="How many treatments each block contains. Every block gets all of them, in a random order." />
           <NumField label="Blocks" value={d.nBlocks} onChange={set('nBlocks')} min={1} max={20}
             hint="Repetitions. Each is a complete set of the species." />
           <NumField label="Per row" value={d.blocksPerRow} onChange={set('blocksPerRow')} min={1} max={20}
-            hint="How many blocks sit side by side before the next row starts. A row runs across the plots, so more per row makes the trial wider and shorter." />
+            hint="How many blocks sit side by side before the next row starts." />
         </div>
         <div className="grid grid-cols-3 gap-2">
           <NumField label="Plot length" value={d.plotLength} onChange={set('plotLength')} min={0.5} max={1000} step={0.5} unit="m" />
@@ -185,7 +185,7 @@ export function LayoutFields({ pattern, stripWidth, setStripWidth, spacing, setS
             hint="Bare soil between plots inside a block, shown in brown." />
           <NumField label="Block alley" value={d.blockAlley} onChange={set('blockAlley')} min={0} max={100} step={0.5} unit="m" />
           <NumField label="Seed" value={d.seed} onChange={set('seed')} min={0} max={9999}
-            hint="Changes the randomisation. The same seed always replays the same layout. With two species the only layout that keeps them apart is a checkerboard, so the seed only picks which one starts." />
+            hint="Changes the randomisation. The same seed always replays the same layout." />
         </div>
       </div>
     );

@@ -22,11 +22,14 @@ export default defineConfig(() => {
     },
     build: {
       rollupOptions: {
+        // The documentation page goes wherever the designer goes: it is a page
+        // of text with no script, and the designer's panel links to it.
         input: gridOnly
-          ? { pixelGrid: path.resolve(__dirname, 'pixel-grid.html') }
+          ? { pixelGrid: path.resolve(__dirname, 'pixel-grid.html'), pixelGridDocs: path.resolve(__dirname, 'pixel-grid-docs.html') }
           : {
               main: path.resolve(__dirname, 'index.html'),
               pixelGrid: path.resolve(__dirname, 'pixel-grid.html'),
+              pixelGridDocs: path.resolve(__dirname, 'pixel-grid-docs.html'),
             },
       },
     },

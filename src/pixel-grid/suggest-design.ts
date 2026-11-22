@@ -1,8 +1,10 @@
 import {
-  bestPhaseOffset, blockPlacement, buildBlockPlan, fieldVerdicts, fineCellsPerPixel, stakeBlockPlan,
+  HELD_FIRST, SPOT_STAKE_N, axisSharesOf, bestPhaseOffset, blockPlacement, buildBlockPlan, fieldVerdicts, fineCellsPerPixel, followsSpot,
+  heldPairs, keepsCount, noCountYet, placedFor, purePairs, spotSigma, stakeBlockPlan, stakesBySpot, type AxisShares,
   type BlockDesign, type BlockPlan, type SensorParams, type SimLayout,
 } from './simulate';
 import { ce90Shifts, heldMask, plotTally } from './resolving';
+import { normCdf } from './plot-size';
 import { trialExtent } from './ladder';
 import type { S2Grid } from './s2-grid';
 
@@ -62,6 +64,19 @@ export interface SuggestRequest {
   sigmaY: number;
   /** The purity threshold, 0 to 1. */
   threshold: number;
+  /**
+   * True for a tasked sensor, whose lattice falls anywhere: what is built must
+   * keep the pixels asked for at the position that keeps the fewest
+   * (simulate.ts SensorParams.anyPosition).
+   */
+  anyPosition?: boolean;
+  /**
+   * The CE90, in metres, the page places a trial for (use-grid `placeFor`): the
+   * design is counted at the position that holds the most pixels within it. 0
+   * or none when the page places for pure pixels. Not `ce90M`, which is what
+   * the pixels asked for are held against.
+   */
+  placeHeldM?: number;
   /** The geolocation error to hold against, in metres; 0 to count pure pixels with the image in place. */
   ce90M: number;
   /** The alleys asked for, in metres (0 for plots that touch): kept, see above. */
@@ -162,15 +177,26 @@ export function alleyInStep(plotAlley: number, blockAlley: number, res: number):
  * `hi`, the share of its signal, along this axis, that the plot holds.
  *
  * The plot covers [start, start + len) on an axis whose pixel k is
- * [k res, (k + 1) res). A pixel is sampled on `g` fine cells, a cell being in
- * the plot when its centre is, and the pixel's signal is the Gaussian-weighted
- * sum of its neighbours' within ceil(3 sigma) pixels: the engine's own phase 1
- * and phase 2, for one axis. The share of a pixel in two dimensions is the
- * product of its two axes' shares.
+ * [k res, (k + 1) res). The share of a pixel in two dimensions is the product
+ * of its two axes' shares, and each axis is the engine's own arithmetic:
+ *
+ *  - a sensor with a blur (the note's model, simulate.ts followsSpot): what a
+ *    Gaussian centred on the pixel's centre puts on the plot, F in the note's
+ *    P = F(x) F(y), the Gaussian never narrower than a pixel's own footprint;
+ *  - a sensor with none: the pixel sampled on `g` fine cells, a cell being in
+ *    the plot when its centre is (the repo engine's phase 1; its phase 2 is
+ *    still written out below, for a caller that names a blur and asks for it).
  */
 export function axisShares(
   start: number, len: number, res: number, g: number, sigma: number, lo: number, hi: number,
+  /** Whether the sensor's blur is a spot (followsSpot: both its widths count, not this axis's alone). */
+  spot: boolean = sigma > 0,
 ): Float64Array {
+  if (spot) {
+    const out = new Float64Array(hi - lo + 1), s = spotSigma(sigma) * res;
+    for (let k = lo; k <= hi; k++) { const c = (k + 0.5) * res; out[k - lo] = normCdf((start + len - c) / s) - normCdf((start - c) / s); }
+    return out;
+  }
   const win = Math.max(0, Math.ceil(3 * sigma));
   const s = sigma || 0.5;
   const inPlot = (k: number): number => {
@@ -193,47 +219,54 @@ export function axisShares(
 }
 
 /**
- * The pixels one plot keeps, by the factorised count: staked on a mesh of
- * `steps` phases per axis as stakeBlockPlan does it (the phase with the most
- * pure pixels, the first of equals), and at that phase the pure pixels and the
- * ones that hold wherever the image lands within the CE90.
+ * The pixels one plot keeps, by the factorised count: staked as stakeBlockPlan
+ * does it, and at that phase the pure pixels and the ones that hold wherever
+ * the image lands within the CE90.
+ *
+ * Staked for what the page stakes for (SensorParams.placeHeldM): the most pure
+ * pixels, or first the most that hold within the CE90 it places for, the first
+ * of equals either way (the fewest, on a lattice that falls anywhere). The
+ * phases tried are stakeBlockPlan's own: a mesh of `steps` per axis for a
+ * sharp sensor, and SPOT_STAKE_N whatever `steps` says for a blur that is a
+ * spot, where the count moves too finely for a coarser mesh.
  */
 export function plotCount(
   length: number, width: number, res: number, g: number, sensor: SensorParams, ce90M: number, steps: number,
 ): { pure: number; held: number | null } {
   const tau = sensor.mixThreshold;
   const shift = Math.max(0, ce90M);
+  const holdM = placedFor(sensor, Math.min(length, width));
   // Pixels that can see the plot at any phase and any landing, per axis.
-  const lo = Math.floor(-shift / res) - 1;
-  const hiU = Math.ceil((res + length + shift) / res), hiV = Math.ceil((res + width + shift) / res);
-  const along = (start: number) => axisShares(start, length, res, g, sensor.sigmaX, lo, hiU);
-  const across = (start: number) => axisShares(start, width, res, g, sensor.sigmaY, lo, hiV);
-  const n = Math.max(1, Math.floor(steps));
-  const U: Float64Array[] = [], V: Float64Array[] = [];
-  for (let i = 0; i < n; i++) { U.push(along((i * res) / n)); V.push(across((i * res) / n)); }
-  const pureAt = (a: Float64Array, b: Float64Array): number => {
-    let c = 0;
-    for (let j = 0; j < b.length; j++) { if (!(b[j] > 0)) continue; for (let i = 0; i < a.length; i++) if (a[i] * b[j] >= tau) c++; }
-    return c;
-  };
-  let bi = 0, bj = 0, pure = -1;
-  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) { const c = pureAt(U[i], V[j]); if (c > pure) { pure = c; bi = i; bj = j; } }
-  if (!(shift > 0)) return { pure, held: null };
-  if (shift >= Math.min(length, width) / 2) return { pure, held: 0 };
-  // The image lands (dx, dy) away: the plot is that far the other way under a lattice that has not moved.
-  const lands = ce90Shifts(shift);
-  const a0 = U[bi], b0 = V[bj];
-  const As = lands.map(([dx]) => along((bi * res) / n - dx)), Bs = lands.map(([, dy]) => across((bj * res) / n - dy));
-  let held = 0;
-  for (let j = 0; j < b0.length; j++) {
-    for (let i = 0; i < a0.length; i++) {
-      if (!(a0[i] * b0[j] >= tau)) continue;
-      let ok = true;
-      for (let q = 0; q < lands.length && ok; q++) ok = As[q][i] * Bs[q][j] >= tau;
-      if (ok) held++;
+  const reach = Math.max(shift, holdM);
+  const lo = Math.floor(-reach / res) - 1;
+  const hiU = Math.ceil((res + length + reach) / res), hiV = Math.ceil((res + width + reach) / res);
+  const spot = followsSpot(sensor);
+  const along = (start: number) => axisShares(start, length, res, g, sensor.sigmaX, lo, hiU, spot);
+  const across = (start: number) => axisShares(start, width, res, g, sensor.sigmaY, lo, hiV, spot);
+  /**
+   * One side of the plot at one phase, listed for the pairing (simulate.ts
+   * purePairs and heldPairs), against `m` metres of landing or none. The image
+   * lands that far away: the plot is that far the other way under a lattice
+   * that has not moved, either way along the side and either way along a diagonal.
+   */
+  const sideOf = (shares: (start: number) => Float64Array, start: number, m: number): AxisShares => axisSharesOf(shares(start), tau, m > 0
+    ? { plus: shares(start - m), minus: shares(start + m), diagPlus: shares(start - m / Math.SQRT2), diagMinus: shares(start + m / Math.SQRT2) }
+    : null);
+  const n = stakesBySpot(sensor) ? SPOT_STAKE_N : Math.max(1, Math.floor(steps));
+  const U: AxisShares[] = [], V: AxisShares[] = [];
+  for (let i = 0; i < n; i++) { U.push(sideOf(along, (i * res) / n, holdM)); V.push(sideOf(across, (i * res) / n, holdM)); }
+  let bi = 0, bj = 0, best = noCountYet(sensor);
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      const score = purePairs(U[i], V[j], tau) + (holdM > 0 ? heldPairs(U[i], V[j], tau) * HELD_FIRST : 0);
+      if (keepsCount(sensor, score, best)) { best = score; bi = i; bj = j; }
     }
   }
-  return { pure, held };
+  const pure = purePairs(U[bi], V[bj], tau);
+  if (!(shift > 0)) return { pure, held: null };
+  if (shift >= Math.min(length, width) / 2) return { pure, held: 0 };
+  const a = shift === holdM ? U[bi] : sideOf(along, (bi * res) / n, shift), b = shift === holdM ? V[bj] : sideOf(across, (bj * res) / n, shift);
+  return { pure, held: heldPairs(a, b, tau) };
 }
 
 /**
@@ -246,7 +279,7 @@ function smallestPlot(
 ): { pu: number; pv: number; pure: number; held: number | null } | null {
   const { res, pixels, plotAlley, ce90M } = req;
   const steps = req.stakeSteps ?? 6;
-  const sensor: SensorParams = { sigmaX: req.sigmaX, sigmaY: req.sigmaY, mixThreshold: req.threshold };
+  const sensor: SensorParams = { sigmaX: req.sigmaX, sigmaY: req.sigmaY, mixThreshold: req.threshold, anyPosition: !!req.anyPosition, placeHeldM: req.placeHeldM ?? 0 };
   const cap = Math.floor(MAX_PLOT_M / res);
   // The smallest pitch that leaves any plot at all beside its alley.
   const lowU = Math.floor(blockAlley / res + 1e-9) + 1, lowV = Math.floor(plotAlley / res + 1e-9) + 1;
@@ -286,11 +319,23 @@ function smallestPlot(
     const to = Math.min(cap, p * MAX_ASPECT);
     for (let pu = lowU; pu <= to; pu++) {
       let lo = Math.max(lowV, Math.ceil(pu / MAX_ASPECT)), hi = Math.min(cap, pu * MAX_ASPECT, Math.floor(area() / pu));
+      // The widest plot worth having at this length, or one of the two under
+      // it where that one is a dip (see below): a length is not given up on
+      // one width.
+      for (let k = 0; k < 2 && hi > lo && !enough(pu, hi); k++) hi--;
       if (hi < lo || !enough(pu, hi)) continue;
+      const floor = lo;
       while (lo < hi) {
         const mid = (lo + hi) >> 1;
         if (enough(pu, mid)) hi = mid; else lo = mid + 1;
       }
+      // "A wider plot never keeps fewer" is true of the pure count. With a CE90
+      // in force the plot is still staked for the most PURE pixels, as the page
+      // stakes it, so a pixel wider can move the stake and lose a held pixel,
+      // and a pitch the engine refused is a hole of its own. The halving can
+      // then stop a step or two above a narrower plot that is enough: the few
+      // widths just under it are asked one by one.
+      for (let pv = hi - 1; pv >= Math.max(floor, hi - 3); pv--) if (enough(pu, pv)) hi = pv;
       const smaller = pu * hi < area(), squarer = pu * hi === area() && Math.abs(pu - hi) < Math.abs(best.pu - best.pv);
       if (smaller || squarer) best = { pu, pv: hi };
     }
@@ -441,6 +486,16 @@ function suggestTurned(ask: SuggestRequest, nSpecies: number, nBlocks: number, p
 
   let perRow = arrange(start + 1.5, start + 1.5);
   let plot = search(perRow);
+  // The arrangement chosen for the size the search starts from may hold the
+  // trial on this field at no size at all (too wide for a narrow field, its
+  // plots cut by the outline): the others are asked before giving up, since
+  // "nothing found" makes the page lay out a new field.
+  for (const other of rowsOf(nBlocks)) {
+    if (plot) break;
+    if (other === perRow) continue;
+    const found = search(other);
+    if (found) { perRow = other; plot = found; }
+  }
   if (!plot) return null;
   const again = arrange(plot.pu, plot.pv);
   if (again !== perRow) {
@@ -470,9 +525,18 @@ export function suggestBlockDesign(req: SuggestRequest): Suggestion | null {
   const { res } = req;
   if (!(res > 0) || !(req.threshold > 0) || !(req.sigmaX >= 0) || !(req.sigmaY >= 0)) return null;
   const plotAlley = Math.max(0, req.plotAlley), asked = Math.max(0, req.blockAlley);
-  const ask: SuggestRequest = { ...req, nSpecies, nBlocks, pixels, plotAlley, blockAlley: asked };
   const deg = Number.isFinite(req.rotationDeg) ? (req.rotationDeg as number) : 0;
-  if (Math.abs(deg) > 1e-9) return suggestTurned(ask, nSpecies, nBlocks, pixels, deg);
+  // A quarter turn lies along the pixels as much as no turn does (it is what
+  // blockPlacement and the strips call aligned): the same search, with the
+  // blur's two axes read the other way round when the plot's length runs
+  // north. It used to go to the turned search, which counts the whole trial
+  // for every size and answers nothing without the page's own counter.
+  const alongPixels = Math.abs(deg % 90) < 1e-9, sideways = alongPixels && Math.abs(deg % 180) > 1e-9;
+  const ask: SuggestRequest = {
+    ...req, nSpecies, nBlocks, pixels, plotAlley, blockAlley: asked,
+    sigmaX: sideways ? req.sigmaY : req.sigmaX, sigmaY: sideways ? req.sigmaX : req.sigmaY,
+  };
+  if (!alongPixels) return suggestTurned(ask, nSpecies, nBlocks, pixels, deg);
 
   // One row of blocks keeps the block alley as it is; several rows need it in
   // step with the pixels. The plot is searched once for each alley that occurs.
@@ -497,8 +561,8 @@ export function suggestBlockDesign(req: SuggestRequest): Suggestion | null {
     found.push({
       design, pitchPx: [plot.pu, plot.pv], pure: plot.pure, held: plot.held,
       footprint: [cm(plan.totalU), cm(plan.totalV)],
-      fits: fitsGiven(req, plan.totalU, plan.totalV, 0),
-      alleyWidened: blockAlley > asked + 1e-9, angle: 0,
+      fits: fitsGiven(req, plan.totalU, plan.totalV, deg),
+      alleyWidened: blockAlley > asked + 1e-9, angle: deg,
       side: Math.max(plan.totalU, plan.totalV), ground: plan.totalU * plan.totalV,
     });
   }
@@ -559,6 +623,19 @@ export interface StripRequest {
   sigmaY: number;
   /** The purity threshold, 0 to 1. */
   threshold: number;
+  /**
+   * True for a tasked sensor, whose lattice falls anywhere: what is built must
+   * keep the pixels asked for at the position that keeps the fewest
+   * (simulate.ts SensorParams.anyPosition).
+   */
+  anyPosition?: boolean;
+  /**
+   * The CE90, in metres, the page places a trial for (use-grid `placeFor`): the
+   * design is counted at the position that holds the most pixels within it. 0
+   * or none when the page places for pure pixels. Not `ce90M`, which is what
+   * the pixels asked for are held against.
+   */
+  placeHeldM?: number;
   /** The geolocation error to hold against, in metres; 0 to count pure pixels with the image in place. */
   ce90M: number;
   /** Bare ground between strips, in metres: kept as asked. */
@@ -703,7 +780,7 @@ export function stripPixels(
     // Half a strip's width carries its centre line onto its edge: nothing holds.
     if (ce90M >= width / 2) mask = new Uint8Array(nominal.length);
     else {
-      const lands = ce90Shifts(ce90M);
+      const lands = ce90Shifts(ce90M, layout.rotationDeg);
       mask = heldMask(nominal, lands.length, (q, need) => fieldVerdicts(box, [origin[0] - lands[q][0], origin[1] - lands[q][1]], layout, sensor, need));
     }
   }
@@ -751,29 +828,49 @@ export function suggestStrips(req: StripRequest): StripSuggestion | null {
   const { res, pattern } = req;
   if (!(res > 0)) return null;
   const deg = Number.isFinite(req.rotationDeg) ? (req.rotationDeg as number) : 0;
-  const sensor: SensorParams = { sigmaX: req.sigmaX, sigmaY: req.sigmaY, mixThreshold: req.threshold };
+  const sensor: SensorParams = { sigmaX: req.sigmaX, sigmaY: req.sigmaY, mixThreshold: req.threshold, anyPosition: !!req.anyPosition, placeHeldM: req.placeHeldM ?? 0 };
   const ring = req.ring && req.ring.length >= 3 ? req.ring : null;
   /** The strips that keep `across` pixels across, with the length that holds the count and how the field takes them. */
-  const at = (across: number): { out: StripSuggestion; lengths: number[]; kept: number } | null => {
+  const at = (across: number): { out: StripSuggestion; lengths: number[]; kept: number; lengthPx: number; usablePx: (len: number) => number } | null => {
     const fit = thinnestStripsAcross({ ...req, pixels: across });
     if (!fit) return null;
     // What a strip of that width keeps across, in every strip: at least what was asked of it.
     const kept = fit.held ?? fit.pure;
     const lengthPx = Math.max(1, Math.ceil(pixels / kept - 1e-9));
+    /**
+     * A strip ENDS, where the field does, and its two ends lose pixels the way
+     * its two sides do: the same blur and the same landing error, against
+     * ground that is not the strip's. What the sides cost across (the width,
+     * less the pixels kept) is taken again along the strip. Every pixel of a
+     * strip's length used to be counted, up to the field's edge: a 100 m strip
+     * under Sentinel-2 was good for 10 pixels along where about 6 are clean
+     * (found by an outside review, 2026-11-22).
+     */
+    // ...plus a pixel: across, the strips are slid to where they lose least;
+    // a strip's end falls wherever the field's edge does on the lattice, half
+    // a pixel worse at each end on average.
+    const endsM = Math.max(0, fit.width - kept * res) + res;
+    const usablePx = (len: number) => Math.max(0, Math.floor((len - endsM) / res + 1e-9));
     let onField: StripSuggestion['onField'] = null, lengths: number[] = [];
     if (ring) {
       lengths = stripLengths(ring, pattern, fit.width, fit.spacing, deg, stripOrigin(pattern, fit.width, fit.spacing, deg, res, sensor, req.base ?? [0, 0]));
-      const long = lengths.filter(len => Math.floor(len / res + 1e-9) >= lengthPx);
+      const long = lengths.filter(len => usablePx(len) >= lengthPx);
       const total = lengths.reduce((a, b) => a + b, 0);
       if (total > 0) onField = { strips: lengths.length, enough: long.length, share: long.reduce((a, b) => a + b, 0) / total };
     }
-    return { out: { ...fit, lengthM: cm(lengthPx * res), onField }, lengths, kept };
+    // The length of strip that holds the count, its two ends included.
+    return { out: { ...fit, lengthM: cm(lengthPx * res + endsM), onField }, lengths, kept, lengthPx, usablePx };
   };
-  // Long enough, or nothing longer to hope for: a strip one pixel long already holds the count.
-  const does = (o: StripSuggestion) => !o.onField || o.onField.share >= STRIP_FIELD_SHARE || o.lengthM <= res + 1e-9;
+  // Long enough on this field (or no field to be short on).
+  const does = (x: { out: StripSuggestion }) => !x.out.onField || x.out.onField.share >= STRIP_FIELD_SHARE;
 
   const first = at(1);
-  if (!first || does(first.out)) return first?.out ?? null;
+  // Nothing wider can help strips that already hold the count in one pixel of
+  // length: what the field lacks then is room for a strip's two ends, and a
+  // wider strip has the same ends. That case used to pass for "long enough",
+  // which sent a field 30 m long 80 m strips with no usable strip among them
+  // in place of the thinnest ones (found by an outside review, 2026-11-22).
+  if (!first || does(first) || first.lengthPx <= 1) return first?.out ?? null;
   // The field is too short for the thinnest strips. Wider ones keep more
   // across and need less length: straight to the pixels across that the
   // field's own strips call for, then one more at a time.
@@ -783,21 +880,23 @@ export function suggestStrips(req: StripRequest): StripSuggestion | null {
     const sorted = [...cur.lengths].sort((x, y) => y - x), total = sorted.reduce((a, b) => a + b, 0);
     let sum = 0, typical = sorted[0];
     for (const len of sorted) { sum += len; typical = len; if (sum >= STRIP_FIELD_SHARE * total) break; }
-    const wanted = Math.ceil(pixels / Math.max(1, Math.floor(typical / res + 1e-9)) - 1e-9);
+    // Strips with no clean pixel along them at all: no width gives them one.
+    if (cur.usablePx(typical) < 1) break;
+    const wanted = Math.ceil(pixels / Math.max(1, cur.usablePx(typical)) - 1e-9);
     const across = Math.min(pixels, Math.max(failed + 1, Math.floor(cur.kept + 1e-9) + 1, wanted));
     const next = at(across);
     if (!next) break;
-    if (does(next.out)) {
+    if (does(next)) {
       // Not past the thinnest that does: the counts across between the last one that failed and this one.
       let best = next.out;
       for (let k = across - 1; k > failed && k > Math.floor(cur.kept + 1e-9); k--) {
         const under = at(k);
-        if (!under || !does(under.out)) break;
+        if (!under || !does(under)) break;
         best = under.out;
       }
       return best;
     }
-    if (across >= pixels) break;
+    if (across >= pixels || next.lengthPx <= 1) break;
     failed = across; cur = next;
   }
   // No width does on this field: the thinnest strips, which say how few of its strips are long enough.
@@ -819,7 +918,7 @@ export function thinnestStripsAcross(req: StripRequest): StripFit | null {
   const step = whole ? 1 : STRIP_STEP;
   const snap = (p: number) => Math.round(p / step) * step;
   const quarter = (p: number) => Math.round(p / STRIP_STEP) * STRIP_STEP;
-  const sensor: SensorParams = { sigmaX: req.sigmaX, sigmaY: req.sigmaY, mixThreshold: req.threshold };
+  const sensor: SensorParams = { sigmaX: req.sigmaX, sigmaY: req.sigmaY, mixThreshold: req.threshold, anyPosition: !!req.anyPosition, placeHeldM: req.placeHeldM ?? 0 };
   const widthOf = (p: number) => cm(p * res - spacing);
   // The smallest pitch that leaves any strip beside its alley, and a strip cannot keep more pixels than it is wide.
   const floorOf = (st: number) => Math.max(
@@ -884,6 +983,19 @@ export interface CheckerRequest {
   sigmaX: number;
   sigmaY: number;
   threshold: number;
+  /**
+   * True for a tasked sensor, whose lattice falls anywhere: what is built must
+   * keep the pixels asked for at the position that keeps the fewest
+   * (simulate.ts SensorParams.anyPosition).
+   */
+  anyPosition?: boolean;
+  /**
+   * The CE90, in metres, the page places a trial for (use-grid `placeFor`): the
+   * design is counted at the position that holds the most pixels within it. 0
+   * or none when the page places for pure pixels. Not `ce90M`, which is what
+   * the pixels asked for are held against.
+   */
+  placeHeldM?: number;
   ce90M: number;
   /** Bare ground between cells, in metres, both ways: kept as asked. */
   spacing: number;
@@ -938,7 +1050,7 @@ export function checkerPixels(
   if (ce90M > 0) {
     if (ce90M >= width / 2) mask = new Uint8Array(nominal.length);
     else {
-      const lands = ce90Shifts(ce90M);
+      const lands = ce90Shifts(ce90M, layout.rotationDeg);
       mask = heldMask(nominal, lands.length, (q, need) => fieldVerdicts(box, [origin[0] - lands[q][0], origin[1] - lands[q][1]], layout, sensor, need));
     }
   }
@@ -984,7 +1096,7 @@ export function suggestChecker(req: CheckerRequest): CheckerSuggestion | null {
   const step = whole ? 1 : STRIP_STEP;
   const snap = (p: number) => Math.round(p / step) * step;
   const quarter = (p: number) => Math.round(p / STRIP_STEP) * STRIP_STEP;
-  const sensor: SensorParams = { sigmaX: req.sigmaX, sigmaY: req.sigmaY, mixThreshold: req.threshold };
+  const sensor: SensorParams = { sigmaX: req.sigmaX, sigmaY: req.sigmaY, mixThreshold: req.threshold, anyPosition: !!req.anyPosition, placeHeldM: req.placeHeldM ?? 0 };
   const widthOf = (p: number) => cm(p * res - spacing);
   // A cell cannot keep more pixels than it covers.
   const floorOf = (st: number) => Math.max(

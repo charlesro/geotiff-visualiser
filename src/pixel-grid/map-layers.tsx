@@ -71,6 +71,8 @@ function TruthOverlay({ extent, epsg, layout, layoutSig, origin, colors, clipPol
   origin: [number, number]; colors: string[]; clipPoly?: Poly;
 }) {
   const map = useMap();
+  // Whether what is drawn depends on the extent given: only strips and checkerboards with no outline to cut them to.
+  const usesExtent = layout.pattern !== 'imported' && !(layout.pattern === 'block' && layout.block) && !(clipPoly && clipPoly.length >= 3);
   useEffect(() => {
     const inv = proj4(crsToProj4Def(`EPSG:${epsg}`), 'EPSG:4326'); // UTM → [lng,lat]
     const [ox, oy] = origin;
@@ -177,7 +179,12 @@ function TruthOverlay({ extent, epsg, layout, layoutSig, origin, colors, clipPol
     });
     layer.addTo(map);
     return () => { layer.remove(); };
-  }, [map, extent[0], extent[1], extent[2], extent[3], epsg, layoutSig, origin[0], origin[1], colors.join(','), clipPoly]);
+    // The view's extent is read for one case only (strips with no outline to
+    // cut them to, see the top of the effect): for a trial, or strips inside a
+    // traced field, it is not among the things this redraws for. It was, and
+    // every pan and zoom took the whole trial off the map and projected and
+    // drew it again (found by an outside review, 2026-11-22).
+  }, [map, usesExtent ? extent[0] : 0, usesExtent ? extent[1] : 0, usesExtent ? extent[2] : 0, usesExtent ? extent[3] : 0, epsg, layoutSig, origin[0], origin[1], colors.join(','), clipPoly]);
   return null;
 }
 
@@ -610,7 +617,8 @@ function ViewTracker({ onChange, onView }: {
     const c = map.getCenter();
     onView?.([c.lat, c.lng], map.getZoom());
   };
-  const map = useMapEvents({ moveend: () => emit(map), zoomend: () => emit(map) });
+  // A zoom ends in a move, always: listening to both reported every zoom twice, two renders and two saves of the view for one.
+  const map = useMapEvents({ moveend: () => emit(map) });
   useEffect(() => { emit(map); }, []);
   return null;
 }

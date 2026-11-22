@@ -238,7 +238,7 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
         onClick={() => (paired ? onPickPair : onPick)?.(c.id)}
         title={paired
           ? place
-            ? `Put the trial where it keeps the most pure pixels for ${c.name}, ${c.res} m (${+place.angle.toFixed(2)}° to the pixel rows), and show it${sampled}`
+            ? `Put the trial at the placement searched for ${c.name}, ${c.res} m (${+place.angle.toFixed(2)}° to the pixel rows), and show it${sampled}`
             : `Turn the design along the pixel rows and show it as ${c.name} sees it, ${c.res} m${sampled}`
           : `Show the field as ${c.name} sees it, ${c.res} m${sampled}`}
         className={`rounded-md border p-1 text-left transition-colors ${active ? 'border-sky-400 bg-sky-500/10 ring-1 ring-sky-400/40' : 'border-white/10 bg-black/30 hover:border-sky-500/40 hover:bg-white/[0.04]'}`}

@@ -142,7 +142,7 @@ export function ResTable({ steps, pairWith, pairLabels, shown = 0, activeId, onP
         ))}
         {anyPlace && (
           <span className={`text-right ${head}`}>
-            <Explain align="right" text="The angle to the pixel rows at which the trial keeps the most pure pixels at this size. A dot: no placement was searched at this size, the trial is as the file has it.">
+            <Explain align="right" doc="imported" text="The angle to the pixel rows that keeps the most pure pixels at this size; for a tasked satellite, the angle whose worst position keeps the most. A dot: not searched.">
               <span className={TERM}>angle</span>
             </Explain>
           </span>

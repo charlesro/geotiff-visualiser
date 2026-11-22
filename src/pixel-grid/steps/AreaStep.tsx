@@ -100,10 +100,8 @@ function AreaStepBody(p: StepProps) {
         )}
 
         {!aoi && (
-          <p className="text-[14px] leading-relaxed text-neutral-400">
-            Find your area in <span className="text-neutral-200">Satellite</span> view (top-right), then
-            <span className="text-neutral-200"> Draw a box</span> for a quick rectangle, or
-            <span className="text-neutral-200"> Trace field shape</span> to click around an irregular field.
+          <p className="text-[14px] leading-snug text-neutral-400">
+            Find your field on the map, then draw a box or trace its shape.
           </p>
         )}
         </Step>

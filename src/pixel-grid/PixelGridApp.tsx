@@ -10,7 +10,7 @@ import { pixelVerdicts } from './pixel-verdicts';
 import { aoiUtmOrigin, utmEpsg, utmZoneForLng, type LngLatBounds } from './s2-grid';
 import { buildBlockPlan, stakeMesh, utmEnvelope, type BlockDesign } from './simulate';
 import { fieldSeat } from './trial-seat';
-import { ladderRungs, type Rung } from './sensors';
+import { ladderRungs, latticePhase, type Rung } from './sensors';
 import { blockPlotCounts, ladderStep } from './ladder-step';
 import { suggestBlockDesign, suggestChecker, suggestStrips, type CheckerSuggestion, type StripSuggestion } from './suggest-design';
 import { PER_STRIP_DEFAULT, type SuggestAsk, type SuggestOutcome } from './steps/SuggestDesign';
@@ -27,6 +27,7 @@ import { AreaStep } from './steps/AreaStep';
 import { GridStep } from './steps/GridStep';
 import { SimStep } from './steps/SimStep';
 import { PcaStep } from './steps/PcaStep';
+import { docHref } from './docs';
 
 /**
  * The Pixel Grid Designer.
@@ -119,7 +120,7 @@ export default function PixelGridApp() {
   // one before it, `simSection`, began with the design open and was saved that
   // way in every browser that had the page.
   const [simSection, setSimSection] = usePersistentState<SimSection>('simFold', null,
-    v => v === null || oneOf('design', 'suggest', 'size', 'curves', 'noise')(v));
+    v => v === null || oneOf('sat', 'design', 'suggest', 'size', 'curves', 'noise')(v));
   const [blurOpen, setBlurOpen] = usePersistentState('blurOpen', false, isBool);
   const [pcaRetuneOpen, setPcaRetuneOpen] = usePersistentState('pcaRetuneOpen', false, isBool);
   const [compareAligned, setCompareAligned] = usePersistentState('compareAligned', false, isBool);  // rotated vs 0° ladders
@@ -178,7 +179,7 @@ export default function PixelGridApp() {
     (aoi && gridApi.build?.epsg ? aoiUtmOrigin(aoi, gridApi.build.epsg) : null),
     [aoi, gridApi.build?.epsg]);
   const exp = useExperiment({
-    sigmaX, sigmaY,
+    sigmaX, sigmaY, anyPosition: gridApi.source.kind !== 'catalog', placeHeldM: gridApi.placeHeldM,
     fieldBounds: gridApi.build?.utmBounds ?? null, fieldOrigin, pixelSize: gridApi.build?.res ?? 10,
     epsg: gridApi.build?.epsg ?? null, aoi, fieldRing,
   });
@@ -381,7 +382,7 @@ export default function PixelGridApp() {
       // field from, so the turn is the whole of it and can land at once.
       if (!base || !build?.epsg) { cancelStake(); setImportedTurn(turn); setImportedShift([0, 0]); return; }
       const epsg = build.epsg, res = build.res, bounds = build.utmBounds;
-      const sensor = { sigmaX, sigmaY, mixThreshold: exp.threshold / 100 };
+      const sensor = { sigmaX, sigmaY, mixThreshold: exp.threshold / 100, anyPosition: gridApi.source.kind !== 'catalog', placeHeldM: gridApi.placeHeldM };
       const aligned = isAligned(exp.importedFileAngle + turn);
       setPendingAngle(deg);
       scheduleStake(() => {
@@ -476,7 +477,8 @@ export default function PixelGridApp() {
     const r = sat.res;
     // The trial's angle to the pixel rows, and its own box's half sides when turned by it.
     const angle = suggestAsk.angle ?? 0;
-    const turned = Math.abs(angle) > 1e-9;
+    // A quarter turn lies along the pixels (suggestBlockDesign sizes it as it does no turn at all).
+    const turned = Math.abs(angle % 90) > 1e-9;
     const rad = (angle * Math.PI) / 180, cosA = Math.abs(Math.cos(rad)), sinA = Math.abs(Math.sin(rad));
     const halfBox = (u: number, v: number): [number, number] => [(u * cosA + v * sinA) / 2, (u * sinA + v * cosA) / 2];
     // Alternating rows or columns have no trial to size: their strips are
@@ -485,13 +487,17 @@ export default function PixelGridApp() {
     if (kind) { buildStrips(kind, sat, epsg, centre, angle); return; }
     setSuggestBusy(true);
     window.setTimeout(() => {
-      const ce90M = suggestAsk.hold ? Math.round(gridApi.ce90At(r) * 100) / 100 : 0;
+      const ce90M = suggestAsk.hold ? Math.round(gridApi.ce90At(r, sat.id) * 100) / 100 : 0;
+      // Where the page will then put what is built: for the pixels that hold within this satellite's CE90, or for the pure ones.
+      const placeHeldM = gridApi.placeFor === 'held' ? Math.round(gridApi.ce90At(r, sat.id) * 100) / 100 : 0;
       const def = crsToProj4Def(`EPSG:${epsg}`);
       const toUtm = proj4('EPSG:4326', def), toLngLat = proj4(def, 'EPSG:4326');
       // An extent as a rung of the table snaps it, so that the staking mesh is the table's own.
       const stepsOn = (b: LngLatBounds) => {
         const [e0, n0, e1, n1] = utmEnvelope(b, epsg);
-        return stakeMesh([Math.floor(e0 / r) * r, Math.floor(n0 / r) * r, Math.ceil(e1 / r) * r, Math.ceil(n1 / r) * r], r)?.steps;
+        // On the satellite's own lattice, as the rung lays its box (ladder-step.ts).
+        const [pE, pN] = latticePhase(sat.id, r, epsg);
+        return stakeMesh([Math.floor((e0 - pE) / r) * r + pE, Math.floor((n0 - pN) / r) * r + pN, Math.ceil((e1 - pE) / r) * r + pE, Math.ceil((n1 - pN) / r) * r + pN], r)?.steps;
       };
       /**
        * A turned trial is sized on the satellites table's own count, plot by
@@ -503,7 +509,8 @@ export default function PixelGridApp() {
           aoi: ground, fieldRing: ring, epsg, threshold: exp.threshold, blockDesign: design,
           layout: { pattern: 'block', width: exp.stripWidth, spacing: exp.spacing, rotationDeg: angle },
           importedAngle: 0, importedFileAngle: 0, importedBasePlan: undefined,
-          geoAuto: suggestAsk.hold ? gridApi.geoAuto : false, geoManual: suggestAsk.hold ? gridApi.geoManual : 0,
+          geoAuto: suggestAsk.hold ? gridApi.geoAuto : false, geoManual: suggestAsk.hold ? gridApi.geoManual : 0, geoProvider: suggestAsk.hold && gridApi.geoProvider,
+          placeFor: gridApi.placeFor, pageGeo: { auto: gridApi.geoAuto, manualM: gridApi.geoManual, provider: gridApi.geoProvider },
         }, angle, sat);
         if (!c) throw new Error('This trial is too large to be counted plot by plot at an angle. Ask for fewer pixels, species or repetitions, or build it along the pixel rows (angle 0).');
         return c;
@@ -511,7 +518,7 @@ export default function PixelGridApp() {
       type Count = ReturnType<typeof countOn>;
       const ask = (field: { u: number; v: number } | null, stakeSteps: number | undefined, countAt?: Count) => suggestBlockDesign({
         nSpecies: suggestAsk.species, nBlocks: suggestAsk.reps, pixels: wantPure,
-        res: r, sigmaX: sat.sigmaX, sigmaY: sat.sigmaY, threshold: exp.threshold / 100, ce90M,
+        res: r, sigmaX: sat.sigmaX, sigmaY: sat.sigmaY, threshold: exp.threshold / 100, anyPosition: sat.anyPosition, placeHeldM, ce90M,
         // The alleys asked for in the panel, none by default: NOT the design's
         // own, which are whatever the layout last had.
         plotAlley: suggestAsk.plotAlley, blockAlley: suggestAsk.blockAlley,
@@ -600,7 +607,7 @@ export default function PixelGridApp() {
               aoi: ground, fieldRing: ring, epsg, threshold: exp.threshold, blockDesign: built.design,
               layout: { pattern: 'block', width: exp.stripWidth, spacing: exp.spacing, rotationDeg: angle },
               importedAngle: 0, importedFileAngle: 0, importedBasePlan: undefined,
-              geoAuto: gridApi.geoAuto, geoManual: gridApi.geoManual,
+              geoAuto: gridApi.geoAuto, geoManual: gridApi.geoManual, geoProvider: gridApi.geoProvider, placeFor: gridApi.placeFor,
             }, angle, sat, true);
             if (row.plots) onField = { pure: row.plots.min, held: row.plotsRobust?.min ?? null };
           }
@@ -631,7 +638,9 @@ export default function PixelGridApp() {
     const r = sat.res;
     setSuggestBusy(true);
     window.setTimeout(() => {
-      const ce90M = suggestAsk.hold ? Math.round(gridApi.ce90At(r) * 100) / 100 : 0;
+      const ce90M = suggestAsk.hold ? Math.round(gridApi.ce90At(r, sat.id) * 100) / 100 : 0;
+      // Where the page will then put what is built: for the pixels that hold within this satellite's CE90, or for the pure ones.
+      const placeHeldM = gridApi.placeFor === 'held' ? Math.round(gridApi.ce90At(r, sat.id) * 100) / 100 : 0;
       // A strip is asked for by the pixels in the whole strip; a checkerboard's
       // cell is a plot, and is asked for by the plot's own count.
       const pixels = kind === 'checker' ? wantPure : suggestAsk.perStrip ?? PER_STRIP_DEFAULT;
@@ -643,10 +652,16 @@ export default function PixelGridApp() {
       try {
         const def = crsToProj4Def(`EPSG:${epsg}`);
         const toUtm = proj4('EPSG:4326', def), toLngLat = proj4(def, 'EPSG:4326');
-        const sized = { pixels, res: r, sigmaX: sat.sigmaX, sigmaY: sat.sigmaY, threshold: exp.threshold / 100, ce90M, spacing: suggestAsk.stripAlley ?? 0, rotationDeg: angle };
-        const ask = (base: [number, number], ring: [number, number][] | null): StripSuggestion | CheckerSuggestion | null => (kind === 'checker'
-          ? suggestChecker({ ...sized, base })
-          : suggestStrips({ pattern: kind, ...sized, base, ring }));
+        const sized = { pixels, res: r, sigmaX: sat.sigmaX, sigmaY: sat.sigmaY, threshold: exp.threshold / 100, anyPosition: sat.anyPosition, placeHeldM, ce90M, spacing: suggestAsk.stripAlley ?? 0, rotationDeg: angle };
+        // Counted where this satellite's pixel edges really fall: the field's
+        // corner and outline are handed over in the lattice's own count, since
+        // the search counts from zero (sensors.ts latticePhase; zero for most).
+        const [pE, pN] = latticePhase(sat.id, r, epsg);
+        const off = (q: [number, number]): [number, number] => (pE || pN ? [q[0] - pE, q[1] - pN] : q);
+        const ask = (corner: [number, number], outline: [number, number][] | null): StripSuggestion | CheckerSuggestion | null => {
+          const base = off(corner), ring = outline && outline.map(off);
+          return kind === 'checker' ? suggestChecker({ ...sized, base }) : suggestStrips({ pattern: kind, ...sized, base, ring });
+        };
         let found: ReturnType<typeof ask> = null, made: LngLatBounds | null = null;
         // In the field there is, its strips as long as its outline lets them be.
         if (aoi) found = ask(aoiUtmOrigin(aoi, epsg), fieldRing ? fieldRing.map(q => toUtm.forward(q) as [number, number]) : null);
@@ -836,6 +851,11 @@ export default function PixelGridApp() {
           <div className="flex items-center justify-between gap-2">
             <h1 className="text-[15px] font-semibold text-white">Pixel Grid Designer</h1>
             <div className="flex shrink-0 items-center gap-1.5">
+            {/* What every figure of the page means, on a page of its own: the panel says each thing in a few words. */}
+            <a href={docHref()} target="_blank" rel="noopener noreferrer" title="What the page computes, and what every figure means"
+              className="rounded-md border border-white/10 px-2 py-1 text-[14px] text-slate-400 transition-colors hover:border-white/25 hover:text-slate-200">
+              Docs
+            </a>
             <button type="button"
               onClick={() => (confirmReset ? resetSavedState() : setConfirmReset(true))}
               title="Clear the field and all settings (your pinned field stays)"

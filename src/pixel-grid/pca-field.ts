@@ -69,15 +69,11 @@ export interface CoverSource {
  */
 export interface FitPoint { s: number[]; fr: number[]; bare: number; off: number; k: number; id: number; mixed?: boolean }
 
-/**
- * A ground pixel's identity, from its column and row on the absolute lattice
- * (buildS2Grid's cell.col and cell.row: UTM metres over the pixel size). The big
- * chart and a ladder rung simulate different extents, so the same pixel sits at
- * different array positions in each; seeding its noise by position gave it a
- * different draw in each view, and a thumbnail changed when it was picked.
- */
-export const pixelId = (col: number, row: number): number =>
-  (Math.imul(col, 73856093) ^ Math.imul(row, 19349663)) >>> 1;
+// A pixel's identity lives with the ladder's own small rules (ladder-rung.ts):
+// the satellites table and its workers name pixels and fit nothing, and
+// importing it from here brought this file's matrix library into every worker
+// and into the page's first script.
+export { pixelId } from './ladder-rung';
 export interface FieldFit {
   pts: FitPoint[];
   explained: number[];

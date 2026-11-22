@@ -4,6 +4,7 @@ import { BlockSummary, ImportedSummary, LayoutFields, LayoutSelect, SpeciesList,
 import { ImportPanel } from './ImportPanel';
 import { PlotSizeCard } from './PlotSize';
 import { SuggestDesign } from './SuggestDesign';
+import { BlurBudget, BlurGeo, SensorPick, fwhmText } from './GridStep';
 import { Suspense, lazy } from 'react';
 import { STEP_NO, type SimSection, type StepProps } from './props';
 import { alignedWithin } from '../imported-rotate';
@@ -23,10 +24,10 @@ const SeasonChart = lazy(() => import('./SeasonChart'));
  * here may hold state. Everything it reads comes from hooks the page shell owns.
  */
 function SimStepBody(p: StepProps) {
-  const { activeStep, toggleStep, simSummary, simSection, setSimSection,
+  const { activeStep, toggleStep, simSummary, simSection, setSimSection, blurOpen, setBlurOpen,
           compareAligned, setCompareAligned, setActiveStep } = p;
   const { aoi } = p.area;
-  const { build } = p.gridApi;
+  const { build, source, geoErrM, psfSigmaM, pxSize } = p.gridApi;
   const { pattern, setPattern, stripWidth, setStripWidth, spacing, setSpacing, rotation, setRotation, magnitude, setMagnitude, alpha, setAlpha, beta, setBeta, threshold, setThreshold, blockDesign, setBlockDesign, blockPlan, colors, names, speciesD, presetsActive, setSpeciesAt, setPresetAt, importedDesign, varieties, importedPlan, importedAngle, importedFileAngle, importedTurn } = p.exp;
   // The angle the controls show and edit: the trial's own for an imported one.
   const imported = pattern === 'imported';
@@ -53,8 +54,13 @@ function SimStepBody(p: StepProps) {
 
   const NUM = 'w-full rounded-md border border-white/10 bg-neutral-900 px-2 py-1.5 text-[15px] text-neutral-100 focus:border-sky-500 focus:outline-none';
 
+  // The satellite everything below is counted for, by what sets its counts:
+  // its pixel, how far an image may land from where it is meant to, its blur.
+  // The pixel as it stands on the page: a tasked sensor's can be typed, and the label follows it.
+  const satLabel = `Satellite · ${source.provider} ${source.kind === 'custom' ? `${build?.res ?? pxSize} m` : source.resLabel} · CE90 ${geoErrM} m · ${psfSigmaM > 0 ? `FWHM ${fwhmText(p.gridApi)} m` : 'no blur'}`;
+
   /**
-   * The step is five folds, one open at a time and all shut to begin with,
+   * The step is six folds, one open at a time and all shut to begin with,
    * each named by what it holds now: the design reads "4 species × 4 blocks ·
    * plots 10.5 × 10.5 m" when it is shut, so nothing has to be open to be
    * read. It was one column of everything, more than two screens of it.
@@ -77,9 +83,24 @@ function SimStepBody(p: StepProps) {
           <div className="space-y-2">
             {!aoi && (
               <p className="text-[14px] leading-snug text-neutral-400">
-                No experiment area yet: nothing is simulated. Draw one in step&nbsp;1, or build a trial under Suggest a design, which makes the area around it.
+                No experiment area yet. Draw one in step&nbsp;1, or build a trial under Suggest a design.
               </p>
             )}
+
+            {/* The satellite, its blur and its geolocation error, with where each
+                figure comes from. They were chosen in the pixel grid step, which
+                is no longer shown: with it went the only place a CE90 could be
+                typed and the only place that said what the counts assume. First
+                here, since every count below is a count for this satellite. */}
+            <Disclosure label={satLabel} open={at('sat')} onToggle={fold('sat')}>
+              <SensorPick {...p} />
+              <BlurGeo {...p} budget={false} />
+              {psfSigmaM > 0 && (
+                <Disclosure label="Every source of blur, and what is not simulated" open={blurOpen} onToggle={() => setBlurOpen(v => !v)}>
+                  <BlurBudget {...p} />
+                </Disclosure>
+              )}
+            </Disclosure>
 
             <Disclosure label={designLabel} open={at('design')} onToggle={fold('design')}>
             {/* The arrangement is part of the design and is chosen in its fold

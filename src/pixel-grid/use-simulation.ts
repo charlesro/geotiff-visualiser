@@ -5,16 +5,16 @@ import {
   BARE, CROP_COLORS, MAX_COVER, strideFieldSim, CROP_PRESETS, PATTERNS, TRUTH_TYPES, bestPhaseOffset, cropById, makeBetaSchedule, simulateField,
   makeTruth, parsOf, TMAX, coverStats, speciesChannel, meanPerSpecies,
   layoutKey, plantedAreaPx, stakeBlockPlan,
-  type BlockDesign, type FieldParams, type FieldSim, type PatternType, type SensorParams, type SimLayout,
+  type BlockDesign, type FieldParams, type FieldSim, type PatternType, type SensorParams, type SimLayout, latticeOffset,
 } from './simulate';
-import { ce90Shifts, holdTracker } from './resolving';
+import { holdTracker } from './resolving';
 import { buildS2Grid, cellFills, cellLines, type LngLatBounds, type S2Grid } from './s2-grid';
-import { shiftedVerdict } from './pixel-verdicts';
+import { landings, shiftedVerdict } from './pixel-verdicts';
 import { type Poly } from './geometry';
 import { cellInFieldTest } from './field-membership';
 import { categoricalColors, distinctColors, mixN } from './util';
 import { PCA_SAMPLE, ladderRungs, type Rung } from './sensors';
-import { pixelId } from './pca-field';
+import { pixelId } from './ladder-rung';
 import { importedTrialExtent, trialExtent } from './ladder';
 import { ladderKey } from './ladder-rung';
 import { OPTIMIZE_PLACEMENT, ladderSearch, ladderStep, type LadderContext } from './ladder-step';
@@ -100,8 +100,12 @@ type GridApi = ReturnType<typeof useFieldGrid>;
  */
 
 /** Planting design, crop curves and noise. Sigma is owned by step 2 and passed in. */
-export function useExperiment({ sigmaX, sigmaY, fieldBounds, fieldOrigin, pixelSize, epsg, aoi, fieldRing }: {
+export function useExperiment({ sigmaX, sigmaY, anyPosition, placeHeldM, fieldBounds, fieldOrigin, pixelSize, epsg, aoi, fieldRing }: {
   sigmaX: number; sigmaY: number;
+  /** The CE90 a trial is placed for, in metres: 0 when the page places for pure pixels (SensorParams.placeHeldM). */
+  placeHeldM: number;
+  /** True for a tasked sensor: the trial is counted at the worst position on its lattice (SensorParams.anyPosition). */
+  anyPosition: boolean;
   /**
    * The field's box and its outline (use-area `fieldRing`): a block trial is
    * seated inside the outline, not on the middle of the box (trial-seat.ts).
@@ -255,10 +259,10 @@ export function useExperiment({ sigmaX, sigmaY, fieldBounds, fieldOrigin, pixelS
     // returns the same plan the snap would have. The sensor is part of it
     // because the answer depends on the blur, so it is in the deps too.
     const place = seatedPlacement(blockDesign, fieldRing, aoi, epsg, fieldBounds, fieldOrigin, rotation, pixelSize, OPTIMIZE_PLACEMENT);
-    const sen: SensorParams = { sigmaX, sigmaY, mixThreshold: threshold / 100 };
+    const sen: SensorParams = { sigmaX, sigmaY, mixThreshold: threshold / 100, anyPosition, placeHeldM };
     return stakeBlockPlan(blockDesign, place, fieldOrigin, rotation, pixelSize, sen, fieldBounds).plan;
   }, [pattern, fieldBounds?.join(','), fieldOrigin?.[0], fieldOrigin?.[1], rotation, pixelSize, fieldRing, aoi?.join(','), epsg,
-      sigmaX, sigmaY, threshold,
+      sigmaX, sigmaY, threshold, anyPosition, placeHeldM,
       blockDesign.nSpecies, blockDesign.nBlocks, blockDesign.plotLength, blockDesign.plotWidth,
       blockDesign.plotAlley, blockDesign.blockAlley, blockDesign.blocksPerRow, blockDesign.seed]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -313,12 +317,12 @@ export function useExperiment({ sigmaX, sigmaY, fieldBounds, fieldOrigin, pixelS
    * shows a stale design with no error, no type failure and no failing test.
    */
   const layoutSig = layoutKey(layout);
-  const sensor: SensorParams = { sigmaX, sigmaY, mixThreshold: threshold / 100 };
+  const sensor: SensorParams = { sigmaX, sigmaY, mixThreshold: threshold / 100, anyPosition, placeHeldM };
   // Every primitive the sensor depends on: `sensor` itself is a fresh literal each
   // render and is deliberately kept out of dependency arrays, so this string is
   // what tells the memos the PSF changed. Miss the offsets here and the page
   // keeps showing the purity it computed for a centred kernel.
-  const sensorSig = `${sigmaX}_${sigmaY}_${threshold}`;
+  const sensorSig = `${sigmaX}_${sigmaY}_${threshold}_${anyPosition ? 1 : 0}_${placeHeldM}`;
 
   /**
    * The species as everything downstream should DRAW them: one distinct colour
@@ -453,6 +457,17 @@ export function useSimulation({ aoi, gridApi, exp, simOn, showPure, fieldOrigin 
   const { pattern, stripWidth, spacing, rotation, threshold, layout, layoutSig, sensor,
           sensorSig, magnitude, alpha, beta, speciesD, colors, cropSig } = exp;
 
+  /**
+   * Where the shown grid's pixel edges fall, modulo its pixel: zero on most
+   * grids, half a pixel on native Landsat (sensors.ts latticePhase has the
+   * rule; here it is read off the grid itself, which is the real one).
+   */
+  // Off the grid drawn, or off the one built while a capped grid waits to be
+  // drawn; latticeOffset reads whole multiples as exactly zero, so a remainder
+  // of rounding cannot move the pattern as the map is panned.
+  const gridRes = build?.res ?? 0, gridBox = renderGrid?.utmBounds ?? build?.utmBounds ?? null;
+  const gridPhase: [number, number] = gridRes > 0 && gridBox ? [latticeOffset(gridBox[0], gridRes), latticeOffset(gridBox[1], gridRes)] : [0, 0];
+
   // Pattern origin: the field corner, optionally slid to the phase that maximises
   // pure pixels (strip edges land on pixel edges). `offset` = [along-row, cross-row] m.
   const patternOrigin = useMemo((): { origin: [number, number]; offset: [number, number] } | null => {
@@ -464,12 +479,14 @@ export function useSimulation({ aoi, gridApi, exp, simOn, showPure, fieldOrigin 
     if (!OPTIMIZE_PLACEMENT) return { origin: base, offset: [0, 0] };
     // The sensor is passed so the phase is chosen for the blur this page
     // simulates: a sharp optimum is the blurred worst (see searchPhaseOffset).
-    const [du, dv] = bestPhaseOffset(pattern, build.res, stripWidth, spacing, threshold / 100, base[0], base[1], sensor);
+    // Slid onto the grid the map really shows (gridPhase): the search counts
+    // from zero, so the corner is handed over in the grid's own count.
+    const [du, dv] = bestPhaseOffset(pattern, build.res, stripWidth, spacing, threshold / 100, base[0] - gridPhase[0], base[1] - gridPhase[1], sensor);
     const t = (rotation * Math.PI) / 180, cos = Math.cos(t), sin = Math.sin(t);
     return { origin: [base[0] + du * cos - dv * sin, base[1] + du * sin + dv * cos] as [number, number], offset: [du, dv] as [number, number] };
     // layoutSig rather than the loose primitives: it also covers the block
     // design, whose seed, plot size and alleys move none of them.
-  }, [aoi, build?.epsg, build?.res, layoutSig, sensorSig, fieldOrigin?.[0], fieldOrigin?.[1]]);
+  }, [aoi, build?.epsg, build?.res, layoutSig, sensorSig, fieldOrigin?.[0], fieldOrigin?.[1], gridPhase[0], gridPhase[1]]);
 
   const sim = useMemo(
     () => (simOn && renderGrid && patternOrigin ? simulateField(renderGrid, patternOrigin.origin, layout, sensor) : null),
@@ -622,7 +639,11 @@ export function useSimulation({ aoi, gridApi, exp, simOn, showPure, fieldOrigin 
     // robustMask, a placement at a time: each is asked only about the pixels
     // still pure for their plot at every placement before it (holdTracker),
     // and once none is left the rest are not simulated at all.
-    const shifts = ce90Shifts(geoErrM), hold = holdTracker(sim.mixed);
+    // Where the image can land and whether anything survives it: the table's
+    // and the export's rule (pixel-verdicts.ts landings).
+    const { lands: shifts, hopeless } = landings(layout, geoErrM);
+    if (hopeless) { setHeld({ sim, ce90: geoErrM, mask: new Uint8Array(sim.mixed.length) }); setHeldBusy(false); return; }
+    const hold = holdTracker(sim.mixed);
     let timer = 0, stopped = false, done = 0;
     const next = () => {
       if (stopped) return;
@@ -711,7 +732,7 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
   /** The map's simulation of `renderGrid`, reused when the PCA runs on that same grid. */
   mapSim: FieldSim | null;
 }) {
-  const { grid, renderGrid, build, buildOpts, inField, sigmaX, sigmaY, ce90At } = gridApi;
+  const { grid, renderGrid, build, buildOpts, inField, sigmaX, sigmaY } = gridApi;
   const { rotation, threshold, sensorSig, layout, layoutSig, blockDesign,
           importedAngle, importedFileAngle, importedBasePlan } = exp;
   const [selectedPixels, setSelectedPixels] = useState<number[]>([]); // pixels picked in the PCA → highlight on map
@@ -926,9 +947,10 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
    */
   const ladderCtx = useMemo((): LadderContext | null => (aoi && build?.epsg
     ? { aoi, fieldRing, epsg: build.epsg, layout, threshold, blockDesign, importedAngle, importedFileAngle, importedBasePlan,
-        geoAuto: gridApi.geoAuto, geoManual: gridApi.geoManual }
+        geoAuto: gridApi.geoAuto, geoManual: gridApi.geoManual, geoProvider: gridApi.geoProvider, placeFor: gridApi.placeFor }
     : null),
-    [aoi, fieldRing, build?.epsg, ladderSig, threshold, ce90At]); // eslint-disable-line react-hooks/exhaustive-deps
+    // The settings themselves, not a function made from them: see use-grid ce90At.
+    [aoi, fieldRing, build?.epsg, ladderSig, threshold, gridApi.geoAuto, gridApi.geoManual, gridApi.geoProvider, gridApi.placeFor]); // eslint-disable-line react-hooks/exhaustive-deps
   /** ONE satellite of the ladder at a given rotation: ladderStep, on the page's own thread. */
   const stepAt = useCallback((rotationDeg: number, rung: Rung, asDrawn = true): SweepStep | null =>
     (ladderCtx ? ladderStep(ladderCtx, rotationDeg, rung, asDrawn) : null), [ladderCtx]);
@@ -1009,13 +1031,21 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
       if (pooled.current?.ctx !== ladderCtx) pooled.current = { ctx: ladderCtx, id: pool.setContext(ladderCtx) };
       const ctxId = pooled.current.id;
       let asked = false;
-      const want = jobs.map(([rot, g, which], q) => {
+      // Asked for in the order of how long they take, the longest first: the
+      // best placements (each a search) before the trial as drawn, and the
+      // finest pixels first within each. The ladder is shown when the LAST rung
+      // is back, and with the long ones queued last, one worker was still on a
+      // search while the others had nothing left to do.
+      const order = jobs.map((_, q) => q).sort((x, y) => jobs[y][2] - jobs[x][2] || x - y);
+      const want: Promise<SweepStep>[] = new Array(jobs.length);
+      for (const q of order) {
+        const [rot, g, which] = jobs[q];
         const key = `${rot}|${which}|${rungKey(g)}`;
         const kept = cache.get(key);
-        if (kept) return Promise.resolve(kept);
+        if (kept) { want[q] = Promise.resolve(kept); continue; }
         asked = true;
-        return pool.step(ctxId, rot, g, which === 0, q).then(step => { cache.set(key, step); return step; });
-      });
+        want[q] = pool.step(ctxId, rot, g, which === 0, q).then(step => { cache.set(key, step); return step; });
+      }
       if (asked) setSweepBusy(true);
       Promise.all(want).then(
         steps => { if (gen === sweepGen.current) commit(steps.slice(0, ladder.length), steps.slice(ladder.length)); },

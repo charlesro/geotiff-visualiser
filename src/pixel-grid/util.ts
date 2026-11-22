@@ -26,17 +26,29 @@ const mixN = (fracs: ArrayLike<number>, colors: string[], pBare = 0, pOffTrial =
   for (let i = 0; i < fracs.length; i++) {
     const f = fracs[i];
     if (!f) continue;
-    const [cr, cg, cb] = hexRgb(colors[i % colors.length]);
-    r += f * cr; g += f * cg; b += f * cb; w += f;
+    const c = rgbOf(colors[i % colors.length]);
+    r += f * c[0]; g += f * c[1]; b += f * c[2]; w += f;
   }
-  for (const [f, col] of [[pBare, BARE.color], [pOffTrial, OFF_TRIAL.color]] as [number, string][]) {
-    if (!f) continue;
-    const [cr, cg, cb] = hexRgb(col);
-    r += f * cr; g += f * cg; b += f * cb; w += f;
-  }
+  if (pBare) { const c = rgbOf(BARE.color); r += pBare * c[0]; g += pBare * c[1]; b += pBare * c[2]; w += pBare; }
+  if (pOffTrial) { const c = rgbOf(OFF_TRIAL.color); r += pOffTrial * c[0]; g += pOffTrial * c[1]; b += pOffTrial * c[2]; w += pOffTrial; }
   const d = w || 1;
-  return `#${[r / d, g / d, b / d].map(v => Math.round(v).toString(16).padStart(2, '0')).join('')}`;
+  return `#${hex2(r / d)}${hex2(g / d)}${hex2(b / d)}`;
 };
+
+/**
+ * A colour's three channels, read once: this blend is called for every pixel
+ * drawn, tens of thousands a map, and each call used to cut and parse every
+ * colour again and make a dozen short-lived arrays and strings of them.
+ */
+const rgbSeen = new Map<string, number[]>();
+const rgbOf = (h: string): number[] => {
+  let c = rgbSeen.get(h);
+  if (!c) { c = hexRgb(h); if (rgbSeen.size < 4096) rgbSeen.set(h, c); }
+  return c;
+};
+/** The two hex digits of each value from 0 to 255, and of a channel rounded to one of them. */
+const HEX2 = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, '0'));
+const hex2 = (v: number): string => { const k = Math.round(v); return HEX2[k] ?? k.toString(16).padStart(2, '0'); };
 
 /** Fraction-weighted blend of crop A / crop B / bare soil, reducing to a clean
  *  A↔B gradient when there's no bare gap. Kept as the two-species spelling of

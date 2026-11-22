@@ -105,7 +105,7 @@ const HEADS: Record<ImageCase['id'], { label: React.ReactNode; tip: (ce90: numbe
 
 export function PlotSizeCard(p: StepProps) {
   const { wantPure, setWantPure } = p;
-  const { build, pxSize, psfSigmaXM, psfSigmaYM, geoErrM } = p.gridApi;
+  const { build, pxSize, psfSigmaXM, psfSigmaYM, geoErrM, geoSigmaM } = p.gridApi;
   const { threshold } = p.exp;
   const design = designPlot(p.exp);
   const res = build?.res ?? pxSize;
@@ -135,8 +135,8 @@ export function PlotSizeCard(p: StepProps) {
 
   // The numbers follow the inputs a moment behind, so a slider dragged in
   // another field never waits on them.
-  const inputs = useMemo(() => ({ res, sigma, geoErrM, threshold, a, b, angle, strip, wantPure, maxA, maxB }),
-    [res, sigma, geoErrM, threshold, a, b, angle, strip, wantPure, maxA, maxB]);
+  const inputs = useMemo(() => ({ res, sigma, geoErrM, geoSigmaM, threshold, a, b, angle, strip, wantPure, maxA, maxB }),
+    [res, sigma, geoErrM, geoSigmaM, threshold, a, b, angle, strip, wantPure, maxA, maxB]);
   // Nothing at all in the render that first shows the card (the page's first
   // one, when step 3 is the step left open): the three searches are a good
   // tenth of a second on a slow computer, and held up everything else the
@@ -147,7 +147,7 @@ export function PlotSizeCard(p: StepProps) {
     if (!d || !(d.a > 0) || !(d.res > 0) || !(d.sigma > 0)) return null;
     const plot: Plot = { a: d.a, b: d.b };
     const rows = [...new Set([...(d.strip ? [1, 2, 3] : [1, 4, 9]), d.wantPure])].sort((x, y) => x - y);
-    const cases = imageCases(d.sigma, d.geoErrM).map(c => {
+    const cases = imageCases(d.sigma, d.geoErrM, d.geoSigmaM).map(c => {
       const v = { gsd: d.res, sigma: c.sigma, shift: c.shift, threshold: d.threshold / 100, angleDeg: d.angle };
       return { id: c.id, scales: pureScales(plot, v, rows), now: fewestPure(plot, v), keeps: purestShare(plot, v),
                most: d.maxA > 0 && d.maxB > 0 ? fewestPure({ a: d.maxA, b: d.maxB }, v) : null };
@@ -175,7 +175,7 @@ export function PlotSizeCard(p: StepProps) {
   return (
     <div className={`rounded-md border border-white/10 bg-white/[0.02] px-2.5 py-2 text-[14px] transition-opacity ${stale ? 'opacity-60' : ''}`}>
       <div className="mb-1 flex items-baseline justify-between gap-2 text-[13px] uppercase tracking-wide text-neutral-500">
-        <Explain below text={<>The smallest {design.strip ? 'strip' : 'plot, of the same shape as the design’s,'} that keeps at least this many pure pixels wherever the pixel grid falls. A pixel is pure when at least {threshold} % of its signal comes from its own plot. Every side is counted with its own distance: share kept = share kept across the width × share kept along the length.</>}>
+        <Explain below doc="plot-size" text={<>The smallest {design.strip ? 'strip' : 'plot, of the same shape as the design’s,'} that keeps at least this many pure pixels wherever the pixel grid falls.</>}>
           <span className={term}>{design.strip ? 'Strip width required' : both ? 'Plot size required, m' : 'Plot side required'}</span>
         </Explain>
         <span className="normal-case tracking-normal">ε = {eps} %</span>
@@ -236,7 +236,7 @@ export function PlotSizeCard(p: StepProps) {
             </div>
             <div className="grid items-baseline gap-x-2 gap-y-0.5" style={grid}>
               <span className="text-neutral-400">
-                <Explain text="The most pure pixels a plot can keep in this experiment area: the largest plots, of the design's shape, with which the trial still fits inside the area, a pixel clear of its edge, in the arrangement of blocks that lets them grow the most. More than this needs a larger area, fewer plots or another plot shape.">
+                <Explain doc="plot-size" text="The most pure pixels a plot can keep in this experiment area: the largest plots, of the design's shape, with which the trial still fits inside it.">
                   <span className={term}>pure px in every plot</span>
                 </Explain>
               </span>
@@ -265,7 +265,7 @@ export function PlotSizeCard(p: StepProps) {
           </span>
         ))}
         <span className="text-neutral-400">
-          <Explain text={<>Share of its signal that the purest pixel takes from outside its plot, at the grid placement that is worst for it. A plot holds a pure pixel once this is at most ε = {eps} %.</>}>
+          <Explain doc="plot-size" text={<>Share of its signal that the purest pixel takes from outside its plot, at the worst grid placement. Pure once at most ε = {eps} %.</>}>
             <span className={term}>purest pixel, from outside</span>
           </Explain>
         </span>

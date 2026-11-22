@@ -77,6 +77,30 @@ const clipPolygon = (subject: Poly, win: Poly): Poly => {
   return out;
 };
 
+/** The sides of a convex ring, four numbers each (a point of the side, its unit normal pointing in), or null for a ring that is not convex or has no area. */
+const convexSidesOf = (ring: Poly): Float64Array | null => {
+  const pts: [number, number][] = [];
+  for (const p of ring) { const last = pts[pts.length - 1]; if (!last || last[0] !== p[0] || last[1] !== p[1]) pts.push(p); }
+  if (pts.length > 1 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1]) pts.pop();
+  const m = pts.length;
+  if (m < 3) return null;
+  // From the first vertex: eastings and northings are six and seven figures long.
+  const [x0, y0] = pts[0];
+  let area = 0;
+  for (let i = 0; i < m; i++) { const a = pts[i], b = pts[(i + 1) % m]; area += (a[0] - x0) * (b[1] - y0) - (b[0] - x0) * (a[1] - y0); }
+  if (!(Math.abs(area) > 0)) return null;
+  const sign = area > 0 ? 1 : -1;
+  const out = new Float64Array(4 * m);
+  for (let i = 0; i < m; i++) {
+    const a = pts[i], b = pts[(i + 1) % m], c = pts[(i + 2) % m];
+    const dx = b[0] - a[0], dy = b[1] - a[1], len = Math.hypot(dx, dy), ux = c[0] - b[0], uy = c[1] - b[1];
+    // Every turn the same way (a little slack for points in a line), or the ring is not convex.
+    if (sign * (dx * uy - dy * ux) < -1e-9 * len * Math.hypot(ux, uy)) return null;
+    out[4 * i] = a[0]; out[4 * i + 1] = a[1]; out[4 * i + 2] = (-dy / len) * sign; out[4 * i + 3] = (dx / len) * sign;
+  }
+  return out;
+};
+
 /**
  * A test for "does this pixel belong to the field": true when the pixel's
  * square and the field ring share some AREA, in the same planar metres (UTM).
@@ -92,9 +116,33 @@ const clipPolygon = (subject: Poly, win: Poly): Poly => {
 const fieldOverlapTest = (ring: Poly) => {
   let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
   for (const [x, y] of ring) { w = Math.min(w, x); e = Math.max(e, x); s = Math.min(s, y); n = Math.max(n, y); }
+  /**
+   * A CONVEX ring, which a trial's footprint always is, settles nearly every
+   * pixel with a few products: one whose four corners are inside every side
+   * lies wholly in the ring, and one whose corners are all beyond some side
+   * shares nothing with it. Each side as a point and its unit normal pointing
+   * in; null for a ring that is not convex.
+   *
+   * Only the pixels a side actually crosses, a few in a hundred, are clipped.
+   * They all were: five arrays and a closure made for each pixel of a rung,
+   * most of them to learn that the pixel was in the middle of the trial.
+   */
+  const sides = convexSidesOf(ring);
   return (e0: number, n0: number, size: number): boolean => {
     const e1 = e0 + size, n1 = n0 + size;
     if (e1 <= w || e0 >= e || n1 <= s || n0 >= n || ring.length < 3) return false;
+    if (sides) {
+      // A millionth of a pixel clear of a side, either way, before saying so without clipping.
+      const clear = 1e-6 * size;
+      let within = true;
+      for (let q = 0; q < sides.length; q += 4) {
+        const ax = sides[q], ay = sides[q + 1], nx = sides[q + 2], ny = sides[q + 3];
+        // The corner furthest in along this side's normal, and the one furthest out.
+        if (((nx >= 0 ? e1 : e0) - ax) * nx + ((ny >= 0 ? n1 : n0) - ay) * ny <= -clear) return false;
+        if (within && ((nx >= 0 ? e0 : e1) - ax) * nx + ((ny >= 0 ? n0 : n1) - ay) * ny < clear) within = false;
+      }
+      if (within) return true;
+    }
     const part = clipPolygon(ring, [[e0, n0], [e1, n0], [e1, n1], [e0, n1]]);
     if (part.length < 3) return false;
     let a = 0;

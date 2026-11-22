@@ -1,4 +1,4 @@
-import type { BlockPlan, SensorParams } from './simulate';
+import { latticeOffset, type BlockPlan, type SensorParams } from './simulate';
 import type { ImportedPlan } from './imported-types';
 
 type Psf = Pick<SensorParams, 'sigmaX' | 'sigmaY' | 'offX' | 'offY'>;
@@ -16,10 +16,13 @@ function widenedExtent(
   // aggregate's kernel window, in pixels, for each axis.
   const reachX = (2 * Math.ceil(3 * Math.max(0, sensor.sigmaX) + Math.abs(sensor.offX ?? 0)) + 2) * r;
   const reachY = (2 * Math.ceil(3 * Math.max(0, sensor.sigmaY) + Math.abs(sensor.offY ?? 0)) + 2) * r;
-  let e0 = Math.max(extent[0], Math.floor((tE0 - reachX) / r) * r);
-  let n0 = Math.max(extent[1], Math.floor((tN0 - reachY) / r) * r);
-  let e1 = Math.min(extent[2], Math.ceil((tE1 + reachX) / r) * r);
-  let n1 = Math.min(extent[3], Math.ceil((tN1 + reachY) / r) * r);
+  // Snapped onto the extent's own lattice (simulate.ts latticeOffset): whole
+  // multiples of `r` for nearly every grid, half a pixel off for native Landsat.
+  const pE = latticeOffset(extent[0], r), pN = latticeOffset(extent[1], r);
+  let e0 = Math.max(extent[0], Math.floor((tE0 - reachX - pE) / r) * r + pE);
+  let n0 = Math.max(extent[1], Math.floor((tN0 - reachY - pN) / r) * r + pN);
+  let e1 = Math.min(extent[2], Math.ceil((tE1 + reachX - pE) / r) * r + pE);
+  let n1 = Math.min(extent[3], Math.ceil((tN1 + reachY - pN) / r) * r + pN);
   // A trial wholly outside the field: none of it is in any pixel that is kept.
   if (e1 <= e0 || n1 <= n0) { e0 = extent[0]; n0 = extent[1]; e1 = e0 + r; n1 = n0 + r; }
   return [e0, n0, e1, n1];

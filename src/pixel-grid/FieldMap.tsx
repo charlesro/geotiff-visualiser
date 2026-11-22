@@ -324,7 +324,7 @@ function FieldMapBody({
                 { label: 'PSF blur', on: showPsf, flip: () => setShowPsf(v => !v), off: !build || psfSigmaM <= 0,
                   title: "Show the sensor's blur footprint to scale; click a pixel to move it there" },
                 { label: 'σ PSF, geo, eff', on: showSigmas, flip: () => setShowSigmas(v => !v), off: !build || psfSigmaM <= 0,
-                  title: 'Draw the blur, the geolocation error and the two combined as rings of one σ, to scale, and, broken, the circles that hold 90 % of a pixel\'s signal, without the CE90 (2.146 σ PSF) and with it (2.146 σ eff); click a pixel to move them there' },
+                  title: 'Draw the blur, the geolocation error and the two combined as rings of one σ, to scale, and, broken, the circles that hold 90 % of a pixel\'s signal; click a pixel to move them there' },
                 { label: 'Signal of a pixel', on: showSources && simOn, flip: () => setShowSources(v => !v), off: !build || !simOn,
                   title: simOn
                     ? "Draw a pixel's signal as 1000 dots, each in the colour of what it lands on, and list the share of each plot: the first is the purity; click a pixel to move them there"

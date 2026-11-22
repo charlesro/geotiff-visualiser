@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useTransition } from 'react';
 import { ChevronDown, Info } from 'lucide-react';
 import { CROP_COLORS, CROP_PRESETS, TRUTH_TYPES, type FieldParams } from './simulate';
+import { docHref, type DocId } from './docs';
 
 /**
  * The page's own chrome: the numbered stepper section, the labelled slider, the
@@ -221,9 +222,12 @@ const Spinner = ({ className = '' }: { className?: string }) => (
  * `align="right"` / `below` exist because the sidebar scroll container computes
  * to overflow-x: auto and will CLIP a popover that overhangs its edge, so use them
  * on anchors near the right edge or the top of the panel.
+ *
+ * `doc` names the section of the documentation page that says the rest: the
+ * text here stays a sentence or two, and the popover ends on a link to it.
  */
-export function Explain({ text, children, align = 'left', below = false }: {
-  text: React.ReactNode; children: React.ReactNode; align?: 'left' | 'right'; below?: boolean;
+export function Explain({ text, children, align = 'left', below = false, doc }: {
+  text: React.ReactNode; children: React.ReactNode; align?: 'left' | 'right'; below?: boolean; doc?: DocId;
 }) {
   const [open, setOpen] = useState(false);
   const [pinned, setPinned] = useState(false);
@@ -250,9 +254,25 @@ export function Explain({ text, children, align = 'left', below = false }: {
         <span role="tooltip"
           className={`absolute z-[1200] w-64 rounded-md border border-white/10 bg-neutral-900 px-2.5 py-2 text-left text-[14px] font-normal normal-case leading-snug tracking-normal text-neutral-300 shadow-xl ${below ? 'top-full mt-1.5' : 'bottom-full mb-1.5'} ${align === 'right' ? 'right-0' : 'left-0'}`}>
           {text}
+          {doc && <a href={docHref(doc)} target="_blank" rel="noopener noreferrer" className="mt-1 block text-[13px] text-sky-400 hover:text-sky-300">Documentation ↗</a>}
         </span>
       )}
     </span>
+  );
+}
+
+/**
+ * A few words in the panel that open the documentation at the section saying
+ * the rest. What stood here was the section itself, a paragraph under the
+ * satellite picker.
+ */
+export function DocChip({ to, tone = 'neutral', children }: { to: DocId; tone?: 'neutral' | 'amber'; children: React.ReactNode }) {
+  const t = tone === 'amber' ? 'text-amber-300 bg-amber-500/10 hover:bg-amber-500/20' : 'text-neutral-400 bg-white/[0.04] hover:bg-white/[0.08] hover:text-neutral-200';
+  return (
+    <a href={docHref(to)} target="_blank" rel="noopener noreferrer" title="Open the documentation at this section"
+      className={`rounded px-1.5 py-0.5 text-[13px] leading-snug transition-colors ${t}`}>
+      {children} <span aria-hidden="true">↗</span>
+    </a>
   );
 }
 

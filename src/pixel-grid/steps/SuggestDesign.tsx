@@ -54,6 +54,8 @@ export interface SuggestAsk {
 }
 
 /** How the satellite list speaks of the page's own satellite: by the step that sets it, while that step is shown. */
+/** True at an angle where plots lie each their own way on the pixels: any but a multiple of a quarter turn. */
+const offRows = (deg: number): boolean => Math.abs(deg % 90) > 1e-9;
 const SAT_NOTE = SHOW_GRID_STEP ? 'selects it in step 2. The one marked (step 2) is the one selected there now.' : "makes it the page's satellite. The one marked (now) is the page's satellite now.";
 
 /** Pixels asked of a strip until the reader types a figure. */
@@ -110,7 +112,7 @@ export function SuggestDesign(p: StepProps) {
   // The satellites of the table, the one selected as it stands in step 2.
   const sats = ladderRungs({ id: sourceId, res, sigmaX, sigmaY });
   const sat = sats.find(g => g.id === ask.sat) ?? sats.find(g => g.id === sourceId) ?? sats[0];
-  const ce90 = sat ? Math.round(ce90At(sat.res) * 100) / 100 : 0;
+  const ce90 = sat ? Math.round(ce90At(sat.res, sat.id) * 100) / 100 : 0;
   const set = <K extends keyof SuggestAsk>(k: K) => (v: SuggestAsk[K]) => setAsk({ ...ask, [k]: v });
   // Alternating rows or columns: two crops in strips, sized by the pixels across a strip.
   const strips = p.exp.pattern === 'row' || p.exp.pattern === 'col';
@@ -131,7 +133,7 @@ export function SuggestDesign(p: StepProps) {
       ) : strips ? (
         <div className="grid grid-cols-3 gap-2">
           <NumField label="Pixels / strip" value={ask.perStrip ?? PER_STRIP_DEFAULT} onChange={set('perStrip')} min={1} max={2000}
-            hint="The fewest pure pixels every strip must keep, over its whole length. A strip's pixels are its pixels across times its length in pixels, so on a long field thin strips hold many: the strips built are the thinnest that keep a pixel across, widened only where the field's strips are too short to hold the count." />
+            hint="The fewest pure pixels every strip must keep over its whole length: its pixels across times its length in pixels." />
           <NumField label="Purity" value={threshold} onChange={setThreshold} min={50} max={99} unit="%"
             hint="A pixel counts when at least this share of its signal comes from its own strip (ε = 100 minus it). This is the page's purity threshold: changing it here changes it everywhere." />
           <NumField label="Alley" value={ask.stripAlley ?? 0} onChange={set('stripAlley')} min={0} max={100} step={0.5} unit="m"
@@ -151,7 +153,7 @@ export function SuggestDesign(p: StepProps) {
         <NumField label="Purity" value={threshold} onChange={setThreshold} min={50} max={99} unit="%"
           hint="A pixel counts when at least this share of its signal comes from its own plot (ε = 100 minus it). This is the page's purity threshold: changing it here changes it everywhere." />
         <NumField label="Plot alley" value={ask.plotAlley} onChange={set('plotAlley')} min={0} max={100} step={0.5} unit="m"
-          hint="Bare ground between the plots of a block. None by default: an alley takes ground and gives no pixel, so the smallest trial has its plots touching." />
+          hint="Bare ground between the plots of a block. None by default: an alley takes ground and gives no pixel." />
         <NumField label="Block alley" value={ask.blockAlley} onChange={set('blockAlley')} min={0} max={100} step={0.5} unit="m"
           hint="Bare ground between blocks. None by default. With several rows of blocks it is widened, if need be, to differ from the plot alley by whole pixels." />
       </div>
@@ -163,10 +165,10 @@ export function SuggestDesign(p: StepProps) {
         </select>
         <NumField label="Angle" value={ask.angle ?? 0} onChange={set('angle')} min={-90} max={90} unit="°"
           hint={checker
-            ? "The checkerboard's angle to the pixel rows, anticlockwise from east. 0 lays the cells along the rows: cells of whole pixels then all keep the same count. Turned, every cell lies its own way across the pixels and the count is their mean."
+            ? "The checkerboard's angle to the pixel rows, anticlockwise from east. At 0 every cell keeps the same count; turned, the count is their mean."
             : strips
-            ? "The strips' angle to the pixel rows, anticlockwise from east. 0 lays them along the rows: strips of whole pixels then all keep the same pixels across. Turned, a strip crosses the pixels obliquely and the pixels across are a mean along it."
-            : "The trial's angle to the pixel rows, anticlockwise from east. 0 lays it along the rows: plots of whole pixels then all keep the same count, and the trial is the smallest there is. Turned, each plot lies its own way across the pixels and the worst-placed one sets the size, so the plots come out larger."} />
+            ? "The strips' angle to the pixel rows, anticlockwise from east. At 0 every strip keeps the same pixels across; turned, they are a mean along the strip."
+            : "The trial's angle to the pixel rows, anticlockwise from east. At 0 the trial is the smallest there is; turned, the worst-placed plot sets the size."} />
       </div>
       {ce90 > 0 && (
         <label className="flex items-center gap-2 text-[14px] text-neutral-400">
@@ -216,8 +218,8 @@ function Outcome({ o }: { o: SuggestOutcome }) {
       <p>
         {/* Turned, the plots do not all keep the same count: the figure is the worst plot's. */}
         {b.held !== null
-          ? <>Each plot keeps {b.angle !== 0 && 'at least '}<b className={strong}>{b.held}</b> px within the CE90 ({o.ce90M} m), {b.pure} pure.</>
-          : <>Each plot keeps {b.angle !== 0 && 'at least '}<b className={strong}>{b.pure}</b> pure px.</>}
+          ? <>Each plot keeps {offRows(b.angle) && 'at least '}<b className={strong}>{b.held}</b> px within the CE90 ({o.ce90M} m), {b.pure} pure.</>
+          : <>Each plot keeps {offRows(b.angle) && 'at least '}<b className={strong}>{b.pure}</b> pure px.</>}
       </p>
       {b.alleyWidened && (
         <p className="text-neutral-400">Block alley set to {m(d.blockAlley)} m, so that rows of blocks stay in step with the pixels.</p>

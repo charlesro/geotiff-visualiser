@@ -200,7 +200,7 @@ console.log('\nU2b. one sampling-position control, not two, and its effect is wh
   // all of them. The shifts go out to the CE90 and are NOT clamped to half a
   // pixel, because a pixel chosen by its coordinates is not periodic.
   check('the ladder computes the robust set for each rung, out to the CE90',
-    /const lands = ce90Shifts\(ce90\);/.test(rungSrc) && /heldMask\(mixed, lands\.length, /.test(rungSrc)
+    /const \{ lands, hopeless \} = landings\(layoutL, ce90\);/.test(rungSrc) && /heldMask\(mixed, lands\.length, /.test(rungSrc)
     && !/shiftSamples\(geoErrM/.test(useSim2) && !/shiftSamples\(/.test(rungSrc));
   // heldMask is robustMask asked a placement at a time, each one only about the
   // pixels still standing: the same set, without simulating what cannot matter.
@@ -209,7 +209,7 @@ console.log('\nU2b. one sampling-position control, not two, and its effect is wh
     && /if \(alive\[k\] && verdict\[k\] !== nominal\[k\]\) \{ alive\[k\] = 0; left--; \}/.test(read('src/pixel-grid/resolving.ts')));
   // The note's own number: one effective spot, sigma_eff in quadrature.
   check('and the across-image mean under sigma_eff, as the note does',
-    /Math\.hypot\(rung\.sigmaX, sigGeoM \/ r\)/.test(rungSrc) && /sigGeoM = ce90 > 0 \? ce90 \/ CE90_TO_SIGMA : 0/.test(rungSrc));
+    /Math\.hypot\(rung\.sigmaX, sigGeoM \/ r\)/.test(rungSrc) && /sigGeoM = ce90Exact > 0 \? ce90Exact \/ CE90_TO_SIGMA : 0/.test(rungSrc));
   check('skipped past the widest kernel the engine is allowed elsewhere', /Math\.max\(effX, effY\) <= 5/.test(rungSrc));
   check('only when the CE90 is above zero', /if \(ce90 > 0 && resolvingPct != null\)/.test(rungSrc));
   // The note takes sigma_geo = GSD / 3 when no accuracy is known. The CE90 was
@@ -219,13 +219,14 @@ console.log('\nU2b. one sampling-position control, not two, and its effect is wh
   {
     const g = read('src/pixel-grid/use-grid.ts');
     check('the CE90 defaults to the note\'s GSD / 3, not to 0',
-      /usePersistentState\('geoAuto', true, isBool\)/.test(g) && /ce90For\(geoAuto, geoManual, res\)/.test(g)
+      /usePersistentState\('geoAuto', true, isBool\)/.test(g) && /sourceCe90\(id, res, \{ auto: geoAuto, manualM: geoManual, provider: geoProvider \}\)/.test(g)
       && /ce90For = \(auto: boolean, manualM: number, res: number\): number => \(auto \? \(CE90_TO_SIGMA \* res\) \/ 3 : manualM\);/.test(read('src/pixel-grid/resolving.ts')));
     check('typing a value is what turns the default off', /setGeoErrM = useCallback\(\(v: number\) => \{ setGeoAuto\(false\); setGeoManual\(v\); \}/.test(g));
-    check('each rung uses the CE90 of its own pixel size', /const ce90 = Math\.round\(ce90At\(r\) \* 100\) \/ 100;/.test(rungSrc)
-      && /const ce90At = \(res: number\) => ce90For\(ctx\.geoAuto, ctx\.geoManual, res\);/.test(rungSrc)
+    check('each rung uses the CE90 of its own pixel size', /const ce90Exact = ce90At\(r\);\s*const ce90 = Math\.round\(ce90Exact \* 100\) \/ 100;/.test(rungSrc)
+      && /const ce90At = \(res: number\) => rungCe90\(ctx, rung\.id, res\);/.test(rungSrc)
+      && /sourceCe90\(id, res, \{ auto: ctx\.geoAuto, manualM: ctx\.geoManual, provider: ctx\.geoProvider \}\)/.test(rungSrc)
       && /ce90M: ce90 > 0 \? ce90 : undefined/.test(rungSrc));
-    check('and the input offers the way back to the default', /onClick=\{\(\) => setGeoAuto\(true\)\} disabled=\{geoAuto\}/.test(read('src/pixel-grid/steps/GridStep.tsx')));
+    check('and the input offers the way back to the default', /onClick=\{\(\) => setGeoAuto\(true\)\} disabled=\{geoAuto && !geoProvider\}/.test(read('src/pixel-grid/steps/GridStep.tsx')));
   }
   check('every sample goes through the SAME share rule as the rung it qualifies',
     (rungSrc.match(/plantedShare\(/g) || []).length >= 2 && !/0\.8 \* geo/.test(rungSrc));
@@ -447,13 +448,24 @@ console.log('\nU6. a measured PSF reproduces the FWHM it was measured at');
     ['s2-10', 10, 14.0], ['planet', 3, 9.7], ['wv', 1.6, 1.9],
     ['wv-ps', 0.4, 1.1], ['pleiades', 2, 5.0], ['pleiades-ps', 0.5, 3.0],
   ];
+  // The FWHM itself is what the row carries, turned into a sigma by one rule: a
+  // sigma kept to two decimals gave 13.9 m back for Sentinel-2's 14.
   for (const [id, res, fwhm] of MEASURED) {
-    const row = new RegExp(`\\{ id: '${id}',[^}]*?res: ([0-9.]+),[^}]*?psf: ([0-9.]+),`).exec(src);
+    const row = new RegExp(`\\{ id: '${id}',[^}]*?res: ([0-9.]+),[^}]*?psf: measured\\(([0-9.]+), ([0-9.]+)\\),`).exec(src);
     if (!row) { check(`${id} is still a source`, false); continue; }
-    const gotRes = parseFloat(row[1]), got = parseFloat(row[2]) * 2.355 * gotRes;
+    const gotRes = parseFloat(row[1]);
     check(`${id} at ${res} m carries the measured ${fwhm} m FWHM`,
-      gotRes === res && Math.abs(got - fwhm) < 0.05 * fwhm, `${gotRes} m, ${got.toFixed(2)} m`);
+      gotRes === res && parseFloat(row[2]) === fwhm && parseFloat(row[3]) === res, `${gotRes} m, ${row[2]} m over ${row[3]} m pixels`);
   }
+  check('one rule turns a measured FWHM into a sigma in pixels, with the note\'s 2.3548',
+    /const FWHM_PER_SIGMA = 2\.3548;/.test(src) && /const measured = \(fwhmM: number, res: number\): number => fwhmM \/ FWHM_PER_SIGMA \/ res;/.test(src));
+  // In a few words under the picker, which open the documentation's section: it was a paragraph there (2026-11-22).
+  check('the two pansharpened rows the note measured say so under the picker, and the documentation says what they are sharp in',
+    /note: 'Pansharpened\. Measured FWHM 1\.1 m\.', warn: PANSHARPENED \}/.test(src) && /note: 'Pansharpened\. Measured FWHM 3 m\.', warn: PANSHARPENED \}/.test(src)
+    && /const PANSHARPENED = 'Pansharpened: size the trial on the native row';/.test(src)
+    && /\{source\.warn && <DocChip to="pansharpened" tone="amber">\{source\.warn\}<\/DocChip>\}/.test(read('src/pixel-grid/steps/GridStep.tsx'))
+    && /sharp only in the panchromatic band/.test(read('pixel-grid-docs.html')) && /Size a trial on the native row/.test(read('pixel-grid-docs.html'))
+    && /the note measured about 1 m between images/.test(read('pixel-grid-docs.html')));
   // A link would be a fabrication: the note is not published.
   check('and says it was measured rather than linking somewhere it is not',
     /const SRC_PHENET = \{ label: 'measured on PHENET images at Mauguio and Toulouse' \};/.test(src) && !/SRC_PHENET = \{ url/.test(src));
@@ -478,7 +490,9 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
     && /effSigmaYM = Math\.hypot\(psfSigmaYM, geoSigmaM\)/.test(grid));
   // Providers publish CE90, the radius holding 90 % of a Rayleigh radial miss.
   check('and the geolocation figure is read as a CE90, not as a sigma',
-    /export const CE90_TO_SIGMA = 2\.1460;/.test(read('src/pixel-grid/resolving.ts')) && /geoErrM \/ CE90_TO_SIGMA/.test(grid)
+    /export const CE90_TO_SIGMA = 2\.1460;/.test(read('src/pixel-grid/resolving.ts'))
+    // From the figure before it is rounded for display: the default is then the note's third of a pixel exactly.
+    && /const ce90Exact = ce90At\(psfRes, sourceId\);\s*const geoErrM = Math\.round\(ce90Exact \* 100\) \/ 100;\s*const geoSigmaM = ce90Exact > 0 \? ce90Exact \/ CE90_TO_SIGMA : 0;/.test(grid)
     // ONE constant: the budget and the ladder must not each carry their own.
     && !/const CE90_TO_SIGMA/.test(grid));
   check('a pixel integrates over its footprint, so the box is 1\/sqrt(12)',
@@ -487,21 +501,28 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
   // Both a measured FWHM and a published MTF at Nyquist are SYSTEM figures that
   // already contain the detector, so the box is a second helping of it. Only a
   // typed sigma may legitimately be lens-only.
-  check('the box double-counts for every preset, not only the measured ones',
-    /const boxDoubleCounts = !!source\.psfSrc;/.test(grid));
+  // The engine follows the same rule: a blur that is a spot is read with no square under it.
+  check('the box is never added to a blur, in the budget or in the simulation',
+    !/boxDoubleCounts/.test(grid) && !/boxDoubleCounts/.test(step) && !/Math\.hypot\(optX, box\)/.test(step)
+    && /if \(followsSpot\(sensor\)\) \{\s*const spot = spotCovers\(/.test(read('src/pixel-grid/simulate.ts')));
   check('and the panel says which of the three the sigma came from',
     /'measured' \| 'published' \| 'typed'/.test(step)
     && /source\.psfMeasured \? 'measured' : source\.psfSrc \? 'published' : 'typed'/.test(step));
 
-  // simulate.ts applies the box whatever the budget says. A panel that printed
-  // only the clean total would disagree with the purity numbers beside it.
-  // The engine convolves the optics and the pixel box, never the geolocation
-  // error: the row printed sigma_eff with the box, a blur no simulation applies.
+  // A panel that printed only the clean total could disagree with the purity
+  // numbers beside it: the row states what the simulation reads a pixel with.
+  // The spot alone, read no narrower than a pixel's own footprint when the
+  // blur typed in is; never the geolocation error.
   check('the list always states the sigma the engine really simulates',
-    /name="σ simulated" val=\{pair\(Math\.hypot\(optX, box\), Math\.hypot\(optY, box\)\)\}/.test(step)
-    && /The geolocation error is not blurred in/.test(step));
+    /name="σ simulated" val=\{pair\(Math\.max\(optX, box\), Math\.max\(optY, box\)\)\} note=\{optX < box \|\| optY < box \? 'the footprint: the blur typed is narrower' : 'the PSF alone'\}/.test(step)
+    && /The simulation does not blur the geolocation error in/.test(read('pixel-grid-docs.html')));
   check('and marks the pixel footprint as already inside the FWHM rather than adding it',
-    /name="pixel footprint" val=\{m\(box\)\} dim=\{boxDoubleCounts\} note=\{boxDoubleCounts \? 'included in FWHM'/.test(step));
+    /name="pixel footprint" val=\{m\(box\)\} dim note="included in FWHM"/.test(step));
+  // The note's own figures, worked as its page works them, beside the page's.
+  check('the note\'s minimum plots, its hard ceiling and its random placements are in the list, from note-model.ts',
+    /noteFigures\(\{ gsd: res, sigmaPsf: opt, sigmaGeo: geo, threshold: threshold \/ 100 \}, plotSideM\)/.test(step)
+    && ['name="central pixel"', 'name="registered to ½ px"', 'name="any pixel, swept"', 'name="on a 2 m grid"', 'name="largest pixel for L"', 'name="centred pixel"', 'name="random placements"'].every(s => step.includes(s)));
+  check('and the list says at which position a satellite is counted', /note=\{catalog \? 'counted at the best position' : 'counted at the worst position'\}/.test(step));
   // One list, every source, at the current setting: blur, what it costs, where
   // the grid and the image sit, the signal noise, and what is NOT simulated.
   // In the PHENET note's own terms and symbols, so a figure here can be read
@@ -559,7 +580,7 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
   check('the plot-size card is shown beside the plot dimensions, and only there',
     !/PlotSizeCard/.test(read('src/pixel-grid/steps/GridStep.tsx')) && /<PlotSizeCard \{\.\.\.p\} \/>/.test(read('src/pixel-grid/steps/SimStep.tsx')));
   check('with one column per reading of the geolocation error',
-    ['corrected', 'average', 'robust'].every(id => new RegExp(`\\b${id}: \\{`).test(card)) && /imageCases\(d\.sigma, d\.geoErrM\)/.test(card));
+    ['corrected', 'average', 'robust'].every(id => new RegExp(`\\b${id}: \\{`).test(card)) && /imageCases\(d\.sigma, d\.geoErrM, d\.geoSigmaM\)/.test(card));
   check('each reading says what it is on hover', (card.match(/tip: /g) || []).length >= 4 && /co-registration/.test(card) && /9 images out of 10/.test(card));
   check('sized for the design\'s own plot, whatever the layout',
     ["pattern === 'block'", "pattern === 'imported'", "pattern === 'checker'"].every(t => card.includes(t)) && /b: Infinity/.test(card)
@@ -668,9 +689,9 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
     /\? \{ color: '#ffffff', weight: 1, opacity: 0\.7, dashArray: '3 3', fill: false, interactive: false \}\s*: \{ stroke: false, fillColor: '#000000', fillOpacity: 0\.3, interactive: false \}\)/.test(map));
   // One set for the page: the export's PURE_CE90 column and the map.
   check('by the same placements and the same rule as the export\'s PURE_CE90 column',
-    /const shifts = ce90Shifts\(ce90M\);/.test(verdicts)
-    && /heldMask\(nominal, shifts\.length, \(s, need\) => shiftedVerdict\(grid, origin, layout, sensor, shifts\[s\], need\)\)/.test(verdicts)
-    && /const shifts = ce90Shifts\(geoErrM\), hold = holdTracker\(sim\.mixed\);/.test(hook)
+    /const \{ lands, hopeless \} = landings\(layout, ce90M\);/.test(verdicts)
+    && /heldMask\(nominal, lands\.length, \(s, need\) => shiftedVerdict\(grid, origin, layout, sensor, lands\[s\], need\)\)/.test(verdicts)
+    && /const \{ lands: shifts, hopeless \} = landings\(layout, geoErrM\);/.test(hook) && /const hold = holdTracker\(sim\.mixed\);/.test(hook)
     && /hold\.take\(shiftedVerdict\(renderGrid, origin, layout, sensor, shifts\[done\+\+\], hold\.alive\)\);/.test(hook)
     && /setHeld\(\{ sim, ce90: geoErrM, mask: hold\.alive \}\)/.test(hook));
   // Eight more simulations of the field: inside the render they held the page.
@@ -698,8 +719,9 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
   const shell = read('src/pixel-grid/PixelGridApp.tsx');
   const body = gridStep.slice(gridStep.indexOf('function GridStepBody'));
   check('step 2 opens on the satellite, the pixel count and the file',
-    body.indexOf('<select value={sourceId}') < body.indexOf('Download shapefile (.zip)')
-    && body.indexOf('Download shapefile (.zip)') < body.indexOf('Blur and geolocation'));
+    body.indexOf('<SensorPick {...p} />') > 0 && body.indexOf('<SensorPick {...p} />') < body.indexOf('Download shapefile (.zip)')
+    && body.indexOf('Download shapefile (.zip)') < body.indexOf('Blur and geolocation')
+    && /export function SensorPick\(p: StepProps\)[\s\S]*<select value=\{sourceId\} onChange=\{e => setSourceId\(e\.target\.value\)\}/.test(gridStep));
   check('its blur and geolocation are folded, with the two figures that set them on the fold',
     /label=\{`Blur and geolocation · \$\{psfSigmaM > 0 \? `FWHM \$\{fwhmTxt\} m` : 'no blur'\} · CE90 \$\{geoErrM\} m`\}/.test(body)
     && /open=\{blurOpen\} onToggle=\{\(\) => setBlurOpen\(v => !v\)\}/.test(body)
@@ -926,10 +948,14 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
     && /placement = \{ turn: best\.turn, shift: best\.shift, angle: best\.angle, searched: best\.searched \};/.test(rung));
   // With a geolocation error the page judges a placement on the pixels that hold within the CE90.
   check('searched on the figure the ladder leads with: the CE90 of that size, when one is set',
-    /placementSearch\(ctx\.importedBasePlan, rung\.res, \{ sigmaX: rung\.sigmaX, sigmaY: rung\.sigmaY, mixThreshold: ctx\.threshold \/ 100 \},\s*Math\.round\(ce90For\(ctx\.geoAuto, ctx\.geoManual, rung\.res\) \* 100\) \/ 100\)/.test(rung)
+/placementSearch\(pE \|\| pN \? shiftImportedPlan\(ctx\.importedBasePlan, -pE, -pN\) : ctx\.importedBasePlan, rung\.res, \{ sigmaX: rung\.sigmaX, sigmaY: rung\.sigmaY, mixThreshold: ctx\.threshold \/ 100, anyPosition: rung\.anyPosition \},\s*placedCe90\(ctx, rung\.id, rung\.res\)\)/.test(rung)
+    // Unless the reader places for pure pixels: the search is then given no error to hold against.
+    && /\(ctx\.placeFor === 'pure' \? 0 : Math\.round\(\(ctx\.pageGeo \? sourceCe90\(id, res, ctx\.pageGeo\) : rungCe90\(ctx, id, res\)\) \* 100\) \/ 100\);/.test(rung)
     && /lands\.length\s*\? heldPixels\(plan, r, sensor, ce90\)/.test(turn));
   check('the engine has the last word, and the trial as drawn is always one of the placements it is asked about',
-    /const asked: \{ turn: number; shift: \[number, number\] \}\[\] = \[\{ turn: 0, shift: \[0, 0\] \}\];/.test(turn)
+/const asked: \{ turn: number; shift: \[number, number\] \}\[\] = \[\{ turn: 0, shift: drawn \? drawn\.shift : \[0, 0\] \}\];/.test(turn)
+    // On a lattice that falls anywhere, the trial as drawn at its own worst position.
+    && /const drawn = sensor\.anyPosition \? scan\(angleOf\(0\), Math\.max\(n, mesh\)\) : null;/.test(turn)
     && /const pure = score\(plan\);\s*if \(!won \|\| pure > won\.pure\)/.test(turn));
   // The whole search is seconds at the finest sizes: never in one piece.
   check('the sweep runs the search a slice per task, and the rung only reads its answer',
@@ -966,13 +992,13 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
     /function ladderRungs\(current: \{ id: string; res: number; sigmaX: number; sigmaY: number \}\): Rung\[\]/.test(sensors)
     && /if \(src\.id === 'custom' && !here\) continue;/.test(sensors) && /sort\(\(a, b\) => a\.r\.res - b\.r\.res \|\| a\.k - b\.k\)/.test(sensors));
   check('each at its own pixel size and blur, the one selected as it stands on the page',
-    /\{ id: src\.id, name: src\.short, res: current\.res, sigmaX: current\.sigmaX, sigmaY: current\.sigmaY \}/.test(sensors)
-    && /\{ id: src\.id, name: src\.short, res: src\.res, sigmaX: src\.psf, sigmaY: src\.psf \}/.test(sensors)
+/\{ id: src\.id, name: src\.short, res: current\.res, sigmaX: current\.sigmaX, sigmaY: current\.sigmaY, anyPosition: src\.kind !== 'catalog' \}/.test(sensors)
+    && /\{ id: src\.id, name: src\.short, res: src\.res, sigmaX: src\.psf, sigmaY: src\.psf, anyPosition: src\.kind !== 'catalog' \}/.test(sensors)
     && /ladderRungs\(\{ id: gridApi\.sourceId, res: build\?\.res \?\? gridApi\.pxSize, sigmaX, sigmaY \}\)/.test(hook));
   // A click selects another satellite. Were a rung computed from the sensor selected, every click would rebuild the ladder.
   check('a rung is computed from its own satellite, never from the sensor selected, so a click rebuilds nothing',
-    /const sensorL: SensorParams = \{ sigmaX: rung\.sigmaX, sigmaY: rung\.sigmaY, mixThreshold: threshold \/ 100 \};/.test(read('src/pixel-grid/ladder-step.ts'))
-    && /\[aoi, fieldRing, build\?\.epsg, ladderSig, threshold, ce90At\]\);/.test(hook)
+/const sensorL: SensorParams = \{ sigmaX: rung\.sigmaX, sigmaY: rung\.sigmaY, mixThreshold: threshold \/ 100, anyPosition: rung\.anyPosition, placeHeldM: placedCe90\(ctx, rung\.id, r\) \};/.test(read('src/pixel-grid/ladder-step.ts'))
+    && /\[aoi, fieldRing, build\?\.epsg, ladderSig, threshold, gridApi\.geoAuto, gridApi\.geoManual, gridApi\.geoProvider, gridApi\.placeFor\]\);/.test(hook)
     && /\(ladderCtx \? ladderStep\(ladderCtx, rotationDeg, rung, asDrawn\) : null\), \[ladderCtx\]\);/.test(hook)
     && /const rungKey = \(g: Rung\) => `\$\{g\.id\}\|\$\{g\.res\}\|\$\{g\.sigmaX\}\|\$\{g\.sigmaY\}`;/.test(hook)
     && /const key = `\$\{rot\}\|\$\{which\}\|\$\{rungKey\(g\)\}`;/.test(hook));
@@ -1016,7 +1042,8 @@ console.log('\nU-speed. what keeps the page fast on a slow computer');
   check('the hook file does not reach the worker: a rung imports no React', !/from 'react'/.test(rung) && !/from '\.\/use-simulation'/.test(rung) && !/from '\.\/use-simulation'/.test(worker));
   // Counting needs verdicts only, and a pixel that cannot matter is not simulated.
   check('a placement search counts on the verdicts alone',
-    /pureVerdictCount\(fieldVerdicts\(box, origin, \{ pattern: 'block'/.test(engine) && /pureVerdictCount\(fieldVerdicts\(box, \[ox0 \+ du, oy0 \+ dv\], layout, sensor\)\)/.test(engine)
+/const layoutOf = \(plan: BlockPlan\): SimLayout => \(\{ pattern: 'block', width: 2, spacing: 0, rotationDeg, block: plan \}\);/.test(engine)
+    && /const nominal = fieldVerdicts\(box, origin, layoutOf\(plan\), sensor\);\s*const pure = pureVerdictCount\(nominal\);/.test(engine) && /const verdicts = fieldVerdicts\(box, \[ox0 \+ du, oy0 \+ dv\], layout, sensor\);/.test(engine)
     && /const verdicts = fieldVerdicts\(\{ res: r, utmBounds: \[e0, n0, e1, n1\] \} as unknown as S2Grid, \[0, 0\], layout, sensor, keep\);/.test(turn));
   check('the driver has its own path through the engine, and aggregate is still what it must equal',
     /const lean = leanAggregate\(grid, patternOrigin, layout, sensor, null, false\);\s*if \(!lean\) return simulateFieldReference\(/.test(engine)
@@ -1083,12 +1110,12 @@ console.log('\nU-suggest. a block trial built from what is asked of it');
   // The same figure as the plot-size card's last row, and the same satellites as the table: one page, one set of numbers.
   check('the pixels asked for are the plot-size card\'s own figure', /pixels: wantPure,/.test(shell));
   check('with a geolocation error the count is the pixels that hold within that satellite\'s CE90, unless the reader says otherwise',
-    /const ce90M = suggestAsk\.hold \? Math\.round\(gridApi\.ce90At\(r\) \* 100\) \/ 100 : 0;/.test(shell) && /\{ce90 > 0 && \(/.test(panel));
+    /const ce90M = suggestAsk\.hold \? Math\.round\(gridApi\.ce90At\(r, sat\.id\) \* 100\) \/ 100 : 0;/.test(shell) && /\{ce90 > 0 && \(/.test(panel));
   // Four settings in one go, or the trial on the map is not the trial that was counted.
   check('a build writes the layout, the design, the angle and the satellite together',
     /exp\.setPattern\('block'\);\s*exp\.setBlockDesign\(built\.design\);\s*exp\.setRotation\(angle\);\s*setAdopted\(null\);\s*if \(sat\.id !== gridApi\.sourceId\) gridApi\.setSourceId\(sat\.id\);/.test(shell));
   check('the plot is counted at the phase the page will stake it at, on the area the trial ends up in',
-    /return stakeMesh\(\[Math\.floor\(e0 \/ r\) \* r, Math\.floor\(n0 \/ r\) \* r, Math\.ceil\(e1 \/ r\) \* r, Math\.ceil\(n1 \/ r\) \* r\], r\)\?\.steps;/.test(shell)
+    /return stakeMesh\(\[Math\.floor\(\(e0 - pE\) \/ r\) \* r \+ pE, Math\.floor\(\(n0 - pN\) \/ r\) \* r \+ pN, Math\.ceil\(\(e1 - pE\) \/ r\) \* r \+ pE, Math\.ceil\(\(n1 - pN\) \/ r\) \* r \+ pN\], r\)\?\.steps;/.test(shell)
     && /let built = aoi && had \? ask\(field, stepsOn\(aoi\), turned \? countOn\(aoi, fieldRing\) : undefined\) : null;/.test(shell) && /const need = stepsOn\(box\);\s*if \(need === steps\) break;/.test(shell));
   // The first version carried over the design's own alleys, the layout's
   // defaults, and built a trial with dirt strips nobody had asked for.
@@ -1134,8 +1161,9 @@ console.log('\nU-compact. step 3 is folds, one open at a time');
   const shell = read('src/pixel-grid/PixelGridApp.tsx');
   const panel = read('src/pixel-grid/steps/SuggestDesign.tsx');
   const folds = (step.match(/<Disclosure\b/g) || []).length;
-  check('everything under the layout is a fold: the design, the suggestion, the plot size, the crops, the noise', folds === 5
-    && ['design', 'suggest', 'size', 'curves', 'noise'].every(id => new RegExp(`open=\\{at\\('${id}'\\)\\} onToggle=\\{fold\\('${id}'\\)\\}`).test(step)),
+  check('everything in the step is a fold: the satellite, the design, the suggestion, the plot size, the crops, the noise', folds === 7
+    && step.indexOf("open={at('sat')}") < step.indexOf("open={at('design')}")
+    && ['sat', 'design', 'suggest', 'size', 'curves', 'noise'].every(id => new RegExp(`open=\\{at\\('${id}'\\)\\} onToggle=\\{fold\\('${id}'\\)\\}`).test(step)),
     `${folds} folds`);
   check('one open at a time, and the choice is remembered',
     /const fold = \(id: SimSection\) => \(\) => setSimSection\(cur => \(cur === id \? null : id\)\);/.test(step)
@@ -1164,11 +1192,12 @@ console.log('\nU-compact. step 3 is folds, one open at a time');
   }
   check('the plot-size card and the design summary are inside folds, not always on screen',
     /<Disclosure label="Plot size required" open=\{at\('size'\)\} onToggle=\{fold\('size'\)\}>\s*<PlotSizeCard \{\.\.\.p\} \/>/.test(step)
-    && step.indexOf('<BlockSummary') < step.indexOf('</Disclosure>'));
+    && step.indexOf("open={at('design')}") < step.indexOf('<BlockSummary')
+    && step.indexOf('<BlockSummary') < step.indexOf('</Disclosure>', step.indexOf("open={at('design')}")));
   // "also in the build trial settings add purity threshold"
   check('the build settings carry the purity threshold, and it is the page\'s own',
     /const \{ threshold, setThreshold \} = p\.exp;/.test(panel) && /<NumField label="Purity" value=\{threshold\} onChange=\{setThreshold\} min=\{50\} max=\{99\} unit="%"/.test(panel)
-    && /threshold: exp\.threshold \/ 100, ce90M,/.test(shell));
+    && /threshold: exp\.threshold \/ 100, anyPosition: sat\.anyPosition, placeHeldM, ce90M,/.test(shell));
   check('a build described under the button is gone once the threshold is another', /&& suggestOutcome\.threshold === exp\.threshold/.test(shell));
 }
 
@@ -1208,17 +1237,18 @@ console.log('\nU-angle. a trial can be built at an angle');
   check('a turned trial is sized on the satellites table\'s own count, on the ground it will lie on',
     /const c = blockPlotCounts\(\{\s*aoi: ground, fieldRing: ring, epsg, threshold: exp\.threshold, blockDesign: design,/.test(shell)
     && /own = ask\(null, steps, turned \? countOnOwn : undefined\);/.test(shell)
-    && /if \(Math\.abs\(deg\) > 1e-9\) return suggestTurned\(ask, nSpecies, nBlocks, pixels, deg\);/.test(search));
+    && /const alongPixels = Math\.abs\(deg % 90\) < 1e-9, sideways = alongPixels && Math\.abs\(deg % 180\) > 1e-9;/.test(search)
+    && /if \(!alongPixels\) return suggestTurned\(ask, nSpecies, nBlocks, pixels, deg\);/.test(search));
   check('with the box unticked it holds against no geolocation error, as along the rows',
     /geoAuto: suggestAsk\.hold \? gridApi\.geoAuto : false, geoManual: suggestAsk\.hold \? gridApi\.geoManual : 0,/.test(shell));
   check('the area made for a turned trial holds the trial\'s own box',
     /const halfBox = \(u: number, v: number\): \[number, number\] => \[\(u \* cosA \+ v \* sinA\) \/ 2, \(u \* sinA \+ v \* cosA\) \/ 2\];/.test(shell)
     && /const \[bu, bv\] = halfBox\(u, v\), hu = bu \+ margin, hv = bv \+ margin;/.test(shell));
   check('the summary says the angle, and that the figure is the worst plot\'s',
-    /\{b\.angle !== 0 && <>, turned \{b\.angle\}°<\/>\}/.test(panel) && /\{b\.angle !== 0 && 'at least '\}/.test(panel));
+    /\{b\.angle !== 0 && <>, turned \{b\.angle\}°<\/>\}/.test(panel) && /\{offRows\(b\.angle\) && 'at least '\}/.test(panel));
   check('and it stands only while the page is at the angle it was built at', /exp\.rotation === suggestOutcome\.angle/.test(shell));
   check('the table\'s figure under the summary is read at the same angle',
-    /layout: \{ pattern: 'block', width: exp\.stripWidth, spacing: exp\.spacing, rotationDeg: angle \},\s*importedAngle: 0, importedFileAngle: 0, importedBasePlan: undefined,\s*geoAuto: gridApi\.geoAuto, geoManual: gridApi\.geoManual,\s*\}, angle, sat, true\);/.test(shell));
+    /layout: \{ pattern: 'block', width: exp\.stripWidth, spacing: exp\.spacing, rotationDeg: angle \},\s*importedAngle: 0, importedFileAngle: 0, importedBasePlan: undefined,\s*geoAuto: gridApi\.geoAuto, geoManual: gridApi\.geoManual, geoProvider: gridApi\.geoProvider, placeFor: gridApi\.placeFor,\s*\}, angle, sat, true\);/.test(shell));
 }
 
 console.log('\nU-strips. alternating rows and columns are suggested too');
@@ -1260,8 +1290,9 @@ console.log('\nU-strips. alternating rows and columns are suggested too');
   check('the area made for strips with no field is long enough for them to hold the count',
     /'lengthM' in found \? \(Math\.abs\(angle % 90\) < 1e-9 \? 0\.5 : 0\.75\) \* found\.lengthM \+ 2 \* r : 0\)/.test(shell));
   check('the thinnest strips are tried first, and widened only while the field\'s strips are too short',
-    /const first = at\(1\);\s*if \(!first \|\| does\(first\.out\)\) return first\?\.out \?\? null;/.test(search)
-    && /const does = \(o: StripSuggestion\) => !o\.onField \|\| o\.onField\.share >= STRIP_FIELD_SHARE \|\| o\.lengthM <= res \+ 1e-9;/.test(search)
+    /const first = at\(1\);/.test(search) && /if \(!first \|\| does\(first\) \|\| first\.lengthPx <= 1\) return first\?\.out \?\? null;/.test(search)
+    && /const does = \(x: \{ out: StripSuggestion \}\) => !x\.out\.onField \|\| x\.out\.onField\.share >= STRIP_FIELD_SHARE;/.test(search)
+    && /if \(across >= pixels \|\| next\.lengthPx <= 1\) break;/.test(search)
     && /const STRIP_FIELD_SHARE = 0\.9;/.test(search));
   // "always put the thinnest rows or columns possible": a pitch between whole
   // pixels lays the strips several ways in turn, and the figure is the fewest.
@@ -1333,7 +1364,7 @@ console.log('\nU-every. a design is suggested for every layout, and the 2:2 layo
     /const checker = p\.exp\.pattern === 'checker';/.test(panel)
     && /\{checker \? \(\s*<div className="grid grid-cols-3 gap-2">\s*<NumField label="Pixels \/ cell" value=\{p\.wantPure\} onChange=\{p\.setWantPure\}/.test(panel));
   check('its build sizes the cells and writes the layout\'s own fields',
-    /\? suggestChecker\(\{ \.\.\.sized, base \}\)/.test(shell) && /\? \{ cells: \{ found: found as CheckerSuggestion \| null \} \}/.test(shell));
+    /kind === 'checker' \? suggestChecker\(\{ \.\.\.sized, base \}\) : suggestStrips\(\{ pattern: kind, \.\.\.sized, base, ring \}\)/.test(shell) && /\? \{ cells: \{ found: found as CheckerSuggestion \| null \} \}/.test(shell));
   check('its summary is the cells\' own, and stands only while the checkerboard still holds them',
     /if \(o\.cells\) return <CellOutcome o=\{o\} box=\{box\} \/>;/.test(panel) && /: builtCells \? exp\.pattern === 'checker' && holds\(builtCells\.found\)/.test(shell));
 }
@@ -1349,6 +1380,302 @@ console.log('\nU-most. the plot-size card says the most pixels the parcel can gi
   check('one press sets the design to those plots, arrangement included, rounded down so that they still fit',
     /setBlockDesign\(dd => \(\{ \.\.\.dd, plotLength: largest\.a, plotWidth: largest\.b, blocksPerRow: largest\.perRow \}\)\)/.test(card)
     && /const down = \(m: number\) => Math\.floor\(m \* 10 \+ 1e-6\) \/ 10;/.test(card));
+}
+
+console.log('\nU-review. what an outside review of the code found (2026-11-22), and what must not come back');
+{
+  const step = read('src/pixel-grid/steps/SimStep.tsx');
+  const gridStep = read('src/pixel-grid/steps/GridStep.tsx');
+  const sensors = read('src/pixel-grid/sensors.ts');
+  const verdicts = read('src/pixel-grid/pixel-verdicts.ts');
+  const rung = read('src/pixel-grid/ladder-step.ts');
+  const hook = read('src/pixel-grid/use-simulation.ts');
+  const resolving = read('src/pixel-grid/resolving.ts');
+  const seat = read('src/pixel-grid/trial-seat.ts');
+
+  // The satellite, its blur, its CE90 and where each comes from were only in
+  // the pixel grid step. Hiding the step hid every assumption the counts rest on.
+  check('the satellite, its blur and its CE90 are reached in step 2 while the pixel grid step is hidden',
+    /<Disclosure label=\{satLabel\} open=\{at\('sat'\)\} onToggle=\{fold\('sat'\)\}>\s*<SensorPick \{\.\.\.p\} \/>\s*<BlurGeo \{\.\.\.p\} budget=\{false\} \/>/.test(step)
+    && /<BlurBudget \{\.\.\.p\} \/>/.test(step));
+  check('shut, the fold names the satellite, its CE90 and its blur', /const satLabel = `Satellite · \$\{source\.provider\}/.test(step) && /· CE90 \$\{geoErrM\} m ·/.test(step));
+  check('the hidden step and the fold show the same controls, written once',
+    /export function SensorPick\(p: StepProps\)/.test(gridStep) && /export function BlurGeo\(p: StepProps & \{ budget\?: boolean \}\)/.test(gridStep)
+    && /export function BlurBudget\(p: StepProps\)/.test(gridStep) && (gridStep.match(/onClick=\{\(\) => setGeoAuto\(true\)\}/g) || []).length === 1);
+
+  // A third of a pixel is the note's default. What a provider states for an
+  // image as delivered is another figure, and it is shown, with its source.
+  const rows = sensors.slice(sensors.indexOf('const SOURCES: Source[] = ['), sensors.indexOf('const GSD_PRESETS'));
+  const ids = [...rows.matchAll(/\{ id: '([a-z0-9-]+)'/g)].map(m => m[1]);
+  const withGeo = ids.filter(id => new RegExp(`\\{ id: '${id}',[^\\n]*geo: GEO_`).test(rows));
+  check('every satellite carries the accuracy its provider states, with where it was read',
+    ids.length >= 12 && withGeo.length === ids.length - 1 && !withGeo.includes('custom'), `${withGeo.length} of ${ids.length} rows`);
+  check('each of those figures has a source that can be opened',
+    (() => { const all = sensors.match(/const GEO_[A-Z0-9]+ = \{[\s\S]*?\};/g) || []; return all.length >= 6 && all.every(g => /ce90M:/.test(g) && /says: '/.test(g) && /label: '/.test(g) && /url: /.test(g)); })());
+  check('the panel shows it beside the default, a click away, and says what it is',
+    /As delivered, with no ground control:/.test(gridStep) && /onClick=\{\(\) => setGeoProvider\(true\)\} disabled=\{asDelivered\}/.test(gridStep)
+    && /geo\.url\s*\? <a href=\{geo\.url\} target="_blank" rel="noopener noreferrer"/.test(gridStep));
+  check('the default is still the note\'s third of a pixel, and says so',
+    /ce90For = \(auto: boolean, manualM: number, res: number\): number => \(auto \? \(CE90_TO_SIGMA \* res\) \/ 3 : manualM\);/.test(resolving)
+    && /title="The note's default, a third of a pixel: σgeo = GSD \/ 3, so CE90 = 0\.715 GSD\./.test(gridStep)
+    && /the note's figure when nothing is known/.test(read('pixel-grid-docs.html')));
+  check('Sentinel-2\'s 20 m and 60 m bands take the 10 m bands\' geolocation, not a third of their own pixel',
+    /export function geolocRes\(sourceId: string, res: number\): number \{\s*return sourceId\.startsWith\('s2-'\) \? Math\.min\(res, 10\) : res;/.test(sensors));
+  check('a pansharpened product says so, and names the pixel an index is computed on',
+    /id: 'spot', short: 'SPOT pan', provider: 'SPOT 6\/7 · pansharpened'/.test(sensors) && /id: 'skysat', short: 'SkySat pan', provider: 'SkySat · pansharpened'/.test(sensors)
+    && (sensors.match(/warn: UNMEASURED_PAN \}/g) || []).length === 2 && /const UNMEASURED_PAN = 'Pansharpened: flatters a trial read through an index';/.test(sensors)
+    && /An index is computed on the native multispectral bands/.test(read('pixel-grid-docs.html')) && /about 1 m for SkySat, 6 m for SPOT/.test(read('pixel-grid-docs.html')));
+
+  // One rule for "holds within the CE90", in the plots' own directions.
+  check('the table, the map and the export ask one rule where the image can land',
+    /export function landings\(layout: SimLayout, ce90M: number\)/.test(verdicts) && /landings\(layoutL, ce90\)/.test(rung) && /landings\(layout, geoErrM\)/.test(hook)
+    && !/ce90Shifts\(/.test(hook));
+  check('the landings follow the plots\' own direction, not the grid\'s',
+    /export function ce90Shifts\(ce90M: number, angleDeg = 0, n = 8\)/.test(resolving) && /ce90Shifts\(ce90M, layout\.rotationDeg\)/.test(verdicts)
+    && /importedLandings\(ce90M, trialAngle\(imported\), imported\.plotIds\)/.test(verdicts) && /ce90Shifts\(ce90, rotationDeg\)/.test(rung));
+  check('past half a strip or a plot nothing holds, on the map and in the export as in the table',
+    /hopeless: side != null && ce90M >= side \/ 2/.test(verdicts) && /robust = hopeless \? new Uint8Array\(n\)/.test(verdicts)
+    && /if \(hopeless\) \{ setHeld\(\{ sim, ce90: geoErrM, mask: new Uint8Array\(sim\.mixed\.length\) \}\);/.test(hook));
+
+  // Each satellite on its own lattice.
+  check('a rung is measured where its satellite\'s pixel edges really fall',
+    /export function latticePhase\(sourceId: string, res: number, epsg: number\): \[number, number\]/.test(sensors)
+    && /latticePhase\(rung\.id, r, epsg\)/.test(rung) && /Math\.floor\(\(minE - bE\) \/ r\) \* r \+ bE/.test(rung)
+    && /bestPhaseOffset\(pattern, r, stripWidth, spacing, threshold \/ 100, base\[0\] - pE, base\[1\] - pN, sensorL\)/.test(rung));
+  check('and the map slides a pattern onto the grid it really shows',
+    /base\[0\] - gridPhase\[0\], base\[1\] - gridPhase\[1\], sensor\)/.test(hook));
+
+  // The second look (the same day): what the first fixes left or broke.
+  const grid2 = read('src/pixel-grid/use-grid.ts');
+  const engine2 = read('src/pixel-grid/simulate.ts');
+  const turn2 = read('src/pixel-grid/imported-rotate.ts');
+  const shell2 = read('src/pixel-grid/PixelGridApp.tsx');
+  check('a click on a row of the table does not throw the table away: its CE90 is not a function that changes with the satellite',
+    /const ce90At = useCallback\(\(res: number, id: string\): number => sourceCe90\(/.test(grid2) && /\[geoAuto, geoManual, geoProvider\]\);/.test(grid2)
+    && /\[aoi, fieldRing, build\?\.epsg, ladderSig, threshold, gridApi\.geoAuto, gridApi\.geoManual, gridApi\.geoProvider, gridApi\.placeFor\]\);/.test(hook) && !/ladderSig, threshold, ce90At\]/.test(hook));
+  check('"as delivered" is a setting of its own, read per satellite, not a figure typed for all of them',
+    /usePersistentState\('geoProvider', false, isBool\)/.test(grid2) && /export function sourceCe90\(sourceId: string, res: number, geo: GeoSetting\): number/.test(sensors)
+    && /const setGeoAuto = useCallback\(\(v: boolean\) => \{ setGeoProvider\(false\); setGeoAutoOnly\(v\); \}/.test(grid2)
+    && /geoProvider: gridApi\.geoProvider, placeFor: gridApi\.placeFor \}/.test(hook));
+  check('a trial is staked, and its extent cut, on the lattice of the box it is given',
+    /export function latticeOffset\(edge: number, res: number\): number/.test(engine2)
+    && /const w0 = Math\.floor\(\(cx - \(nx \* res\) \/ 2 - pE\) \/ res\) \* res \+ pE;/.test(engine2)
+    && /Math\.floor\(\(tE0 - reachX - pE\) \/ r\) \* r \+ pE/.test(read('src/pixel-grid/ladder.ts'))
+    && /const \[pE, pN\] = latticePhase\(rung\.id, r, epsg\);/.test(rung) && !/layout\.pattern === 'block' \? \[0, 0\] : latticePhase/.test(rung));
+  check('a checkerboard is searched both ways at once before one way at a time',
+    /for \(let i = 0; i < CHECKER_COARSE; i\+\+\) \{\s*for \(let j = 0; j < CHECKER_COARSE; j\+\+\) \{/.test(engine2) && /let dv = search\('v', u0, v0\);\s*const du = search\('u', dv, u0\);\s*dv = search\('v', du, dv\);/.test(engine2));
+  check('the placement search and the table hold an imported trial against the same landings',
+    /export function importedLandings\(ce90: number, angleDeg: number, plotIds: boolean\)/.test(turn2)
+    && /const lands = importedLandings\(ce90, trialAngle\(plan\), plan\.plotIds\);/.test(turn2) && /importedLandings\(ce90, fileAngle \+ turn, base\.plotIds\)/.test(turn2));
+  check('a quarter turn is not a turned trial: sized like no turn, and said to keep its count in every plot',
+    /const turned = Math\.abs\(angle % 90\) > 1e-9;/.test(shell2) && /const offRows = \(deg: number\): boolean => Math\.abs\(deg % 90\) > 1e-9;/.test(read('src/pixel-grid/steps/SuggestDesign.tsx')));
+  check('the fold names the pixel as it stands, which a tasked sensor lets one type', /source\.kind === 'custom' \? `\$\{build\?\.res \?\? pxSize\} m` : source\.resLabel/.test(step));
+
+  // The third look: four small things.
+  check('the map reads its grid\'s offset as everything else does, and off the grid built while none is drawn',
+    /gridBox = renderGrid\?\.utmBounds \?\? build\?\.utmBounds \?\? null;/.test(hook) && /\[latticeOffset\(gridBox\[0\], gridRes\), latticeOffset\(gridBox\[1\], gridRes\)\]/.test(hook));
+  check('strips and checkerboards are suggested on the satellite\'s own lattice',
+    /const \[pE, pN\] = latticePhase\(sat\.id, r, epsg\);\s*const off = \(q: \[number, number\]\): \[number, number\] => \(pE \|\| pN \? \[q\[0\] - pE, q\[1\] - pN\] : q\);/.test(shell2)
+    && /const base = off\(corner\), ring = outline && outline\.map\(off\);/.test(shell2));
+  check('a sensor with no provider reads "default" under "as delivered", which is what it is given',
+    /const asDelivered = geoProvider && !!source\.geo, byDefault = geoProvider \? !source\.geo : geoAuto;/.test(gridStep)
+    && /geoAuto=\{geoProvider \? !source\.geo : geoAuto\} geoProvider=\{geoProvider && !!source\.geo\}/.test(gridStep));
+
+  check('an outline is its own box only with all four corners: a right-angled triangle is not',
+    /function isBoxRing\(ring: Poly, \[w, s, e, n\]: LngLatBounds\): boolean/.test(seat) && /return corners === 15;/.test(seat) && /if \(isBoxRing\(fieldRing, aoi\)\) return null;/.test(seat));
+}
+
+console.log('\nU-note. the page follows the PHENET note: a spot with no pixel box, and a tasked grid that falls anywhere (2026-11-22)');
+{
+  const engine = read('src/pixel-grid/simulate.ts');
+  const turn = read('src/pixel-grid/imported-rotate.ts');
+  const sizing = read('src/pixel-grid/suggest-design.ts');
+  const shell = read('src/pixel-grid/PixelGridApp.tsx');
+  const hook = read('src/pixel-grid/use-simulation.ts');
+  const sensors = read('src/pixel-grid/sensors.ts');
+  const step = read('src/pixel-grid/steps/GridStep.tsx');
+  // H1: the measured blur contains the detector, so nothing is added for it.
+  check('every blur is read as a spot, no narrower than a pixel\'s own footprint, and only no blur at all as the pixel\'s square',
+    /export const FOOTPRINT_SIGMA = 1 \/ Math\.sqrt\(12\);/.test(engine)
+    && /export const spotSigma = \(sigma: number\): number => \(sigma > FOOTPRINT_SIGMA \? sigma : FOOTPRINT_SIGMA\);/.test(engine)
+    && /&& sensor\.sigmaX >= 0 && sensor\.sigmaY >= 0 && \(sensor\.sigmaX > 0 \|\| sensor\.sigmaY > 0\);/.test(engine)
+    && /const sx = spotSigma\(sensor\.sigmaX\) \* res, sy = spotSigma\(sensor\.sigmaY\) \* res;/.test(engine)
+    && /return leanResolve\(spot, ny, nx, Math\.max\(0, nSpecies \| 0\), 0, 0, sensor\.mixThreshold, 0, 0, coverSpecies, need, verdictOnly\);/.test(engine));
+  check('the dots of a pixel\'s signal and the two stand-ins that size a design follow the same rule',
+    /if \(followsSpot\(sensor\)\) return spotSources\(/.test(engine) && /const vx = \(spotSigma\(sensor\.sigmaX\) \* r\) \*\* 2, vy = \(spotSigma\(sensor\.sigmaY\) \* r\) \*\* 2, box = 0;/.test(turn)
+    && /const spot = followsSpot\(sensor\);\s*const along = \(start: number\) => axisShares\(start, length, res, g, sensor\.sigmaX, lo, hiU, spot\);/.test(sizing));
+  // The marks of one simulation must not be met by the next: the plan is kept between them.
+  check('an imported plan\'s spot marks are numbered across simulations, not from one each time',
+    /const stampNo = \+\+prep\.tick;/.test(engine) && !/let stampNo = 0;/.test(engine));
+  // Staking under a spot: a mesh of six a side cannot follow the count.
+  check('a block trial under a spot is staked on a twenty-fourth of a pixel, by the per-axis count, and the engine confirms it against the corner snap',
+    /export const SPOT_STAKE_N = 24;/.test(engine) && /const fine = spotStake\(base, origin, rotationDeg, res, sensor, w0, v0, nx, ny, snap, holdM\);/.test(engine)
+    && /return keepsCount\(sensor, scoreOf\(cand\), scoreOf\(base\)\) \? \{ plan: cand, offset: fine, staked: true \} : \{ plan: base, offset: \[0, 0\], staked: true \};/.test(engine)
+    && /const n = stakesBySpot\(sensor\) \? SPOT_STAKE_N : Math\.max\(1, Math\.floor\(steps\)\);/.test(sizing));
+  // A tasked sensor's lattice cannot be planted against: the worst position, everywhere a position is chosen.
+  check('one flag on the sensor says the lattice falls anywhere, and one comparison turns every search around',
+    /anyPosition\?: boolean;/.test(engine)
+    && /export const keepsCount = \(sensor: SensorParams, a: number, b: number\): boolean => \(sensor\.anyPosition \? a < b : a > b\);/.test(engine)
+    && (engine.match(/keepsCount\(sensor, /g) ?? []).length >= 5 && (turn.match(/keepsCount\(sensor, /g) ?? []).length === 2
+    && /if \(keepsCount\(sensor, score, best\)\)/.test(sizing));
+  check('the searches kept by what they were asked are kept by that too',
+    /\|\$\{sen\.anyPosition \? 1 : 0\}\|\$\{sen\.placeHeldM \?\? 0\}`;/.test(engine) && /\|\$\{sensor\.anyPosition \? 1 : 0\}`;/.test(turn) && /_\$\{anyPosition \? 1 : 0\}_\$\{placeHeldM\}`;/.test(hook));
+  check('it comes from the satellite: every tasked one and a sensor of one\'s own, never a fixed grid',
+    /anyPosition: gridApi\.source\.kind !== 'catalog',/.test(shell) && (shell.match(/anyPosition: sat\.anyPosition/g) ?? []).length === 2
+    && /anyPosition: src\.kind !== 'catalog' \}/.test(sensors) && !/latticeKnown/.test(sensors)
+    && /const sen: SensorParams = \{ sigmaX, sigmaY, mixThreshold: threshold \/ 100, anyPosition, placeHeldM \};/.test(hook)
+    && /const sensor: SensorParams = \{ sigmaX, sigmaY, mixThreshold: threshold \/ 100, anyPosition, placeHeldM \};/.test(hook));
+  check('an imported trial as it stands is counted at its worst shift on a tasked satellite\'s row',
+    /\} else if \(plan && rung\.anyPosition\) \{[\s\S]{0,400}const \[sE, sN\] = worstShift\(plan, r, sensorL, placedCe90\(ctx, rung\.id, r\)\);\s*if \(sE \|\| sN\) plan = shiftImportedPlan\(plan, sE, sN\);/.test(read('src/pixel-grid/ladder-step.ts'))
+    && /export function worstShift\(plan: ImportedPlan, r: number, sensor: SensorParams, ce90 = 0\): \[number, number\]/.test(turn));
+  check('and the page says so where the satellite is chosen, and no longer calls a tasked grid one\'s own',
+    /\{source\.kind !== 'catalog' && <DocChip to="grid-position">Tasked: counted at the worst grid position<\/DocChip>\}/.test(step)
+    && /Each image comes on a grid of its own, which cannot be known when the trial is planted/.test(read('pixel-grid-docs.html'))
+    && /const TASK = 'Commercial, tasked: the grid falls where the image does';/.test(sensors) && !/you define the grid/.test(sensors) && !/grid you define/.test(step));
+}
+
+console.log('\nU-place. what a trial is placed for is the reader\'s choice, and imported shapes are read as the page reads them (2026-11-22)');
+{
+  const engine = read('src/pixel-grid/simulate.ts');
+  const turn = read('src/pixel-grid/imported-rotate.ts');
+  const sizing = read('src/pixel-grid/suggest-design.ts');
+  const shell = read('src/pixel-grid/PixelGridApp.tsx');
+  const hook = read('src/pixel-grid/use-simulation.ts');
+  const grid = read('src/pixel-grid/use-grid.ts');
+  const step = read('src/pixel-grid/steps/GridStep.tsx');
+  // "the user should be able to choose both options"
+  check('the choice is a setting of the page, kept between visits, and "the pixels that hold" unless the reader says otherwise',
+    /usePersistentState<'pure' \| 'held'>\('placeFor', 'held', \(v\): v is 'pure' \| 'held' => v === 'pure' \|\| v === 'held'\)/.test(grid)
+    && /placeHeldM: placeFor === 'held' \? geoErrM : 0,/.test(grid));
+  check('two buttons in the Satellite fold set it, and they mean nothing with no geolocation error',
+    /\(\[\['held', 'pixels that hold'\], \['pure', 'pure pixels'\]\] as const\)\.map\(\(\[k, label\]\) => \(\s*<button key=\{k\} type="button" onClick=\{\(\) => setPlaceFor\(k\)\} disabled=\{!\(geoErrM > 0\)\}/.test(step)
+    && /Place the trial for/.test(step));
+  check('one figure on the sensor carries it to every search, and the engine reads nothing of it',
+    /placeHeldM\?: number;/.test(engine) && /export function placedFor\(sensor: SensorParams, shortSideM: number\): number/.test(engine)
+    && /return held \* HELD_FIRST \+ pure;/.test(engine) && (engine.match(/placedFor\(sensor, /g) ?? []).length === 2
+    && /const holdM = placedFor\(sensor, Math\.min\(length, width\)\);/.test(sizing)
+    && /const count = holdM > 0 \? heldPixels\(candidate, r, sensor, holdM\) : purePixels\(candidate, r, sensor, extent\);/.test(turn));
+  check('the map, the table and the suggestions are all told: the selected satellite\'s CE90 on the map, each rung\'s own in the table',
+    /placeHeldM: gridApi\.placeHeldM,/.test(shell) && (shell.match(/const placeHeldM = gridApi\.placeFor === 'held' \? Math\.round\(gridApi\.ce90At\(r, sat\.id\) \* 100\) \/ 100 : 0;/g) ?? []).length === 2
+    && /placeFor: gridApi\.placeFor, pageGeo: \{ auto: gridApi\.geoAuto, manualM: gridApi\.geoManual, provider: gridApi\.geoProvider \},/.test(shell)
+    && /placeHeldM: number;/.test(hook));
+  // Imported shapes: the even-odd rule, the later plot wins, and no pixel past the index.
+  check('a plot\'s rings are signed by what they enclose, not by the way they wind, and shared ground goes to the later plot',
+    /function ringSigns\(rings: \[number, number\]\[\]\[\]\): Float64Array/.test(engine) && /total \+= sign\[q\] \* Math\.abs\(own\);/.test(engine)
+    && /function sharedGround\(plots: SpotPlot\[\], bins: number\[\]\[\]\): Uint8Array \| null/.test(engine)
+    && /if \(pl\.less && w > SPOT_DUST\) for \(const cut of pl\.less\) w \+= cut\.w \* spotInRing\(cut\.ring, E, N, sx, sy\);/.test(engine)
+    && /if \(rough && rough\[id\]\) \{ tangled = true; break; \}/.test(engine) && /spotByPoints\(imported, E, N, sx, sy, add\);/.test(engine));
+  check('the index of plots covers the whole trial, and a pixel never looks past its last cell',
+    /Math\.sqrt\(area \/ Math\.max\(1, plots\.length\)\) \* 1\.5, \(b2 - b0\) \/ 512, \(b3 - b1\) \/ 512\);/.test(engine)
+    && /const i0 = Math\.min\(gx - 1, Math\.max\(0, Math\.floor\(\(E - rx - e0\) \/ cell\)\)\)/.test(engine));
+  check('a trial at an angle is counted at its worst position too, on a lattice that falls anywhere',
+    /const snap = place\.snap && place\.snap > 0 \? place\.snap : sensor\.anyPosition && res > 0 \? res : 0;/.test(engine));
+}
+
+console.log('\nU-speed. the shortcuts taken for speed on 2026-11-22 are still where they were put');
+{
+  // Each of these was measured against the build before it, figure by figure
+  // (the engine suite's section H43 keeps the comparisons that can be kept).
+  // What is pinned here is that the fast path is still taken, and still
+  // guarded by the condition that makes it the same answer.
+  const engine = read('src/pixel-grid/simulate.ts');
+  const turn = read('src/pixel-grid/imported-rotate.ts');
+  const stats = read('src/pixel-grid/resolving.ts');
+  const rung = read('src/pixel-grid/ladder-step.ts');
+  const geom = read('src/pixel-grid/geometry.ts');
+  const size = read('src/pixel-grid/plot-size.ts');
+  const hook = read('src/pixel-grid/use-simulation.ts');
+  const grid = read('src/pixel-grid/use-grid.ts');
+  const layers = read('src/pixel-grid/map-layers.tsx');
+  const util = read('src/pixel-grid/util.ts');
+  check('the placement search counts a rectangle in its own frame, the general test kept for every other shape and for comparison',
+    /const rects = plain \? null : scanRectsOf\(base\);/.test(turn) && /const hasCore = thr <= 1 && cALo <= cAHi && cBLo <= cBHi;/.test(turn)
+    && /export function shiftCounts\(/.test(turn) && /if \(d2 < edges\[o \+ 6\]\) return false;/.test(turn));
+  check('the normal law says 1 past 8.3 sigmas, and a band leaves out a far side that cannot change it by a bit',
+    /if \(z >= 8\.3\) return 1;/.test(size) && /return zl <= -8\.5 && zh >= -1 \? up : up - normCdf\(zl\);/.test(engine)
+    && /const out = zl <= -8\.5 && zh >= -1 \? up : up - \(lo === chainEdge \? chainValue : normCdf\(zl\)\);/.test(engine));
+  check('an imported trial\'s pixels share their list of plots along a row, and the footprint\'s share is a closed form where one side or a square corner is near',
+    /if \(i0 !== seenI0 \|\| i1 !== seenI1\) \{/.test(engine) && /else if \(round && near === 1 && sides\.length <= 80\) inTrial = normCdf\(d1 \/ sx\);/.test(engine)
+    && /if \(w >= 1 && !pl\.less\) \{ whole = true; break; \}/.test(engine) && /let cap = asked \* 3 \+ 64;/.test(engine));
+  check('with no window a pixel is classified from its own pairs alone',
+    /if \(windowX === 0 && windowY === 0 && offX === 0 && offY === 0\) \{/.test(engine) && /if \(p1 - p0 === 1 && pairSlot\[p0\] < 256\) \{/.test(engine));
+  check('a layout at an angle writes its shares into lists it keeps, and plots that touch share an edge\'s value',
+    /const nU = alongU\(uOf\(E, N\), uBuf\), nV = alongV\(vOf\(E, N\), vBuf\); combine\(uBuf, nU, vBuf, nV\);/.test(engine)
+    && /out\[m\+\+\] = chainBand\(a, a \+ p\.design\.plotWidth, v, sv\);/.test(engine));
+  check('the contrast score comes from a Cholesky factor, the eigenvalues only when something may have collapsed',
+    /if \(sum > 0 && sum \* trace < 1e9\) return \{ nEff: D \/ sum, dead: false, total \};/.test(stats)
+    && /const stop = Math\.max\(1e-30, 1e-26 \* diag2\);/.test(stats) && /CH\[i \* D \+ p\] = \(run - \(p \+ 1\) \* v\) \* scale\[p\];/.test(stats)
+    && /if \(!\(lmax > 0\) \|\| values\.some\(v => v <= 1e-9 \* lmax\)\) return \{ nEff: 0, dead: true, total \};/.test(stats));
+  check('a row of the table simulates the pixels it keeps and no others, and a landing moves the pixels, not the plan',
+    /const all = fieldShares\(box, \[ox, oy\], layoutL, sensorL, kept\);/.test(rung)
+    && /verdictAt\(layoutL, \[ox, oy\], sensorL, need, \{ res: r, utmBounds: \[e0 \+ lands\[q\]\[0\], n0 \+ lands\[q\]\[1\], e1 \+ lands\[q\]\[0\], n1 \+ lands\[q\]\[1\]\] \} as unknown as S2Grid\)/.test(rung)
+    && /utmBounds: \[w \+ dx, s \+ dy, e \+ dx, n \+ dy\]/.test(read('src/pixel-grid/pixel-verdicts.ts'))
+    && /utmBounds: \[e0 \+ lands\[s\]\[0\], n0 \+ lands\[s\]\[1\], e1 \+ lands\[s\]\[0\], n1 \+ lands\[s\]\[1\]\]/.test(turn)
+    && /const alone = followsSpot\(sensor\) \|\| \(\(sensor\.offX \?\? 0\) === 0 && \(sensor\.offY \?\? 0\) === 0\);/.test(engine));
+  check('a pixel clear of every side of a convex outline is in or out without a clip, a millionth of a pixel to spare',
+    /const clear = 1e-6 \* size;/.test(geom) && /if \(within\) return true;/.test(geom) && /const part = clipPolygon\(ring, \[\[e0, n0\], \[e1, n0\], \[e1, n1\], \[e0, n1\]\]\);/.test(geom));
+  // The page itself.
+  check('a pixel\'s identity is the ladder\'s own, so no worker and no first script carries the matrix library for it',
+    /export const pixelId = \(col: number, row: number\): number =>/.test(read('src/pixel-grid/ladder-rung.ts')) && /export \{ pixelId \} from '\.\/ladder-rung';/.test(read('src/pixel-grid/pca-field.ts'))
+    && /import \{ pixelId \} from '\.\/ladder-rung';/.test(rung) && /import \{ pixelId \} from '\.\/ladder-rung';/.test(hook)
+    && /const PcaSweep = lazy\(\(\) => import\('\.\.\/PcaSweep'\)\);/.test(read('src/pixel-grid/steps/PcaStep.tsx')));
+  check('picking a satellite sets its blur and pixel in the same update, so the field is simulated once for it',
+    /const setSourceId = useCallback\(\(next: string\) => \{/.test(grid) && /if \(src && sigmaSource\.current !== next\) \{ sigmaSource\.current = next; setSigmaX\(src\.psf\); setSigmaY\(src\.psf\); \}/.test(grid)
+    && /setSourceIdOnly\(next\);/.test(grid));
+  check('a pan or a zoom does not redraw a trial, and a zoom is reported once',
+    /const usesExtent = layout\.pattern !== 'imported' && !\(layout\.pattern === 'block' && layout\.block\) && !\(clipPoly && clipPoly\.length >= 3\);/.test(layers)
+    && /\[map, usesExtent \? extent\[0\] : 0, usesExtent \? extent\[1\] : 0,/.test(layers) && /useMapEvents\(\{ moveend: \(\) => emit\(map\) \}\);/.test(layers));
+  check('a pixel\'s colour is blended from channels read once, and the long rows are asked for first',
+    /const c = rgbOf\(colors\[i % colors\.length\]\);/.test(util) && /return `#\$\{hex2\(r \/ d\)\}\$\{hex2\(g \/ d\)\}\$\{hex2\(b \/ d\)\}`;/.test(util)
+    && /const order = jobs\.map\(\(_, q\) => q\)\.sort\(\(x, y\) => jobs\[y\]\[2\] - jobs\[x\]\[2\] \|\| x - y\);/.test(hook));
+}
+
+// "remove all long text like this [...] and create a documentation page that
+// reference all of this" (2026-11-22). The panel says a thing in a few words
+// and links to the section of a page of its own, which says the rest.
+console.log('\nU-docs. the panel is short, and a documentation page says the rest (2026-11-22)');
+{
+  const docs = read('pixel-grid-docs.html');
+  const links = read('src/pixel-grid/docs.ts');
+  const ui = read('src/pixel-grid/ui.tsx');
+  const step = read('src/pixel-grid/steps/GridStep.tsx');
+  const vite = read('vite.config.ts');
+  const ids = [...docs.matchAll(/ id="([^"]+)"/g)].map(m => m[1]);
+  const named = [...links.slice(links.indexOf('DOC_IDS = ['), links.indexOf('] as const')).matchAll(/'([a-z0-9-]+)'/g)].map(m => m[1]);
+  check('the documentation is a page of its own, with no script, published wherever the designer is',
+    !/<script/.test(docs) && /<title>Pixel Grid Designer: documentation<\/title>/.test(docs)
+    && (vite.match(/pixelGridDocs: path\.resolve\(__dirname, 'pixel-grid-docs\.html'\)/g) || []).length === 2
+    && /href="\.\/pixel-grid\.html"/.test(docs));
+  check('every section the panel can point at exists on it, once',
+    named.length >= 20 && named.every(id => ids.filter(x => x === id).length === 1));
+  check('and every entry of its own contents leads to a section',
+    [...docs.matchAll(/href="#([^"]+)"/g)].every(m => ids.includes(m[1])));
+  // Typed, so a section that does not exist cannot be named: the page is checked above.
+  const used = ['src/pixel-grid/steps/GridStep.tsx', 'src/pixel-grid/steps/PlotSize.tsx', 'src/pixel-grid/steps/PcaStep.tsx', 'src/pixel-grid/ResTable.tsx']
+    .flatMap(f => [...read(f).matchAll(/\b(?:doc|to)="([a-z0-9-]+)"/g)].map(m => m[1]));
+  check('the pointers that were cut short name a section of it',
+    used.length >= 12 && used.every(id => named.includes(id))
+    && /export function Explain\(\{ text, children, align = 'left', below = false, doc \}/.test(ui)
+    && /\{doc && <a href=\{docHref\(doc\)\} target="_blank" rel="noopener noreferrer"/.test(ui));
+  check('the header links to it, in a tab of its own, by a path relative to the page',
+    /<a href=\{docHref\(\)\} target="_blank" rel="noopener noreferrer"[^>]*>\s*\{?\s*Docs/.test(read('src/pixel-grid/PixelGridApp.tsx').replace(/\s+className="[^"]*"/g, ''))
+    && /export const DOCS_PAGE = '\.\/pixel-grid-docs\.html';/.test(links));
+  check('no paragraph stands under the satellite picker any more',
+    !/\{source\.warn && <p /.test(step) && !/<p [^>]*>\s*Tasked:/.test(step) && /export function DocChip\(/.test(ui));
+  // What a pointer may hold: a sentence or two. The longest was 105 words.
+  const WORDS = 48;
+  const long = [];
+  for (const f of ['src/pixel-grid/steps/GridStep.tsx', 'src/pixel-grid/steps/PlotSize.tsx', 'src/pixel-grid/steps/SuggestDesign.tsx', 'src/pixel-grid/steps/SimStep.tsx',
+    'src/pixel-grid/steps/PcaStep.tsx', 'src/pixel-grid/steps/controls.tsx', 'src/pixel-grid/steps/ImportPanel.tsx', 'src/pixel-grid/ResTable.tsx', 'src/pixel-grid/FieldMap.tsx']) {
+    const src = read(f);
+    for (const m of src.matchAll(/\b(?:text|tip|hint|title)=(?:\{<>([\s\S]*?)<\/>\}|"([^"]*)"|\{`([^`]*)`\}|\{"([^"]*)"\}|\{'((?:[^'\\]|\\.)*)'\})/g)) {
+      const body = (m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[5] ?? '').replace(/<[^>]+>/g, ' ').replace(/\{[^}]*\}/g, 'X').trim();
+      const n = body.split(/\s+/).filter(Boolean).length;
+      if (n > WORDS) long.push(`${f}: ${n} words: ${body.slice(0, 60)}`);
+    }
+  }
+  check(`no pointer of the panel runs past ${WORDS} words${long.length ? `: ${long.join(' | ')}` : ''}`, long.length === 0);
+  check('the documentation keeps to the page\'s own rule on dashes', !/\u2014/.test(docs) && !/\u2014/.test(links));
 }
 
 console.log(bad ? `\n${bad} UI-CONTRACT CHECK(S) FAILED` : '\nALL UI-CONTRACT CHECKS PASSED');

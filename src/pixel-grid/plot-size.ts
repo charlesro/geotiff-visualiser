@@ -30,9 +30,9 @@ import type { ImportedPlan } from './imported-types';
  *               with the image anywhere within its CE90. This is the reading
  *               a pixel list chosen by coordinates needs.
  *
- * Nothing here knows about the simulation engine. The engine adds the pixel
- * footprint on top of the blur; the note does not (a measured FWHM already
- * contains the detector), and this follows the note.
+ * Nothing here knows about the simulation engine, and both follow the note: a
+ * measured FWHM already contains the detector, and nothing is added for the
+ * pixel's own footprint (simulate.ts followsSpot).
  */
 
 /** What a pixel sees, and how pure it must be. */
@@ -60,6 +60,9 @@ export interface Plot {
  * 7.5e-8). On a share near 0.9 that moves a plot size by a few micrometres.
  */
 export function normCdf(z: number): number {
+  // Past 8.3 the tail is under half the last bit of 1 and the formula below
+  // gives exactly 1 (checked from 8.294 up): said at once, with no exponential.
+  if (z >= 8.3) return 1;
   const t = 1 / (1 + 0.2316419 * Math.abs(z));
   const poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
   const upper = (Math.exp(-0.5 * z * z) / 2.5066282746310002) * poly;
@@ -593,11 +596,15 @@ export interface ImageCase {
  * The three readings, from the blur and the CE90. With no geolocation error
  * they are one and the same, and only the first is returned.
  */
-export function imageCases(sigmaPsfM: number, ce90M: number): ImageCase[] {
+export function imageCases(
+  sigmaPsfM: number, ce90M: number,
+  /** The geolocation sigma itself, when the CE90 given was rounded for display: the default is a third of a pixel exactly. */
+  sigmaGeoM: number = ce90M / CE90_TO_SIGMA,
+): ImageCase[] {
   if (!(ce90M > 0)) return [{ id: 'corrected', sigma: sigmaPsfM, shift: 0 }];
   return [
     { id: 'corrected', sigma: sigmaPsfM, shift: 0 },
-    { id: 'average', sigma: Math.hypot(sigmaPsfM, ce90M / CE90_TO_SIGMA), shift: 0 },
+    { id: 'average', sigma: Math.hypot(sigmaPsfM, sigmaGeoM), shift: 0 },
     { id: 'robust', sigma: sigmaPsfM, shift: ce90M },
   ];
 }

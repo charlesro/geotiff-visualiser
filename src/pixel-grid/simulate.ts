@@ -1,6 +1,8 @@
 import proj4 from 'proj4';
 import { crsToProj4Def } from '../lib/geo';
 import { pointInPoly } from './geometry';
+import { normCdf } from './plot-size';
+import { ce90Shifts, heldMask, probit } from './resolving';
 import type { ImportedPlan } from './imported-types';
 import type { LngLatBounds, S2Grid } from './s2-grid';
 
@@ -1172,6 +1174,25 @@ const PHASE_MAX_N = 6;
  * plot's pixels at the phase the page WILL stake it at, which means the same
  * mesh, from the same rule.
  */
+/**
+ * Where a lattice's pixel edges fall, modulo its pixel, read off one of them
+ * (the corner of a box laid on it). Zero for a lattice on whole multiples of
+ * its pixel, and exactly zero: an edge worked out as k * res does not always
+ * divide back to a whole number, and a remainder of 1e-13 or of res less that
+ * must not move anything. Zero for no edge at all (an unbounded extent).
+ *
+ * Most lattices here are on whole multiples. Native Landsat is half a pixel
+ * off, and south of the equator so are the 30 and 60 m grids in a southern
+ * frame (sensors.ts latticePhase). Whatever snaps to "the lattice" inside a
+ * box takes the box's own offset from this, so that a trial is staked, and its
+ * extent cut, on the pixels the box really has.
+ */
+export function latticeOffset(edge: number, res: number): number {
+  if (!Number.isFinite(edge) || !(res > 0)) return 0;
+  const m = ((edge % res) + res) % res;
+  return m < 1e-6 * res || res - m < 1e-6 * res ? 0 : m;
+}
+
 export function stakeMesh(extent: [number, number, number, number], res: number): { nx: number; ny: number; steps: number } | null {
   const [e0, n0, e1, n1] = extent;
   let nx = Math.max(1, Math.round((e1 - e0) / res)), ny = Math.max(1, Math.round((n1 - n0) / res));
@@ -1201,7 +1222,11 @@ export function stakeBlockPlan(
   steps?: number,
 ): { plan: BlockPlan; offset: [number, number]; staked: boolean } {
   const base = buildBlockPlan(design, place);
-  const snap = place.snap && place.snap > 0 ? place.snap : 0;
+  // A trial at an angle has no position to choose on a lattice that is known:
+  // its plot edges cannot run along the pixels. On one that falls anywhere
+  // (SensorParams.anyPosition) it still has a worst position, and that is the
+  // one to count it at: the same search, over one pixel each way.
+  const snap = place.snap && place.snap > 0 ? place.snap : sensor.anyPosition && res > 0 ? res : 0;
   if (!(snap > 0) || !(res > 0)) return { plan: base, offset: [0, 0], staked: false };
 
   // The rung's own extent, centred and capped only if it is very large.
@@ -1213,14 +1238,45 @@ export function stakeBlockPlan(
   // large field's window is cut down to its middle, and a trial seated away
   // from there would be scored on a window it is not in, every phase alike.
   const [cx, cy] = place.window ?? [(e0 + e1) / 2, (n0 + n1) / 2];
-  const w0 = Math.floor((cx - (nx * res) / 2) / res) * res;
-  const v0 = Math.floor((cy - (ny * res) / 2) / res) * res;
+  // On the extent's OWN lattice. The window used to be laid on whole multiples
+  // of the pixel whatever the extent: on a grid half a pixel off (native
+  // Landsat) every phase was then scored against pixels the map does not have,
+  // and the trial staked on the worst of them (found by an outside review,
+  // 2026-11-22).
+  const pE = latticeOffset(e0, res), pN = latticeOffset(n0, res);
+  const w0 = Math.floor((cx - (nx * res) / 2 - pE) / res) * res + pE;
+  const v0 = Math.floor((cy - (ny * res) / 2 - pN) / res) * res + pN;
   const box = { res, utmBounds: [w0, v0, w0 + nx * res, v0 + ny * res] } as unknown as S2Grid;
+
+  const layoutOf = (plan: BlockPlan): SimLayout => ({ pattern: 'block', width: 2, spacing: 0, rotationDeg, block: plan });
+  // What a position is worth, by the engine: its pure pixels, or first the ones
+  // that hold within the CE90 the reader places for (SensorParams.placeHeldM),
+  // the image landing along the plots' own sides and diagonals.
+  const holdM = placedFor(sensor, Math.min(base.design.plotLength, base.design.plotWidth));
+  const lands = ce90Shifts(holdM, rotationDeg);
+  const scoreOf = (plan: BlockPlan): number => {
+    const nominal = fieldVerdicts(box, origin, layoutOf(plan), sensor);
+    const pure = pureVerdictCount(nominal);
+    if (!lands.length || pure === 0) return pure;
+    const mask = heldMask(nominal, lands.length, (q, need) => fieldVerdicts(box, [origin[0] - lands[q][0], origin[1] - lands[q][1]], layoutOf(plan), sensor, need));
+    let held = 0;
+    for (let k = 0; k < mask.length; k++) if (mask[k]) held++;
+    return held * HELD_FIRST + pure;
+  };
+  // Under a blur that is a spot the count moves with the position far more
+  // finely than a mesh of six a side can follow: see spotStake.
+  const fine = spotStake(base, origin, rotationDeg, res, sensor, w0, v0, nx, ny, snap, holdM);
+  if (fine) {
+    if (fine[0] === 0 && fine[1] === 0) return { plan: base, offset: [0, 0], staked: true };
+    const cand: BlockPlan = { ...base, u0: base.u0 + fine[0], v0: base.v0 + fine[1] };
+    // The engine has the last word, as everywhere: the position is kept only if it beats the corner snap there.
+    return keepsCount(sensor, scoreOf(cand), scoreOf(base)) ? { plan: cand, offset: fine, staked: true } : { plan: base, offset: [0, 0], staked: true };
+  }
 
   const n = steps && steps > 0 ? Math.min(PHASE_MAX_N, Math.floor(steps)) : mesh.steps;
   if (n < 2) return { plan: base, offset: [0, 0], staked: false };
 
-  let best = base, bestScore = -1, bestOff: [number, number] = [0, 0];
+  let best = base, bestScore = noCountYet(sensor), bestOff: [number, number] = [0, 0];
   for (let i = 0; i < n; i++) {
     for (let j = 0; j < n; j++) {
       const du = (i * snap) / n, dv = (j * snap) / n;
@@ -1228,11 +1284,195 @@ export function stakeBlockPlan(
       // where it sits against the lattice moves, so no plan is rebuilt.
       const cand: BlockPlan = { ...base, u0: base.u0 + du, v0: base.v0 + dv };
       // Only the count is read, so only the verdicts are worked out.
-      const pure = pureVerdictCount(fieldVerdicts(box, origin, { pattern: 'block', width: 2, spacing: 0, rotationDeg, block: cand }, sensor));
-      if (pure > bestScore) { bestScore = pure; best = cand; bestOff = [du, dv]; }
+      const pure = scoreOf(cand);
+      if (keepsCount(sensor, pure, bestScore)) { bestScore = pure; best = cand; bestOff = [du, dv]; }
     }
   }
   return { plan: best, offset: bestOff, staked: true };
+}
+
+/**
+ * Positions tried per axis by spotStake: a twenty-fourth of a pixel apart. The
+ * same for every trial, so that a plot sized on its own (suggest-design.ts
+ * plotCount) is counted at the position the whole trial is then staked at.
+ */
+export const SPOT_STAKE_N = 24;
+
+/** True when a block trial under this sensor is staked by spotStake and not by the mesh of engine runs. */
+export function stakesBySpot(sensor: SensorParams): boolean {
+  // Not at a threshold of 1: the engine calls a pixel pure there once every other cover is under a billionth, a product of two shares never is.
+  const thr = sensor.mixThreshold;
+  return followsSpot(sensor) && thr > 0.5 && thr < 1 && (sensor.offX ?? 0) === 0 && (sensor.offY ?? 0) === 0;
+}
+
+/**
+ * The position of an aligned block trial, within one pixel each way, that
+ * leaves the most pure pixels under a blur that is a spot (the note's model):
+ * the shift along the plots and across them, or null when this is not the case
+ * to which it applies (a sharp sensor, a threshold of a half or less, a spot
+ * pushed off its pixel).
+ *
+ * WHY NOT THE MESH. Under a spot a pixel's share of a plot moves smoothly with
+ * the trial, and the count of pure pixels changes wherever one of them crosses
+ * the threshold: plots that are not a whole number of pixels apart sit at a
+ * few different places on the lattice, and the positions that suit most of
+ * them at once are narrow. Six positions a side missed them: 40 m plots 45 m
+ * apart at 6 m pixels kept 414 pure pixels at the mesh's pick, and 480 half a
+ * metre further along both ways; at 4 m every position of the mesh was the
+ * same place modulo the plots' own step, and the search could not move at all.
+ *
+ * HOW. With the trial along the pixel rows a plot's share of a pixel is the
+ * product of two numbers, one for the pixel's column against the plot's length
+ * and one for its row against the plot's width (the note's P = F(x) F(y)), and
+ * the pixel is pure when the product reaches the threshold. So for each
+ * position along an axis the shares that could ever count are listed once,
+ * largest first, and a position both ways is then counted by pairing two short
+ * lists, with no simulation at all. Every position of a mesh of 24 a side
+ * together costs less than the six a side did through the engine.
+ *
+ * The count is over the same window the mesh search scores (the pixels of the
+ * box given). A tie keeps the smallest shift, as the mesh search does, so a
+ * trial already at its best is left on its corner snap.
+ *
+ * For a lattice that falls anywhere (SensorParams.anyPosition) the position
+ * returned is the one that keeps the FEWEST pure pixels, by the same count.
+ */
+function spotStake(
+  base: BlockPlan, origin: [number, number], rotationDeg: number, res: number, sensor: SensorParams,
+  w0: number, v0: number, nx: number, ny: number, snap: number, holdM = 0,
+): [number, number] | null {
+  const thr = sensor.mixThreshold;
+  if (!stakesBySpot(sensor)) return null;
+  const t = (rotationDeg * Math.PI) / 180, cos = Math.cos(t), sin = Math.sin(t);
+  const flat = Math.abs(sin) < 1e-9, upright = Math.abs(cos) < 1e-9;
+  if (!flat && !upright) return null;
+  const d = base.design, nSp = d.nSpecies, plotPitch = d.plotWidth + d.plotAlley;
+  const su = spotSigma(flat ? sensor.sigmaX : sensor.sigmaY) * res, sv = spotSigma(flat ? sensor.sigmaY : sensor.sigmaX) * res;
+  // The pixels' centres along the trial's two axes, as the engine's frame has them.
+  const nU = flat ? nx : ny, nV = flat ? ny : nx;
+  const uAt = new Float64Array(nU), vAt = new Float64Array(nV);
+  for (let q = 0; q < nU; q++) uAt[q] = flat ? (w0 + (q + 0.5) * res - origin[0]) * cos : (v0 + (q + 0.5) * res - origin[1]) * sin;
+  for (let q = 0; q < nV; q++) vAt[q] = flat ? (v0 + (q + 0.5) * res - origin[1]) * cos : -(w0 + (q + 0.5) * res - origin[0]) * sin;
+
+  const N = SPOT_STAKE_N;
+  const alongU: AxisShares[][] = [];
+  for (let c = 0; c < base.cols; c++) {
+    const row: AxisShares[] = [];
+    for (let i = 0; i < N; i++) row.push(spotAxis(base.u0 + c * base.pitchU + (i * snap) / N, base.blockU, uAt, su, thr, holdM));
+    alongU.push(row);
+  }
+  const alongV: AxisShares[][] = [];
+  for (let r = 0; r < base.rows; r++) {
+    for (let q = 0; q < nSp; q++) {
+      const row: AxisShares[] = [];
+      for (let j = 0; j < N; j++) row.push(spotAxis(base.v0 + r * base.pitchV + q * plotPitch + (j * snap) / N, d.plotWidth, vAt, sv, thr, holdM));
+      alongV.push(row);
+    }
+  }
+  let best = noCountYet(sensor), bi = 0, bj = 0;
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) {
+      let score = 0;
+      for (let r = 0; r < base.rows; r++) {
+        for (let c = 0; c < base.cols; c++) {
+          if (r * base.cols + c >= d.nBlocks) continue;         // the ragged last row
+          const A = alongU[c][i];
+          if (A.own.length === 0) continue;
+          for (let q = 0; q < nSp; q++) {
+            const B = alongV[r * nSp + q][j];
+            score += purePairs(A, B, thr);
+            if (holdM > 0) score += heldPairs(A, B, thr) * HELD_FIRST;
+          }
+        }
+      }
+      if (keepsCount(sensor, score, best)) { best = score; bi = i; bj = j; }
+    }
+  }
+  return [(bi * snap) / N, (bj * snap) / N];
+}
+
+/**
+ * One side of a plot against the pixels along it, for the counts that pair two
+ * sides (the note's P = F(x) F(y)): the pixels whose share of the side reaches
+ * the threshold, the only ones that can be pure for the plot.
+ */
+export interface AxisShares {
+  /** Those pixels' shares of the side, largest first. */
+  own: Float64Array;
+  /**
+   * With a geolocation error to hold against: for the same pixels, in no
+   * particular order, three numbers each. Its share, the smaller of its shares
+   * with the image landed the CE90 either way along this side, and the smaller
+   * with it landed the CE90 over root two either way (the diagonal landings).
+   * Null with no error.
+   */
+  lands: Float64Array | null;
+}
+
+/** AxisShares from a list of shares at the pixels of an axis, and, to hold against a CE90, the shares at the four landings along it. */
+export function axisSharesOf(
+  own: ArrayLike<number>, thr: number,
+  along: { plus: ArrayLike<number>; minus: ArrayLike<number>; diagPlus: ArrayLike<number>; diagMinus: ArrayLike<number> } | null,
+): AxisShares {
+  const kept: number[] = [], lands: number[] = [];
+  for (let q = 0; q < own.length; q++) {
+    const w = own[q];
+    if (!(w >= thr)) continue;
+    kept.push(w);
+    if (along) lands.push(w, Math.min(along.plus[q], along.minus[q]), Math.min(along.diagPlus[q], along.diagMinus[q]));
+  }
+  return { own: Float64Array.from(kept).sort().reverse(), lands: along ? Float64Array.from(lands) : null };
+}
+
+/** AxisShares of the interval [lo, lo + len) under a spot of standard deviation `s`, at the pixel centres `at`. */
+function spotAxis(lo: number, len: number, at: Float64Array, s: number, thr: number, holdM: number): AxisShares {
+  const hi = lo + len, diag = holdM / Math.SQRT2;
+  const kept: number[] = [], lands: number[] = [];
+  for (let q = 0; q < at.length; q++) {
+    const c = at[q];
+    // A spot centred outside an interval has less than half of itself in it.
+    if (c <= lo || c >= hi) continue;
+    const w = band(lo, hi, c, s);
+    if (!(w >= thr)) continue;
+    kept.push(w);
+    if (holdM > 0) {
+      lands.push(w, Math.min(band(lo, hi, c + holdM, s), band(lo, hi, c - holdM, s)), Math.min(band(lo, hi, c + diag, s), band(lo, hi, c - diag, s)));
+    }
+  }
+  return { own: Float64Array.from(kept).sort().reverse(), lands: holdM > 0 ? Float64Array.from(lands) : null };
+}
+
+/** Pixels pure for a plot: the pairs, one share from each side, whose product reaches the threshold. */
+export function purePairs(A: AxisShares, B: AxisShares, thr: number): number {
+  // Both largest first: as the share along one side falls, fewer along the other still make the product.
+  const a = A.own, b = B.own;
+  let k = b.length, n = 0;
+  for (let i = 0; i < a.length && k > 0; i++) {
+    while (k > 0 && a[i] * b[k - 1] < thr) k--;
+    n += k;
+  }
+  return n;
+}
+
+/**
+ * Pixels that hold for a plot within the CE90 the two sides were listed for:
+ * pure with the image in place and at each of its eight landings, along the
+ * plot's sides and along its diagonals. A landing along one side moves one
+ * share only, and of the two ways along it the smaller share decides; the four
+ * diagonal landings move both, and the two smaller shares decide them all.
+ */
+export function heldPairs(A: AxisShares, B: AxisShares, thr: number): number {
+  const a = A.lands, b = B.lands;
+  if (!a || !b) return 0;
+  let n = 0;
+  for (let i = 0; i < a.length; i += 3) {
+    const a0 = a[i], aC = a[i + 1], aD = a[i + 2];
+    for (let j = 0; j < b.length; j += 3) {
+      const b0 = b[j];
+      if (a0 * b0 >= thr && aC * b0 >= thr && a0 * b[j + 1] >= thr && aD * b[j + 2] >= thr) n++;
+    }
+  }
+  return n;
 }
 
 /**
@@ -2519,7 +2759,51 @@ export interface SensorParams {
   offY?: number;
   /** Pure when dominant crop fraction ≥ threshold (repo default 0.8). */
   mixThreshold: number;
+  /**
+   * True for a sensor whose pixel lattice is not known before the image is
+   * taken: a tasked satellite delivers each image on a grid of its own, and no
+   * trial can be planted against it. A fixed grid (Sentinel-2, Landsat) is
+   * known to the metre years ahead, and a trial is slid to the position on it
+   * that keeps the most pure pixels. Here there is no position to choose, and
+   * the note takes the worst: every search that slides a trial along the
+   * lattice (bestPhaseOffset, stakeBlockPlan, stakeOnGrid, placementSearch)
+   * then returns the position that keeps the FEWEST, so that what is counted
+   * is what the trial keeps wherever the grid falls. The engine itself reads
+   * nothing of it: a position given is simulated the same for any sensor.
+   */
+  anyPosition?: boolean;
+  /**
+   * WHAT those searches count, as a CE90 in metres. None, or 0: the pure
+   * pixels, with the image exactly where it says. Above 0: the pure pixels
+   * that hold, for the same cover, wherever the image lands within that
+   * distance, and among positions that hold as many, the pure ones. The two
+   * are not the same position: 30 m strips at 10 m keep two pure pixel rows 10 m
+   * from each border, and neither holds; one row down the middle of the strip
+   * holds. Which of the two a trial is placed for is the reader's choice
+   * (use-grid `placeFor`). Nothing holds past half a plot or half a strip: the
+   * pure pixels alone are then counted. Like anyPosition, the engine reads
+   * nothing of it.
+   */
+  placeHeldM?: number;
 }
+
+/**
+ * In a search's score a pixel that holds weighs this much more than a pure one:
+ * first the pixels that hold, then the pure ones. Above any count of pixels a
+ * search scores (its windows are a few thousand pixels).
+ */
+export const HELD_FIRST = 1e7;
+
+/** The CE90 a search places for, in metres, or 0 for the pure pixels: none past half the short side of what a cover id stands for. */
+export function placedFor(sensor: SensorParams, shortSideM: number): number {
+  const m = sensor.placeHeldM;
+  return typeof m === 'number' && m > 0 && m < shortSideM / 2 ? m : 0;
+}
+
+/** Whether `a` is the count to keep over `b` for this sensor: more pure pixels on a known lattice, fewer on one that falls anywhere. */
+export const keepsCount = (sensor: SensorParams, a: number, b: number): boolean => (sensor.anyPosition ? a < b : a > b);
+/** The count any real one replaces at the start of such a search. */
+export const noCountYet = (sensor: SensorParams): number => (sensor.anyPosition ? Infinity : -1);
 
 /** Truth (NDVI) of a field on a day-of-year. */
 export const truthAt = (f: FieldParams, day: number): number =>
@@ -2784,6 +3068,860 @@ export function meanPerSpecies(
   return out;
 }
 
+// ===== the note's model: a spot on the ground, and no box for the pixel =======
+//
+// PHENET note, Appendix A, assumption H1: "the measured value of a pixel is the
+// ground signal weighted by the PSF centred on the true pixel centre. The PSF is
+// an isotropic Gaussian [...]. The FWHM values were measured on images, so they
+// already include the detector footprint and the motion blur: we do not add a
+// separate box for the pixel."
+//
+// The repo's engine (`aggregate`, above) does add one. It averages the ground
+// over each pixel's square, then weights whole pixels by a Gaussian read at the
+// pixels' centres: the footprint is counted on top of a blur that already
+// contains it, and a neighbouring pixel counts the same from its near edge to
+// its far one, where a spot falls away across it. For a pixel on the centre of
+// a 20 m plot, under the Sentinel-2 blur, that reads 30 % of its signal from
+// outside where the note's law gives 18 % (and 38 % against 26 % once the
+// geolocation error is in the spot). An outside review of the code against the
+// note found it (2026-11-22); the plot-size card already followed the note, so
+// the page held two models, and every count on the map, in the table and in
+// the suggestions came from the one the note does not use.
+//
+// What follows is the note's own: for each pixel, the share of a Gaussian spot
+// centred on it that falls on each cover, worked out on the ground the layout
+// describes and not on a grid of samples.
+//
+//  - strips are bands, and a band's share is one difference of two normal
+//    distribution values, whatever the angle and whatever the spot's two widths;
+//  - a checkerboard's cell and a block trial's plot are rectangles, and a
+//    rectangle's share is the product of its two sides' (the note's
+//    P = F(x) F(y)) whenever the spot is as wide one way as the other, or the
+//    rectangle lies along its axes;
+//  - any other shape, an imported plot that is no rectangle, or a rectangle
+//    under a spot that is neither round nor aligned with it, is taken along its
+//    outline (Green's theorem turns the share into an integral along the edges).
+//
+// The ground is whatever the layout says it is, as far as the spot reaches:
+// nothing is cut at the edge of the grid being simulated, so a pixel at the
+// edge of a box reads exactly what it reads in the middle of a larger one.
+//
+// EVERY BLUR IS A SPOT, and no spot is narrower than a pixel's own footprint.
+// The note's blur is end to end: it contains the detector, whose square alone
+// spreads the signal by 1 / sqrt(12) of a pixel (FOOTPRINT_SIGMA). A figure
+// typed in under that cannot be an end-to-end blur, and is read as the least
+// one there can be, axis by axis (spotSigma). So the model does not change
+// with the figure, and a wider blur never reads sharper than a narrower one.
+// It used to switch at the footprint to the repo engine, whose Gaussian is
+// read at whole pixels only: at 0.288 px that engine left 0.24 % of a pixel
+// beside a border on the other crop, and the spot at 0.289 px left 4.2 %
+// (found by an outside review, 2026-11-22).
+//
+// Only NO blur at all, both sigmas exactly 0, is not a spot: it is the pixel
+// as a plain square, each cover by the area it holds of it, which is the repo
+// engine's own phase 1 and exact. That engine's blur (simulateFieldReference)
+// is kept as what it was, and reads no pixel of the page any more.
+
+/**
+ * The spread of a pixel's own footprint, a uniform square, in pixels: 1 / sqrt(12).
+ * An end-to-end spot cannot be narrower than the footprint it contains.
+ */
+export const FOOTPRINT_SIGMA = 1 / Math.sqrt(12);
+
+/** The spot a blur of `sigma` pixels is read with along one axis: itself, or the footprint's own spread when it is narrower. */
+export const spotSigma = (sigma: number): number => (sigma > FOOTPRINT_SIGMA ? sigma : FOOTPRINT_SIGMA);
+
+/** True when a sensor has a blur at all, along either axis: the model of this section applies. False for no blur, the pixel as a square. */
+export function followsSpot(sensor: Pick<SensorParams, 'sigmaX' | 'sigmaY'>): boolean {
+  return typeof sensor.sigmaX === 'number' && typeof sensor.sigmaY === 'number'
+    && Number.isFinite(sensor.sigmaX) && Number.isFinite(sensor.sigmaY)
+    && sensor.sigmaX >= 0 && sensor.sigmaY >= 0 && (sensor.sigmaX > 0 || sensor.sigmaY > 0);
+}
+
+/** How far a spot is followed, in its own sigmas: past it a Gaussian holds 2e-9 of its weight. */
+const SPOT_REACH = 6;
+/** A share under this is no share: the pixel is not said to see that cover. */
+const SPOT_DUST = 1e-9;
+
+/**
+ * What a spot of standard deviation `s` centred at `c` puts between `lo` and `hi`.
+ *
+ * The far side's term is left out where it cannot change the answer by a bit:
+ * 8.5 sigmas below, it is under 1e-17, less than half the last bit of any
+ * upper term of an eighth or more (which one sigma past the near side still
+ * is). Checked on six million bands: none differs. Half of a plot's pixels are
+ * that far from one of its sides at the finest pixel sizes.
+ */
+const band = (lo: number, hi: number, c: number, s: number): number => {
+  const zh = (hi - c) / s, zl = (lo - c) / s, up = normCdf(zh);
+  return zl <= -8.5 && zh >= -1 ? up : up - normCdf(zl);
+};
+
+/**
+ * The bands of one row of intervals, each next to the one before: `band`, but
+ * an interval that starts exactly where the last one ended (strips with no
+ * alley between them, plots that touch) takes its lower edge's value from
+ * that one instead of working it out again. The same numbers as `band` gives,
+ * to the bit: it is the same expression of the same edge.
+ */
+let chainEdge = NaN, chainValue = 0;
+const chainStart = (): void => { chainEdge = NaN; };
+const chainBand = (lo: number, hi: number, c: number, s: number): number => {
+  const zh = (hi - c) / s, zl = (lo - c) / s, up = normCdf(zh);
+  const out = zl <= -8.5 && zh >= -1 ? up : up - (lo === chainEdge ? chainValue : normCdf(zl));
+  chainEdge = hi; chainValue = up;
+  return out;
+};
+
+/** Five-point Gauss-Legendre on [0, 1]. */
+const GL_X = [0.046910077030668, 0.230765344947158, 0.5, 0.769234655052841, 0.953089922969332];
+const GL_W = [0.118463442528095, 0.239314335249683, 0.284444444444444, 0.239314335249683, 0.118463442528095];
+const INV_SQRT_2PI = 0.3989422804014327;
+/** Past this many sigmas a term of the outline integral is its limit (0, or a plain difference). */
+const EDGE_REACH = 7.5;
+
+/**
+ * One edge's term of the outline integral, in the spot's own units (X and Y in
+ * sigmas from its centre): the integral of Phi(X) phi(Y) dY along the edge.
+ * Summed round a ring it is the share of a standard Gaussian inside the ring,
+ * positive for a ring that runs counter-clockwise (Green's theorem with
+ * Q = Phi(X) phi(Y), whose derivative in X is the density).
+ *
+ * The integrand is smooth on the scale of one sigma, so the edge is cut into
+ * pieces no longer than that and each is read at five points. Where the edge
+ * is far to the left Phi is 0 and it contributes nothing; far to the right Phi
+ * is 1 and the term is a difference of two distribution values; far above or
+ * below, phi is 0.
+ */
+function edgeTerm(x0: number, y0: number, x1: number, y1: number): number {
+  const dy = y1 - y0;
+  if (dy === 0) return 0;
+  const dx = x1 - x0;
+  // The stretch of the edge inside the band |Y| <= EDGE_REACH.
+  let ta = (-EDGE_REACH - y0) / dy, tb = (EDGE_REACH - y0) / dy;
+  if (ta > tb) { const q = ta; ta = tb; tb = q; }
+  if (ta < 0) ta = 0;
+  if (tb > 1) tb = 1;
+  if (!(tb > ta)) return 0;
+  // Cut again where it crosses X = -EDGE_REACH and X = +EDGE_REACH: up to
+  // three stretches, between ta, the two crossings in the order they are met,
+  // and tb. (No list is made of them: this runs for every edge of every pixel.)
+  let c1 = tb, c2 = tb;
+  if (dx !== 0) {
+    const tm = (-EDGE_REACH - x0) / dx, tp = (EDGE_REACH - x0) / dx;
+    const lo = tm < tp ? tm : tp, hi = tm < tp ? tp : tm;
+    if (lo > ta && lo < tb) c1 = lo;
+    if (hi > ta && hi < tb) { if (c1 === tb) c1 = hi; else c2 = hi; }
+  }
+  let total = 0;
+  for (let q = 0; q < 3; q++) {
+    const t0 = q === 0 ? ta : q === 1 ? c1 : c2, t1 = q === 0 ? c1 : q === 1 ? c2 : tb;
+    if (!(t1 > t0)) continue;
+    const xm = x0 + dx * (t0 + t1) / 2;
+    if (xm <= -EDGE_REACH) continue;
+    if (xm >= EDGE_REACH) { total += normCdf(y0 + dy * t1) - normCdf(y0 + dy * t0); continue; }
+    const pieces = Math.max(1, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)) * (t1 - t0)));
+    const h = (t1 - t0) / pieces;
+    let sum = 0;
+    for (let s = 0; s < pieces; s++) {
+      const base = t0 + s * h;
+      for (let g = 0; g < 5; g++) {
+        const tt = base + GL_X[g] * h, Y = y0 + dy * tt;
+        sum += GL_W[g] * normCdf(x0 + dx * tt) * Math.exp(-0.5 * Y * Y);
+      }
+    }
+    total += sum * h * dy * INV_SQRT_2PI;
+  }
+  return total;
+}
+
+/**
+ * The share of a spot centred at (cx, cy), with standard deviations sx along E
+ * and sy along N, that falls inside ONE simple ring, whichever way it winds:
+ * the outline integral round it, and its size.
+ */
+function spotInRing(ring: [number, number][], cx: number, cy: number, sx: number, sy: number): number {
+  let total = 0;
+  const n = ring.length;
+  for (let i = 0; i < n; i++) {
+    const a = ring[i], b = ring[(i + 1) % n];
+    total += edgeTerm((a[0] - cx) / sx, (a[1] - cy) / sy, (b[0] - cx) / sx, (b[1] - cy) / sy);
+  }
+  const share = Math.abs(total);
+  return share > 1 ? 1 : share;
+}
+
+/**
+ * The same for a shape of several rings read by the EVEN-ODD rule, as the rest
+ * of the page reads an imported plot (importedCoverAt): a point is in the plot
+ * when an odd number of its rings hold it. `sign` says, ring by ring, whether
+ * the ring adds its share or takes it away (ringSigns).
+ *
+ * The rings used to be summed with the sign their winding gave them, which is
+ * right only for a file whose outer rings all wind one way and its holes the
+ * other. Nothing makes a file do that, and the point test does not ask it to:
+ * a plot of two parts wound opposite ways read as no plot at all, and a hole
+ * wound like its outline was filled in (found by an outside review, 2026-11-22).
+ */
+function spotInRings(rings: [number, number][][], sign: ArrayLike<number>, cx: number, cy: number, sx: number, sy: number): number {
+  let total = 0;
+  for (let q = 0; q < rings.length; q++) {
+    const ring = rings[q], n = ring.length;
+    let own = 0;
+    for (let i = 0; i < n; i++) {
+      const a = ring[i], b = ring[(i + 1) % n];
+      own += edgeTerm((a[0] - cx) / sx, (a[1] - cy) / sy, (b[0] - cx) / sx, (b[1] - cy) / sy);
+    }
+    total += sign[q] * Math.abs(own);
+  }
+  return total < 0 ? 0 : total > 1 ? 1 : total;
+}
+
+/** Twice a ring's signed area, taken from its first vertex (a ring's coordinates are six and seven figures long: taken from the origin, a small plot's area would be lost in them). */
+function shoelace2(ring: [number, number][]): number {
+  const [x0, y0] = ring[0];
+  let s = 0;
+  for (let i = 0, n = ring.length; i < n; i++) {
+    const a = ring[i], b = ring[(i + 1) % n];
+    s += (a[0] - x0) * (b[1] - y0) - (b[0] - x0) * (a[1] - y0);
+  }
+  return s;
+}
+
+/** Whether a point is inside one ring (crossings to its east). */
+function inRing(x: number, y: number, ring: [number, number][]): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i], [xj, yj] = ring[j];
+    if ((yi > y) !== (yj > y) && x < xi + ((y - yi) / (yj - yi)) * (xj - xi)) inside = !inside;
+  }
+  return inside;
+}
+
+/**
+ * For each ring of a shape read by the even-odd rule: +1 when the ring adds
+ * the ground it encloses, -1 when it takes it away. A ring inside an even
+ * number of the others (none, for an outline or a second part) adds; inside an
+ * odd number (a hole) it takes away; and so on inwards. Rings that cross each
+ * other are not a shape this can read, and nothing reads them better.
+ */
+function ringSigns(rings: [number, number][][]): Float64Array {
+  const out = new Float64Array(rings.length).fill(1);
+  if (rings.length < 2) return out;
+  for (let q = 0; q < rings.length; q++) {
+    // A point of the ring itself: the middle of its first side, nudged off no other ring's vertex.
+    const a = rings[q][0], b = rings[q][1] ?? a, x = (a[0] + b[0]) / 2, y = (a[1] + b[1]) / 2;
+    let depth = 0;
+    for (let r = 0; r < rings.length; r++) if (r !== q && inRing(x, y, rings[r])) depth++;
+    if (depth % 2 === 1) out[q] = -1;
+  }
+  return out;
+}
+
+/** A ring without its closing vertex, wound counter-clockwise. */
+function openCcw(ring: [number, number][]): [number, number][] {
+  const n = ring.length;
+  const open = n > 1 && ring[0][0] === ring[n - 1][0] && ring[0][1] === ring[n - 1][1] ? ring.slice(0, n - 1) : ring.slice();
+  return open.length >= 3 && shoelace2(open) < 0 ? open.reverse() : open;
+}
+
+/** `ring` cut down to what lies inside the convex ring `win` (open, counter-clockwise): Sutherland-Hodgman. Empty when nothing is left. */
+function clipToConvex(ring: [number, number][], win: [number, number][]): [number, number][] {
+  let out = ring;
+  for (let i = 0; i < win.length && out.length >= 3; i++) {
+    const a = win[i], b = win[(i + 1) % win.length];
+    const ex = b[0] - a[0], ey = b[1] - a[1];
+    const next: [number, number][] = [];
+    for (let q = 0; q < out.length; q++) {
+      const p = out[q], n = out[(q + 1) % out.length];
+      const sp = ex * (p[1] - a[1]) - ey * (p[0] - a[0]), sn = ex * (n[1] - a[1]) - ey * (n[0] - a[0]);
+      if (sp >= 0) next.push(p);
+      if ((sp > 0 && sn < 0) || (sp < 0 && sn > 0)) { const t = sp / (sp - sn); next.push([p[0] + t * (n[0] - p[0]), p[1] + t * (n[1] - p[1])]); }
+    }
+    out = next;
+  }
+  return out.length >= 3 ? out : [];
+}
+
+/** A plot of an imported trial, made ready for the spot: its box, and its own frame when it is a rectangle. */
+interface SpotPlot {
+  cover: number;
+  rings: [number, number][][];
+  /** Per ring, +1 or -1: what the ring does to the plot's ground under the even-odd rule (ringSigns). */
+  sign: Float64Array;
+  box: [number, number, number, number];
+  /** Centre, the unit vector along its first side, and its two half sides: null for anything but a rectangle. */
+  rect: { cx: number; cy: number; ex: number; ey: number; ha: number; hb: number } | null;
+  /**
+   * Ground this plot does not keep, because a LATER plot of the file lies on
+   * it too and the later plot wins (importedCoverAt): the pieces it shares
+   * with each of them, to take away (weight -1), and the pieces shared with
+   * two of them at once, taken away twice and so given back once (+1). Null
+   * for a plot no later plot touches, which is every plot of most trials.
+   */
+  less: { ring: [number, number][]; w: number }[] | null;
+}
+interface SpotPlan {
+  plots: SpotPlot[]; cell: number; e0: number; n0: number; gx: number; gy: number; bins: Int32Array[];
+  /**
+   * The last spot each plot was weighed for, and the number of the spot in
+   * hand. Both live with the plan, which is kept from one simulation to the
+   * next: a count restarted at each simulation met the marks the one before had
+   * left, and a plot was then passed over as already weighed.
+   */
+  stamp: Int32Array; tick: number;
+  /**
+   * The footprint's sides as (a point, the unit normal pointing in), four
+   * numbers each, when it is convex, which a hull is: null otherwise. A spot
+   * whose centre is further inside than it reaches from every side lies wholly
+   * in the trial, and one that far outside any side lies wholly out of it; the
+   * outline integral is then not needed, which is most pixels of a trial.
+   */
+  hullSides: Float64Array | null;
+  /** The footprint as a rectangle, when it is one: its share of a round spot is then two bands, as a plot's. */
+  hullRect: SpotPlot['rect'];
+  /**
+   * 1 for a plot that overlaps another in a way no clip settles here (neither
+   * of the two is convex): a pixel whose spot reaches one is worked out point
+   * by point instead (spotByPoints), slowly and to about a hundredth. Null
+   * when there is none, which is every trial seen so far.
+   */
+  rough: Uint8Array | null;
+}
+const spotPlans = new WeakMap<ImportedPlan, SpotPlan>();
+
+/** A ring's four corners when it is a rectangle (four sides, closed or not, square at every corner), else null. */
+function rectOf(ring: [number, number][]): SpotPlot['rect'] {
+  const n = ring.length;
+  const m = n > 1 && ring[0][0] === ring[n - 1][0] && ring[0][1] === ring[n - 1][1] ? n - 1 : n;
+  if (m !== 4) return null;
+  const [a, b, c, d] = ring;
+  const ux = b[0] - a[0], uy = b[1] - a[1], vx = d[0] - a[0], vy = d[1] - a[1];
+  const lu = Math.hypot(ux, uy), lv = Math.hypot(vx, vy);
+  if (!(lu > 0) || !(lv > 0)) return null;
+  const tol = 1e-6 * Math.max(lu, lv);
+  // A parallelogram whose two sides are square to each other.
+  if (Math.abs(a[0] + ux + vx - c[0]) > tol || Math.abs(a[1] + uy + vy - c[1]) > tol) return null;
+  if (Math.abs(ux * vx + uy * vy) > 1e-6 * lu * lv) return null;
+  return { cx: a[0] + (ux + vx) / 2, cy: a[1] + (uy + vy) / 2, ex: ux / lu, ey: uy / lu, ha: lu / 2, hb: lv / 2 };
+}
+
+/** The sides of a convex ring, each as a point and its inward unit normal; null for a ring that is not convex or has no area. */
+function convexSides(ring: [number, number][]): Float64Array | null {
+  // Without its closing vertex and without a vertex said twice: a side of no length has no direction to turn from.
+  const pts: [number, number][] = [];
+  for (const p of ring) { const last = pts[pts.length - 1]; if (!last || last[0] !== p[0] || last[1] !== p[1]) pts.push(p); }
+  if (pts.length > 1 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1]) pts.pop();
+  const n = pts.length;
+  if (n < 3) return null;
+  const area = shoelace2(pts);
+  if (!(Math.abs(area) > 0)) return null;
+  const sign = area > 0 ? 1 : -1;
+  const out = new Float64Array(4 * n);
+  let m = 0;
+  for (let i = 0; i < n; i++) {
+    const a = pts[i], b = pts[(i + 1) % n], c = pts[(i + 2) % n];
+    const dx = b[0] - a[0], dy = b[1] - a[1], len = Math.hypot(dx, dy);
+    // Every turn the same way, or the ring is not convex (a little slack for points in a line).
+    if (sign * (dx * (c[1] - b[1]) - dy * (c[0] - b[0])) < -1e-9 * len * Math.hypot(c[0] - b[0], c[1] - b[1])) return null;
+    out[m++] = a[0]; out[m++] = a[1]; out[m++] = (-dy / len) * sign; out[m++] = (dx / len) * sign;
+  }
+  return out;
+}
+
+/** The plots of a plan, boxed, and sorted into a coarse grid so that a pixel asks only the ones near it. */
+function spotPlanOf(plan: ImportedPlan): SpotPlan {
+  const hit = spotPlans.get(plan);
+  if (hit) return hit;
+  const plots: SpotPlot[] = plan.plots.map((pl, k) => {
+    let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
+    for (const ring of pl.rings) for (const [x, y] of ring) { if (x < w) w = x; if (x > e) e = x; if (y < s) s = y; if (y > n) n = y; }
+    return { cover: importedCoverId(plan, k), rings: pl.rings, sign: ringSigns(pl.rings), box: [w, s, e, n],
+             rect: pl.rings.length === 1 ? rectOf(pl.rings[0]) : null, less: null };
+  });
+  const [b0, b1, b2, b3] = plan.bbox;
+  const area = Math.max(1e-6, (b2 - b0) * (b3 - b1));
+  // A cell about a plot and a half wide, and never so small that 512 of them a
+  // side stop short of the trial: past that count the last cell used to stand
+  // for everything beyond it, and a pixel out there looked in a cell that did
+  // not exist (a strip of 600 plots 12 km long read as bare ground past 7.7 km;
+  // found by an outside review, 2026-11-22).
+  const cell = Math.max(0.25, Math.sqrt(area / Math.max(1, plots.length)) * 1.5, (b2 - b0) / 512, (b3 - b1) / 512);
+  const gx = Math.max(1, Math.min(512, Math.ceil((b2 - b0) / cell))), gy = Math.max(1, Math.min(512, Math.ceil((b3 - b1) / cell)));
+  const lists: number[][] = Array.from({ length: gx * gy }, () => []);
+  const at = (v: number, lo: number, n: number) => Math.max(0, Math.min(n - 1, Math.floor((v - lo) / cell)));
+  plots.forEach((pl, k) => {
+    for (let j = at(pl.box[1], b1, gy); j <= at(pl.box[3], b1, gy); j++) {
+      for (let i = at(pl.box[0], b0, gx); i <= at(pl.box[2], b0, gx); i++) lists[j * gx + i].push(k);
+    }
+  });
+  const rough = sharedGround(plots, lists);
+  const made: SpotPlan = { plots, cell, e0: b0, n0: b1, gx, gy, bins: lists.map(l => Int32Array.from(l)), stamp: new Int32Array(plots.length), tick: 0,
+                           hullSides: convexSides(plan.footprint), hullRect: rectOf(plan.footprint), rough };
+  spotPlans.set(plan, made);
+  return made;
+}
+
+/**
+ * The ground plots of one file share, settled once for the plan: where two
+ * plots overlap the LATER one of the file has the ground (importedCoverAt),
+ * so the earlier one is given, as pieces to take away, what it shares with
+ * each later plot (SpotPlot.less).
+ *
+ * A shared piece is a clip of one plot against the other, which is exact when
+ * one of the two is a single convex ring: nearly every plot of a trial. Where
+ * three plots share ground, the piece common to all three was taken from the
+ * earliest twice and is given back once. Four deep is not followed: it would
+ * be a sliver at a corner where four plots meet, a thousandth of a pixel.
+ * Plots that only touch share nothing, by a billionth of the smaller one.
+ *
+ * Returns the plots no clip settles (two that overlap and neither convex), or
+ * null. They were summed as if nothing overlapped, each plot whole, before:
+ * two plots drawn one on the other read half each instead of the later one
+ * alone (found by an outside review, 2026-11-22).
+ */
+function sharedGround(plots: SpotPlot[], bins: number[][]): Uint8Array | null {
+  const n = plots.length;
+  if (n < 2) return null;
+  const simple = plots.map(p => (p.rings.length === 1 && convexSides(p.rings[0]) ? openCcw(p.rings[0]) : null));
+  const size = plots.map(p => p.rings.reduce((a, ring, q) => a + p.sign[q] * Math.abs(shoelace2(ring)) / 2, 0));
+  /** What plot k shares with the single convex ring `win`: k's rings clipped, each with its own sign. */
+  const shared = (k: number, win: [number, number][]): { ring: [number, number][]; w: number }[] => {
+    const out: { ring: [number, number][]; w: number }[] = [];
+    plots[k].rings.forEach((ring, q) => {
+      const cut = clipToConvex(openCcw(ring), win);
+      if (cut.length) out.push({ ring: cut, w: plots[k].sign[q] });
+    });
+    return out;
+  };
+  const areaOf = (pieces: { ring: [number, number][]; w: number }[]) => pieces.reduce((a, c) => a + c.w * Math.abs(shoelace2(c.ring)) / 2, 0);
+  let rough: Uint8Array | null = null;
+  const seen = new Set<number>();
+  /** Per earlier plot: the later plots it shares ground with, and the pieces. */
+  const cuts = new Map<number, { later: number; pieces: { ring: [number, number][]; w: number }[] }[]>();
+  for (const list of bins) {
+    for (let a = 0; a < list.length; a++) {
+      for (let b = a + 1; b < list.length; b++) {
+        const k = Math.min(list[a], list[b]), j = Math.max(list[a], list[b]);
+        if (seen.has(k * n + j)) continue;
+        seen.add(k * n + j);
+        const A = plots[k].box, B = plots[j].box;
+        if (A[0] >= B[2] || B[0] >= A[2] || A[1] >= B[3] || B[1] >= A[3]) continue;
+        // The same ground whichever of the two is the window: the later plot's rings, or the earlier one's.
+        let pieces: { ring: [number, number][]; w: number }[];
+        if (simple[j]) pieces = shared(k, simple[j]!);
+        else if (simple[k]) pieces = shared(j, simple[k]!);
+        else { (rough ??= new Uint8Array(n))[k] = 1; rough[j] = 1; continue; }
+        if (!(areaOf(pieces) > 1e-9 * Math.min(Math.abs(size[k]), Math.abs(size[j])))) continue;
+        if (!cuts.has(k)) cuts.set(k, []);
+        cuts.get(k)!.push({ later: j, pieces });
+      }
+    }
+  }
+  for (const [k, list] of cuts) {
+    const less: { ring: [number, number][]; w: number }[] = [];
+    for (const c of list) for (const piece of c.pieces) less.push({ ring: piece.ring, w: -piece.w });
+    // Ground shared with two later plots at once: taken away twice above, given back once.
+    for (let a = 0; a < list.length; a++) {
+      for (let b = a + 1; b < list.length; b++) {
+        const win = simple[list[b].later] ?? null, other = simple[list[a].later] ?? null;
+        const from = win ? list[a].pieces : other ? list[b].pieces : null;
+        const through = win ?? other;
+        if (!from || !through) continue;
+        for (const piece of from) {
+          const cut = clipToConvex(piece.ring, through);
+          if (cut.length && Math.abs(shoelace2(cut)) / 2 > 1e-9 * Math.abs(size[k])) less.push({ ring: cut, w: piece.w });
+        }
+      }
+    }
+    plots[k].less = less;
+  }
+  return rough;
+}
+
+/** Quantiles of the standard normal at the middles of SPOT_POINTS equal shares: where spotByPoints looks. */
+const SPOT_POINTS = 48;
+let spotQuantiles: Float64Array | null = null;
+
+/**
+ * A pixel's covers taken point by point: its spot as SPOT_POINTS squared
+ * points of equal weight, each asked what the plan has under it. Only for the
+ * plots no clip settles (SpotPlan.rough): about a hundredth of a share off,
+ * and a thousand times the work of a pixel read the usual way.
+ */
+function spotByPoints(plan: ImportedPlan, E: number, N: number, sx: number, sy: number, add: (id: number, w: number) => void): void {
+  if (!spotQuantiles) {
+    spotQuantiles = new Float64Array(SPOT_POINTS);
+    for (let i = 0; i < SPOT_POINTS; i++) spotQuantiles[i] = probit((i + 0.5) / SPOT_POINTS);
+  }
+  const z = spotQuantiles, w = 1 / (SPOT_POINTS * SPOT_POINTS);
+  const tally = new Float64Array(256);
+  for (let j = 0; j < SPOT_POINTS; j++) for (let i = 0; i < SPOT_POINTS; i++) tally[importedCoverAt(E + z[i] * sx, N + z[j] * sy, plan)] += w;
+  for (let id = 0; id < 256; id++) if (tally[id] > 0) add(id, tally[id]);
+}
+
+/**
+ * Phase 1 by the note's model: for every pixel asked for, the share of its
+ * spot on each cover, as the (slot, weight) pairs `leanResolve` reads. The
+ * weights of a pixel add up to 1 and are already the spot's: phase 2 is then
+ * run with no blur of its own, and only classifies.
+ *
+ * `spotE`, `spotN` name one spot directly, for the one pixel `pixelSources`
+ * draws: the grid is then that single pixel.
+ */
+function spotCovers(
+  layout: SimLayout, patternOrigin: [number, number], minE: number, minN: number, nx: number, ny: number, res: number,
+  sensor: SensorParams, need: ArrayLike<number> | null,
+): PixelCovers {
+  const cells = nx * ny;
+  const pairStart = new Int32Array(cells + 1);
+  // Room for three covers a pixel asked for, which few pixels pass (the lists grow when they do): a search asks about a few pixels of a large grid.
+  let asked = cells;
+  if (need) { asked = 0; for (let k = 0; k < cells; k++) if (need[k]) asked++; }
+  let cap = asked * 3 + 64;
+  let pairSlot = new Int32Array(cap), pairW = new Float64Array(cap), len = 0;
+  // One pixel's covers in the making: a weight per cover id, and the ids touched.
+  const acc = new Float64Array(256), touched = new Int32Array(256);
+  let nT = 0;
+  const add = (id: number, w: number): void => {
+    if (!(w > SPOT_DUST)) return;
+    if (acc[id] === 0) touched[nT++] = id;
+    acc[id] += w;
+  };
+  /** Writes the pixel's pairs, lowest cover id first (the order that settles a tie), and clears the scratch. */
+  const close = (k: number): void => {
+    pairStart[k] = len;
+    if (nT === 0) { touched[nT++] = OFF_TRIAL.id; acc[OFF_TRIAL.id] = 1; }  // a pixel always reads something
+    for (let i = 1; i < nT; i++) { const v = touched[i]; let j = i - 1; while (j >= 0 && touched[j] > v) { touched[j + 1] = touched[j]; j--; } touched[j + 1] = v; }
+    if (len + nT > cap) {
+      cap = Math.max(cap * 2, len + nT);
+      const s2 = new Int32Array(cap); s2.set(pairSlot); pairSlot = s2;
+      const w2 = new Float64Array(cap); w2.set(pairW); pairW = w2;
+    }
+    for (let i = 0; i < nT; i++) { const id = touched[i]; pairSlot[len] = id; pairW[len++] = acc[id]; acc[id] = 0; }
+    nT = 0;
+  };
+
+  const sx = spotSigma(sensor.sigmaX) * res, sy = spotSigma(sensor.sigmaY) * res;
+  const offE = (sensor.offX ?? 0) * res, offN = (sensor.offY ?? 0) * res;
+  const t = (layout.rotationDeg * Math.PI) / 180, cos = Math.cos(t), sin = Math.sin(t);
+  const [ox, oy] = patternOrigin;
+  const round = Math.abs(sx - sy) <= 1e-12 * Math.max(sx, sy);
+  // Along the pixel rows (or a quarter turn from them) the layout's two axes
+  // are the grid's, and a spot that is not round is still a product of the two.
+  const flat = Math.abs(sin) < 1e-12, upright = Math.abs(cos) < 1e-12;
+  const su = flat ? sx : upright ? sy : round ? sx : NaN, sv = flat ? sy : upright ? sx : round ? sy : NaN;
+  const separable = Number.isFinite(su);
+  const pattern = layout.pattern;
+  const imported = importedOf(layout);
+  const W = layout.width, P = W + Math.max(0, layout.spacing || 0);
+
+  /** The pixel's spot centre. */
+  const centreE = (gc: number) => minE + (gc + 0.5) * res + offE;
+  const centreN = (gr: number) => minN + (gr + 0.5) * res + offN;
+
+  // ---- strips: a band's share is one-dimensional, at any angle ----
+  if (!imported && (pattern === 'row' || pattern === 'strip-row-2' || pattern === 'col' || pattern === 'strip-col-2')) {
+    const rowKind = pattern === 'row' || pattern === 'strip-row-2';
+    const two = pattern === 'strip-row-2' || pattern === 'strip-col-2';
+    // The coordinate the strips are cut along, x = a dx + b dy, and the spot's spread along it.
+    const a = rowKind ? -sin : cos, b = rowKind ? cos : sin;
+    const sn = Math.hypot(a * sx, b * sy);
+    const noAlley = !(P - W > 1e-12);
+    /** The two crops' shares and the alleys' for a spot centred at `c` along that coordinate. */
+    const shares = (c: number, out: Float64Array): void => {
+      const R = SPOT_REACH * sn;
+      let s0 = 0, s1 = 0;
+      chainStart();
+      for (let i = Math.floor((c - R) / P), last = Math.floor((c + R) / P); i <= last; i++) {
+        const lo = i * P, s = chainBand(lo, lo + W, c, sn);
+        if (!(s > 0)) continue;
+        const q = two ? Math.floor(i / 2) : i;
+        if ((((q % 2) + 2) % 2) === 0) s0 += s; else s1 += s;
+      }
+      const sum = s0 + s1;
+      if (noAlley && sum > 0) { out[0] = s0 / sum; out[1] = s1 / sum; out[2] = 0; return; }
+      out[0] = s0; out[1] = s1; out[2] = Math.max(0, 1 - sum);
+    };
+    const one = new Float64Array(3);
+    const byRow = Math.abs(a) < 1e-12, byCol = Math.abs(b) < 1e-12;
+    // Along a grid axis the coordinate is the row's (or the column's) alone: worked out once for each.
+    const lineShares = byRow || byCol ? new Float64Array(3 * (byRow ? ny : nx)) : null;
+    if (lineShares) {
+      const tmp = new Float64Array(3);
+      for (let q = 0, n = byRow ? ny : nx; q < n; q++) {
+        const c = byRow ? b * (centreN(q) - oy) + a * (centreE(0) - ox) : a * (centreE(q) - ox) + b * (centreN(0) - oy);
+        shares(c, tmp);
+        lineShares.set(tmp, 3 * q);
+      }
+    }
+    for (let gr = 0; gr < ny; gr++) {
+      for (let gc = 0; gc < nx; gc++) {
+        const k = gr * nx + gc;
+        if (need && !need[k]) { pairStart[k] = len; continue; }
+        let s0: number, s1: number, bare: number;
+        if (lineShares) { const q = 3 * (byRow ? gr : gc); s0 = lineShares[q]; s1 = lineShares[q + 1]; bare = lineShares[q + 2]; }
+        else { shares(a * (centreE(gc) - ox) + b * (centreN(gr) - oy), one); s0 = one[0]; s1 = one[1]; bare = one[2]; }
+        add(0, s0); add(1, s1); add(BARE.id, bare);
+        close(k);
+      }
+    }
+    pairStart[cells] = len;
+    return { T: 0, means: [], hasValid: new Uint8Array(0), pairStart, pairSlot, pairW, slots: { cnt: new Float64Array(256), ord: new Int32Array(256), keys: [], index: new Map() } };
+  }
+
+  /** The layout's frame: u along its rows, v across them, from its origin. */
+  const uOf = (E: number, N: number) => (E - ox) * cos + (N - oy) * sin;
+  const vOf = (E: number, N: number) => -(E - ox) * sin + (N - oy) * cos;
+
+  // ---- checkerboard and block trial, where a rectangle's share is the product of its sides' ----
+  if (!imported && separable && (pattern === 'checker' || (pattern === 'block' && layout.block))) {
+    const p = pattern === 'block' ? layout.block! : null;
+    /**
+     * Along one axis, what the spot puts on each interval the layout cuts it
+     * into. Checkerboard: [cells of even index, cells of odd index].
+     * Block trial along u: for each block column in reach, [column, the block's
+     * own length, its cell with the alley]. Along v: for each block row in
+     * reach, [row, its cell with the alley, then each plot of the block].
+     *
+     * Written into a list given, and its length returned: a trial at an angle
+     * asks for both at every pixel, and each used to be two new arrays.
+     */
+    const nSp = p ? p.design.nSpecies : 0, plotPitch = p ? p.design.plotWidth + p.design.plotAlley : 0;
+    const uRoom = p ? Math.max(3, 3 * p.cols) : 2, vRoom = p ? Math.max(2 + nSp, (2 + nSp) * p.rows) : 2;
+    const alongU = (u: number, out: Float64Array): number => {
+      if (!p) return parity(u, su, out);
+      let m = 0;
+      const R = SPOT_REACH * su, du = u - p.u0;
+      for (let c = Math.max(0, Math.floor((du - R) / p.pitchU)), last = Math.min(p.cols - 1, Math.floor((du + R) / p.pitchU)); c <= last; c++) {
+        const lo = p.u0 + c * p.pitchU;
+        const cellShare = band(lo, Math.min(lo + p.pitchU, p.u0 + p.totalU), u, su);
+        if (cellShare > 0) { out[m++] = c; out[m++] = band(lo, lo + p.blockU, u, su); out[m++] = cellShare; }
+      }
+      return m;
+    };
+    const alongV = (v: number, out: Float64Array): number => {
+      if (!p) return parity(v, sv, out);
+      let m = 0;
+      const R = SPOT_REACH * sv, dv = v - p.v0;
+      for (let r = Math.max(0, Math.floor((dv - R) / p.pitchV)), last = Math.min(p.rows - 1, Math.floor((dv + R) / p.pitchV)); r <= last; r++) {
+        const lo = p.v0 + r * p.pitchV;
+        const cellShare = band(lo, Math.min(lo + p.pitchV, p.v0 + p.totalV), v, sv);
+        if (!(cellShare > 0)) continue;
+        out[m++] = r; out[m++] = cellShare;
+        chainStart();
+        for (let q = 0; q < nSp; q++) { const a = lo + q * plotPitch; out[m++] = chainBand(a, a + p.design.plotWidth, v, sv); }
+      }
+      return m;
+    };
+    /** A checkerboard's cells along one axis: the shares of the even ones and of the odd ones. */
+    function parity(c: number, s: number, out: Float64Array): number {
+      const R = SPOT_REACH * s;
+      let even = 0, odd = 0;
+      chainStart();
+      for (let i = Math.floor((c - R) / P), last = Math.floor((c + R) / P); i <= last; i++) {
+        const lo = i * P, w = chainBand(lo, lo + W, c, s);
+        if (!(w > 0)) continue;
+        if ((((i % 2) + 2) % 2) === 0) even += w; else odd += w;
+      }
+      out[0] = even; out[1] = odd;
+      return 2;
+    }
+    const combine = (U: Float64Array, nU: number, V: Float64Array, nV: number): void => {
+      if (!p) {
+        const c0 = U[0] * V[0] + U[1] * V[1], c1 = U[0] * V[1] + U[1] * V[0];
+        add(0, c0); add(1, c1); add(BARE.id, 1 - c0 - c1);
+        return;
+      }
+      const stride = 2 + nSp;
+      let inTrial = 0, planted = 0;
+      for (let j = 0; j < nV; j += stride) {
+        const r = V[j];
+        for (let i = 0; i < nU; i += 3) {
+          const b = r * p.cols + U[i];
+          if (b >= p.design.nBlocks) continue;                 // the ragged last row: no block, no trial
+          inTrial += U[i + 2] * V[j + 1];
+          const own = U[i + 1];
+          if (!(own > 0)) continue;
+          for (let q = 0; q < nSp; q++) {
+            const w = own * V[j + 2 + q];
+            if (w > SPOT_DUST) { add(b * nSp + q, w); planted += w; }
+          }
+        }
+      }
+      add(BARE.id, inTrial - planted);
+      add(OFF_TRIAL.id, 1 - inTrial);
+    };
+    // Along the rows u is the column's and v the row's; a quarter turn swaps them.
+    const lined = flat || upright;
+    const uBuf = new Float64Array(uRoom), vBuf = new Float64Array(vRoom);
+    const uLine = lined ? new Array<Float64Array>(flat ? nx : ny) : null, vLine = lined ? new Array<Float64Array>(flat ? ny : nx) : null;
+    if (uLine && vLine) {
+      for (let q = 0; q < uLine.length; q++) uLine[q] = uBuf.slice(0, alongU(flat ? uOf(centreE(q), centreN(0)) : uOf(centreE(0), centreN(q)), uBuf));
+      for (let q = 0; q < vLine.length; q++) vLine[q] = vBuf.slice(0, alongV(flat ? vOf(centreE(0), centreN(q)) : vOf(centreE(q), centreN(0)), vBuf));
+    }
+    for (let gr = 0; gr < ny; gr++) {
+      for (let gc = 0; gc < nx; gc++) {
+        const k = gr * nx + gc;
+        if (need && !need[k]) { pairStart[k] = len; continue; }
+        if (uLine && vLine) { const U = uLine[flat ? gc : gr], V = vLine[flat ? gr : gc]; combine(U, U.length, V, V.length); }
+        else { const E = centreE(gc), N = centreN(gr); const nU = alongU(uOf(E, N), uBuf), nV = alongV(vOf(E, N), vBuf); combine(uBuf, nU, vBuf, nV); }
+        close(k);
+      }
+    }
+    pairStart[cells] = len;
+    return { T: 0, means: [], hasValid: new Uint8Array(0), pairStart, pairSlot, pairW, slots: { cnt: new Float64Array(256), ord: new Int32Array(256), keys: [], index: new Map() } };
+  }
+
+  // ---- everything else, along its outline ----
+  /** A rectangle of the layout's own frame, as a ring of the grid's. */
+  const ringUV = (u0: number, v0: number, u1: number, v1: number): [number, number][] =>
+    ([[u0, v0], [u1, v0], [u1, v1], [u0, v1]] as [number, number][]).map(([u, v]) => [ox + u * cos - v * sin, oy + u * sin + v * cos] as [number, number]);
+  const prep = imported ? spotPlanOf(imported) : null;
+  const hull = imported ? imported.footprint : null;
+  const rx = SPOT_REACH * sx, ry = SPOT_REACH * sy, far = SPOT_REACH * Math.max(sx, sy);
+  // The plots a pixel may see, kept from one pixel of a row to the next while
+  // both look in the same cells of the index: a cell is a plot and a half
+  // wide, so dozens of pixels in a row share one list, and the cells were
+  // walked and the plots told apart again for each of them.
+  const cand = prep ? new Int32Array(prep.plots.length) : null;
+  // A side of the footprint this near (round spot) has a say in the trial's share; the others, 6.5 sigmas inside and more, have none to a part in 1e10.
+  const nearSide = 6.5 * sx;
+  for (let gr = 0; gr < ny; gr++) {
+    const N = centreN(gr);
+    let seenI0 = -1, seenI1 = -1, nCand = 0, j0 = 0, j1 = -1;
+    const rowInBox = !!imported && !(N + ry < imported.bbox[1] || N - ry > imported.bbox[3]);
+    if (rowInBox && prep) {
+      // Both ends inside the grid of cells: a pixel past its last cell looks in that cell, where everything past it was put.
+      j0 = Math.min(prep.gy - 1, Math.max(0, Math.floor((N - ry - prep.n0) / prep.cell)));
+      j1 = Math.min(prep.gy - 1, Math.max(0, Math.floor((N + ry - prep.n0) / prep.cell)));
+    }
+    for (let gc = 0; gc < nx; gc++) {
+      const k = gr * nx + gc;
+      if (need && !need[k]) { pairStart[k] = len; continue; }
+      const E = centreE(gc);
+      if (imported && prep && hull && cand) {
+        const b0 = imported.bbox[0], b2 = imported.bbox[2];
+        let inTrial = 0, planted = 0;
+        if (rowInBox && !(E + rx < b0 || E - rx > b2)) {
+          const { cell, e0, gx, bins, plots, stamp, rough } = prep;
+          const i0 = Math.min(gx - 1, Math.max(0, Math.floor((E - rx - e0) / cell))), i1 = Math.min(gx - 1, Math.max(0, Math.floor((E + rx - e0) / cell)));
+          if (i0 !== seenI0 || i1 !== seenI1) {
+            seenI0 = i0; seenI1 = i1; nCand = 0;
+            if (prep.tick > 2_000_000_000) { stamp.fill(0); prep.tick = 0; }
+            const stampNo = ++prep.tick;
+            for (let j = j0; j <= j1; j++) {
+              for (let i = i0; i <= i1; i++) {
+                const list = bins[j * gx + i];
+                for (let q = 0; q < list.length; q++) {
+                  const id = list[q];
+                  if (stamp[id] === stampNo) continue;
+                  stamp[id] = stampNo;
+                  const pb = plots[id].box;
+                  if (N + ry < pb[1] || N - ry > pb[3]) continue;
+                  cand[nCand++] = id;
+                }
+              }
+            }
+          }
+          let tangled = false, whole = false;
+          for (let q = 0; q < nCand; q++) {
+            const id = cand[q], pl = plots[id];
+            if (E + rx < pl.box[0] || E - rx > pl.box[2]) continue;
+            if (rough && rough[id]) { tangled = true; break; }
+            let w: number;
+            const rc = pl.rect;
+            if (rc && round) {
+              // The note's P = F(x) F(y), in the plot's own frame: a round spot has no direction.
+              const dE = E - rc.cx, dN = N - rc.cy, a = dE * rc.ex + dN * rc.ey, b2n = -dE * rc.ey + dN * rc.ex;
+              // Six sigmas past a side, or a first band already under a billionth: the share is dust, and was never kept.
+              if ((a < 0 ? -a : a) >= rc.ha + rx || (b2n < 0 ? -b2n : b2n) >= rc.hb + rx) continue;
+              const along = band(-rc.ha, rc.ha, a, sx);
+              if (!(along > SPOT_DUST)) continue;
+              w = along * band(-rc.hb, rc.hb, b2n, sx);
+            } else w = spotInRings(pl.rings, pl.sign, E, N, sx, sy);
+            // Less the ground a later plot of the file has taken from it.
+            if (pl.less && w > SPOT_DUST) for (const cut of pl.less) w += cut.w * spotInRing(cut.ring, E, N, sx, sy);
+            if (w > SPOT_DUST) {
+              add(pl.cover, w); planted += w;
+              // All of the spot on one plot: nothing is left for any other, nor for the ground between or beyond.
+              if (w >= 1 && !pl.less) { whole = true; break; }
+            }
+          }
+          if (tangled) {
+            // Plots that overlap in a way no clip settles: this pixel point by point, every cover at once.
+            for (let i = 0; i < nT; i++) acc[touched[i]] = 0;
+            nT = 0;
+            spotByPoints(imported, E, N, sx, sy, add);
+            close(k);
+            continue;
+          }
+          if (whole) inTrial = 1;
+          else {
+            // How much of the spot is in the trial's footprint: all of it, none of it, or the outline decides.
+            const sides = prep.hullSides, hr = round ? prep.hullRect : null;
+            if (hr) {
+              const dE = E - hr.cx, dN = N - hr.cy, a = dE * hr.ex + dN * hr.ey, b2n = -dE * hr.ey + dN * hr.ex;
+              inTrial = band(-hr.ha, hr.ha, a, sx) * band(-hr.hb, hr.hb, b2n, sx);
+            } else if (sides) {
+              // The sides near enough to matter: one is a straight border (one value of the normal law), two at a right angle a corner (two).
+              let depth = Infinity, near = 0, s1 = 0, s2 = 0, d1 = 0, d2 = 0;
+              for (let q = 0; q < sides.length; q += 4) {
+                const d = (E - sides[q]) * sides[q + 2] + (N - sides[q + 1]) * sides[q + 3];
+                if (d < depth) depth = d;
+                if (d < nearSide) { if (near === 0) { s1 = q; d1 = d; } else if (near === 1) { s2 = q; d2 = d; } near++; }
+              }
+              if (depth >= far) inTrial = 1;
+              else if (depth <= -far) inTrial = 0;
+              else if (round && near === 1 && sides.length <= 80) inTrial = normCdf(d1 / sx);
+              else if (round && near === 2 && sides.length <= 80 && Math.abs(sides[s1 + 2] * sides[s2 + 2] + sides[s1 + 3] * sides[s2 + 3]) < 1e-9) inTrial = normCdf(d1 / sx) * normCdf(d2 / sx);
+              else inTrial = spotInRing(hull, E, N, sx, sy);
+            } else inTrial = spotInRing(hull, E, N, sx, sy);
+          }
+        }
+        // Inside the footprint and on no plot is bare alley; outside it, no trial at all.
+        if (planted > inTrial) inTrial = planted;
+        add(BARE.id, inTrial - planted);
+        add(OFF_TRIAL.id, 1 - inTrial);
+      } else if (pattern === 'block' && layout.block) {
+        const p = layout.block, nSp = p.design.nSpecies, plotPitch = p.design.plotWidth + p.design.plotAlley;
+        // A spot that is neither round nor along the trial: each rectangle along its outline.
+        const u = uOf(E, N), v = vOf(E, N), reach = SPOT_REACH * Math.max(sx, sy);
+        let inTrial = 0, planted = 0;
+        for (let r = Math.max(0, Math.floor((v - p.v0 - reach) / p.pitchV)), rl = Math.min(p.rows - 1, Math.floor((v - p.v0 + reach) / p.pitchV)); r <= rl; r++) {
+          for (let c = Math.max(0, Math.floor((u - p.u0 - reach) / p.pitchU)), cl = Math.min(p.cols - 1, Math.floor((u - p.u0 + reach) / p.pitchU)); c <= cl; c++) {
+            const b = r * p.cols + c;
+            if (b >= p.design.nBlocks) continue;
+            const bu = p.u0 + c * p.pitchU, bv = p.v0 + r * p.pitchV;
+            inTrial += spotInRing(ringUV(bu, bv, Math.min(bu + p.pitchU, p.u0 + p.totalU), Math.min(bv + p.pitchV, p.v0 + p.totalV)), E, N, sx, sy);
+            for (let q = 0; q < nSp; q++) {
+              const a = bv + q * plotPitch;
+              const w = spotInRing(ringUV(bu, a, bu + p.blockU, a + p.design.plotWidth), E, N, sx, sy);
+              if (w > SPOT_DUST) { add(b * nSp + q, w); planted += w; }
+            }
+          }
+        }
+        if (planted > inTrial) inTrial = planted;
+        add(BARE.id, inTrial - planted);
+        add(OFF_TRIAL.id, 1 - inTrial);
+      } else if (pattern === 'checker') {
+        const u = uOf(E, N), v = vOf(E, N), reach = SPOT_REACH * Math.max(sx, sy);
+        let c0 = 0, c1 = 0;
+        for (let j = Math.floor((v - reach) / P), jl = Math.floor((v + reach) / P); j <= jl; j++) {
+          for (let i = Math.floor((u - reach) / P), il = Math.floor((u + reach) / P); i <= il; i++) {
+            const w = spotInRing(ringUV(i * P, j * P, i * P + W, j * P + W), E, N, sx, sy);
+            if ((((i + j) % 2) + 2) % 2 === 0) c0 += w; else c1 += w;
+          }
+        }
+        add(0, c0); add(1, c1); add(BARE.id, 1 - c0 - c1);
+      } else add(OFF_TRIAL.id, 1);                              // a layout with no ground to speak of
+      close(k);
+    }
+  }
+  pairStart[cells] = len;
+  return { T: 0, means: [], hasValid: new Uint8Array(0), pairStart, pairSlot, pairW, slots: { cnt: new Float64Array(256), ord: new Int32Array(256), keys: [], index: new Map() } };
+}
+
 // ===== the driver's own path through the engine ==============================
 //
 // `aggregate` is the port of the repo's engine and stays exactly as it is: it
@@ -2933,6 +4071,72 @@ function leanResolve(
 
   const windowX = Math.max(0, Math.ceil(3 * sigmaX + Math.abs(offX)));
   const windowY = Math.max(0, Math.ceil(3 * sigmaY + Math.abs(offY)));
+  /**
+   * NO WINDOW AT ALL, which is every call the page makes now: a spot's shares
+   * come already blurred (spotCovers) and a sensor with no blur has nothing to
+   * weigh in. A pixel is then classified from its own pairs and nothing else,
+   * and none of what follows is needed to do it: no kernel, no table of runs,
+   * no search for windows of one cover, no scratch to copy the pairs into and
+   * read them back from. The same sums of the same numbers in the same order
+   * as the general path below gives with a kernel of one weight of 1, bit for
+   * bit (the suite compares them); it was a tenth of a simulation.
+   */
+  if (windowX === 0 && windowY === 0 && offX === 0 && offY === 0) {
+    const pureOff = 1 < mixThreshold;
+    for (let idx = 0; idx < cells; idx++) {
+      if (need && !need[idx]) { mixed[idx] = MIXED; continue; }
+      const p0 = pairStart[idx], p1 = pairStart[idx + 1];
+      if (p1 - p0 === 1 && pairSlot[p0] < 256) {
+        // One cover from edge to edge: its share is the whole, whatever its weight.
+        const cover = pairSlot[p0];
+        mixed[idx] = pureOff ? MIXED : cover;
+        if (full) {
+          majority![idx] = cover;
+          purity![idx] = 1;
+          if (cover === 0) proportionA![idx] = 1;
+          if (cover === BARE.id) proportionBare![idx] = 1;
+          if (species) {
+            if (cover === OFF_TRIAL.id) offTrial![idx] = 1;
+            else if (cover <= MAX_COVER) {
+              const s = coverSpecies ? coverSpecies[cover] : cover;
+              if (s < nSp) species[idx * nSp + s] = 1;
+            }
+          }
+        }
+        continue;
+      }
+      let dominantCrop = 0, maxWeight = 0, total = 0, wA = 0, wBare = 0, offW = 0, hasA = false, hasBare = false;
+      if (species) spScratch.fill(0, 0, nSp);
+      for (let p = p0; p < p1; p++) {
+        const slot = pairSlot[p], w = pairW[p];
+        const coverId = slot < 256 ? slot : keys[slot - 256];
+        total += w;
+        if (w > maxWeight) { maxWeight = w; dominantCrop = coverId; }
+        if (!full) continue;
+        if (slot === 0) { wA = w; hasA = true; }
+        if (slot === BARE.id) { wBare = w; hasBare = true; }
+        if (species) {
+          if (coverId === OFF_TRIAL.id) offW += w;
+          else if (coverId <= MAX_COVER) {
+            const s = coverSpecies ? coverSpecies[coverId] : coverId;
+            if (s < nSp) spScratch[s] += w;
+          }
+        }
+      }
+      mixed[idx] = total > 0 && maxWeight / total < mixThreshold ? MIXED : dominantCrop;
+      if (!full) continue;
+      if (species) {
+        const base = idx * nSp;
+        if (total > 0) for (let s = 0; s < nSp; s++) species[base + s] = spScratch[s] / total;
+        offTrial![idx] = total > 0 ? offW / total : 0;
+      }
+      majority![idx] = dominantCrop;
+      purity![idx] = total > 0 ? maxWeight / total : 0;
+      proportionA![idx] = total > 0 ? (hasA ? wA || 0 : 0) / total : 0;
+      proportionBare![idx] = total > 0 ? (hasBare ? wBare || 0 : 0) / total : 0;
+    }
+    return { mixed, majority, purity, proportionA, proportionBare, species, offTrial };
+  }
   const eY = Math.min(windowY, rowsAgg - 1);
   const eX = Math.min(windowX, colsAgg - 1);
   const kW = 2 * eX + 1;
@@ -3109,6 +4313,13 @@ function leanAggregate(
   const ny = Math.round((maxN - minN) / res);
   if (!(nx >= 1) || !(ny >= 1) || !Number.isFinite(nx * ny)) return null;
   const { coverSpecies, nSpecies } = speciesChannel(layout);
+  // A blur that is a spot: the note's model. Phase 1 hands over each pixel's
+  // shares as the spot has them, and phase 2 is left nothing to blur (and no
+  // pixel is blind: a spot reads the ground wherever it is).
+  if (followsSpot(sensor)) {
+    const spot = spotCovers(layout, patternOrigin, minE, minN, nx, ny, res, sensor, need);
+    return leanResolve(spot, ny, nx, Math.max(0, nSpecies | 0), 0, 0, sensor.mixThreshold, 0, 0, coverSpecies, need, verdictOnly);
+  }
   const imported = importedOf(layout);
   let pc: PixelCovers;
   if (imported) {
@@ -3146,6 +4357,26 @@ export function fieldVerdicts(
 ): Uint8Array {
   const lean = leanAggregate(grid, patternOrigin, layout, sensor, need, true);
   return lean ? lean.mixed : simulateFieldReference(grid, patternOrigin, layout, sensor).mixed;
+}
+
+/**
+ * The per-pixel arrays of a simulation and none of its totals, for a caller
+ * that keeps some pixels of a grid and counts on those itself (a row of the
+ * satellites table: the pixels on the trial's own outline, about half of a
+ * turned trial's box). With `need`, only the pixels it marks are worked out,
+ * and they are what a simulation of the whole grid gives them, bit for bit: a
+ * pixel is read from the ground under its own spot and from nothing about its
+ * neighbours. The others read mixed, and zero everywhere else.
+ */
+export function fieldShares(
+  grid: S2Grid, patternOrigin: [number, number], layout: SimLayout, sensor: SensorParams, need: ArrayLike<number> | null = null,
+): Pick<FieldSim, 'proportionA' | 'proportionBare' | 'mixed' | 'proportionBySpecies' | 'proportionOffTrial' | 'nSpecies'> {
+  // A sensor with no blur but a kernel pushed off its pixel does read its neighbours (the repo engine's window): all of the grid then.
+  const alone = followsSpot(sensor) || ((sensor.offX ?? 0) === 0 && (sensor.offY ?? 0) === 0);
+  const lean = leanAggregate(grid, patternOrigin, layout, sensor, alone ? need : null, false);
+  if (!lean) return simulateFieldReference(grid, patternOrigin, layout, sensor);
+  return { proportionA: lean.proportionA!, proportionBare: lean.proportionBare!, mixed: lean.mixed,
+           proportionBySpecies: lean.species, proportionOffTrial: lean.offTrial, nSpecies: speciesChannel(layout).nSpecies };
 }
 
 /**
@@ -3449,6 +4680,39 @@ export interface PixelSources {
 const R2_A = 0.7548776662466927, R2_B = 0.5698402909980532;
 
 /**
+ * `pixelSources` under the note's model (a blur that is a spot): the shares are
+ * the spot's own, the ones `simulateField` classifies the pixel by, and the
+ * dots are the spot itself, drawn where it puts its weight. Each dot stands at
+ * an equal-probability point of the Gaussian (an evenly spread sequence, read
+ * through the normal law's quantiles), so they thin out from the pixel's
+ * centre the way the signal does, with nothing cut at a pixel's edge.
+ */
+function spotSources(
+  pixelW: number, pixelS: number, res: number, patternOrigin: [number, number], layout: SimLayout, sensor: SensorParams, nDots: number,
+): PixelSources | null {
+  const pc = spotCovers(layout, patternOrigin, pixelW, pixelS, 1, 1, res, sensor, null);
+  const covers: { id: number; share: number }[] = [];
+  let total = 0;
+  for (let q = pc.pairStart[0]; q < pc.pairStart[1]; q++) total += pc.pairW[q];
+  if (!(total > 0)) return null;
+  for (let q = pc.pairStart[0]; q < pc.pairStart[1]; q++) covers.push({ id: pc.pairSlot[q], share: pc.pairW[q] / total });
+  covers.sort((a, b) => b.share - a.share);    // stable: a tie keeps the engine's order
+
+  const n = Math.max(0, Math.floor(nDots));
+  const sx = spotSigma(sensor.sigmaX) * res, sy = spotSigma(sensor.sigmaY) * res;
+  const cE = pixelW + (0.5 + (sensor.offX ?? 0)) * res, cN = pixelS + (0.5 + (sensor.offY ?? 0)) * res;
+  const dotE = new Float64Array(n), dotN = new Float64Array(n), dotCover = new Uint8Array(n);
+  for (let m = 0; m < n; m++) {
+    const E = cE + sx * probit((0.5 + m * R2_A) % 1), N = cN + sy * probit((0.5 + m * R2_B) % 1);
+    dotE[m] = E;
+    dotN[m] = N;
+    dotCover[m] = cultureAt(E, N, layout, patternOrigin[0], patternOrigin[1]);
+  }
+  // Where the dots are densest, at the spot's centre: n dots at a density of 1 / (2 pi sx sy) there.
+  return { covers, dotE, dotN, dotCover, spacingM: n > 0 ? Math.sqrt((2 * Math.PI * sx * sy) / n) : res };
+}
+
+/**
  * The arithmetic of `aggregate` and `aggregateImported` for ONE pixel, with
  * the covers kept apart instead of folded into the largest of them: phase 1
  * over the pixels its PSF window reaches (exact areas on an imported trial,
@@ -3478,6 +4742,7 @@ export function pixelSources(
   const [minE, minN, maxE, maxN] = grid.utmBounds;
   const nx = Math.round((maxE - minE) / res), ny = Math.round((maxN - minN) / res);
   if (!(Number.isInteger(i) && Number.isInteger(j) && i >= 0 && i < nx && j >= 0 && j < ny)) return null;
+  if (followsSpot(sensor)) return spotSources(minE + i * res, minN + j * res, res, patternOrigin, layout, sensor, nDots);
   const { sigmaX, sigmaY } = sensor;
   const offX = sensor.offX ?? 0, offY = sensor.offY ?? 0;
   const windowX = Math.max(0, Math.ceil(3 * sigmaX + Math.abs(offX)));
@@ -3600,7 +4865,7 @@ export function bestPhaseOffset(
   // An imported trial sits where the file put it; there is no phase to slide.
   if (pattern === 'imported') return [0, 0];
   const sen: SensorParams = sensor ?? { sigmaX: 0, sigmaY: 0, mixThreshold: threshold, offX: 0, offY: 0 };
-  const key = `${pattern}|${res}|${width}|${spacing}|${ox0}|${oy0}|${sen.sigmaX}|${sen.sigmaY}|${sen.mixThreshold}|${sen.offX ?? 0}|${sen.offY ?? 0}`;
+  const key = `${pattern}|${res}|${width}|${spacing}|${ox0}|${oy0}|${sen.sigmaX}|${sen.sigmaY}|${sen.mixThreshold}|${sen.offX ?? 0}|${sen.offY ?? 0}|${sen.anyPosition ? 1 : 0}|${sen.placeHeldM ?? 0}`;
   const hit = phaseCache.get(key);
   if (hit) return [hit[0], hit[1]]; // a copy: callers must never share the cached tuple
   const out = searchPhaseOffset(pattern, res, width, spacing, ox0, oy0, sen);
@@ -3609,9 +4874,36 @@ export function bestPhaseOffset(
   return [out[0], out[1]];
 }
 
-/** Candidate phases per axis, and the most pixels a candidate is scored over. */
+/** Candidate phases per axis. */
 const STRIP_PHASE_STEPS = 48;
-const STRIP_PHASE_MAX_CELLS = 3_000;
+/**
+ * The most pixels a candidate is counted over: along the striping axis of rows
+ * or columns, and each way across a checkerboard (where the count is 2-D).
+ */
+const PHASE_SPAN_MAX = 240;
+const PHASE_CHECKER_MAX = 64;
+/** Phases per axis of a checkerboard's first, two-axis pass. */
+const CHECKER_COARSE = 8;
+
+/**
+ * How many pixels a candidate phase is counted over along a striping axis: the
+ * shortest stretch after which the pattern and the lattice line up again, so
+ * that the count is the pattern's own density of pure pixels and not an accident
+ * of where a window was cut. A period that is no simple fraction of the pixel
+ * has no such stretch, and gets a few periods instead.
+ */
+function phaseSpanPx(period: number, res: number, cap: number): number {
+  const ratio = period / res;
+  for (let m = 1; m <= 16; m++) {
+    const n = m * ratio, whole = Math.round(n);
+    if (whole >= 1 && Math.abs(n - whole) < 1e-6) {
+      let px = whole;
+      while (px < 8) px += whole;
+      return Math.min(cap, px);
+    }
+  }
+  return Math.min(cap, Math.max(16, Math.round(4 * ratio)));
+}
 
 /**
  * Slide a periodic planting to the phase that yields the most PURE pixels
@@ -3629,11 +4921,34 @@ const STRIP_PHASE_MAX_CELLS = 3_000;
  * rungs of the ladder in four, which is how turning a strip trial onto the
  * pixel rows came to look worse than leaving it at 10 degrees.
  *
- * So each candidate is scored by simulateField, on the pure count the page
- * reports, over a window a few periods across. The search covers one PURITY
- * period per axis, which for a "-2" pattern (crops alternate every second
- * strip) is two strips, not one: the old search swept a single strip and never
- * reached half of that pattern's phases.
+ * So each candidate is scored by the engine, on the pure count the page reports.
+ *
+ * WHAT IS SEARCHED. Sliding the planting by one whole pixel puts every edge
+ * where its neighbour's was: the same picture, one pixel along. So the phases
+ * worth trying lie within ONE PIXEL (or one period of the pattern, when that is
+ * shorter), and the candidates are spread over that. They used to be spread
+ * over a period of the pattern, which tries fewer and fewer sub-pixel positions
+ * as the period grows: a period of 12 pixels tried 4 of them, and a period of
+ * 48 pixels tried one, the shift it started from (found by an outside review,
+ * 2026-11-22: 48 m rows at 1 m pixels kept 9024 pure pixels where half a pixel
+ * further gives 9216).
+ *
+ * WHAT IS COUNTED. The pixels of a stretch after which pattern and lattice
+ * line up again (phaseSpanPx), with the pattern's origin in its middle, inside
+ * a margin as wide as the blur. The count used to run to the edge of a window
+ * a few periods across, where the blur is cut off and a pixel reads cleaner
+ * than it is, and where a window that held a strip more or less changed the
+ * count by itself: on a checkerboard of 70 m cells under the Sentinel-2 blur it
+ * settled on 1920 to 2016 pure pixels where the best phase gives 2079.
+ *
+ * A CHECKERBOARD varies both ways. A coarse pass over both axes at once comes
+ * first, then one axis with the other held, then the other, then the first
+ * again. The passes along one axis cannot start the search: with the other
+ * axis where it happens to be, no pixel may be pure at any phase of the one
+ * searched (cells of 3 pixels under the Sentinel-2 blur at 95 %, started half
+ * a pixel off both ways: every candidate scored 0 on all three passes and the
+ * trial stayed where it was, with no pure pixel, where a half-pixel move both
+ * ways gives 11 %; found by an outside review, 2026-11-22).
  */
 function searchPhaseOffset(
   pattern: PatternType, res: number, width: number, spacing: number, ox0: number, oy0: number,
@@ -3646,33 +4961,69 @@ function searchPhaseOffset(
   const two = pattern === 'strip-row-2' || pattern === 'strip-col-2';
   const period = two ? 2 * P : P;
 
-  // A window a few periods across, snapped to the lattice under the origin, and
-  // capped so a fine pixel over a wide strip stays affordable.
-  let side = Math.max(4 * period, 16 * res);
-  if ((side / res) * (side / res) > STRIP_PHASE_MAX_CELLS) side = Math.sqrt(STRIP_PHASE_MAX_CELLS) * res;
-  const n = Math.max(4, Math.round(side / res));
-  const e0 = Math.floor(ox0 / res) * res, n0 = Math.floor(oy0 / res) * res;
-  const box = { res, utmBounds: [e0, n0, e0 + n * res, n0 + n * res] } as unknown as S2Grid;
+  const cap = pattern === 'checker' ? PHASE_CHECKER_MAX : PHASE_SPAN_MAX;
+  const span = phaseSpanPx(period, res, cap);
+  // Along an axis the pattern does not vary on, two pixels say all there is.
+  const nu = uAxis ? span : 2, nv = vAxis ? span : 2;
+  const padX = Math.ceil(3 * (sensor.sigmaX || 0) + Math.abs(sensor.offX ?? 0)) + 1;
+  const padY = Math.ceil(3 * (sensor.sigmaY || 0) + Math.abs(sensor.offY ?? 0)) + 1;
+  const nx = nu + 2 * padX, ny = nv + 2 * padY;
+  const e0 = (Math.floor(ox0 / res) - padX - (nu >> 1)) * res;
+  const n0 = (Math.floor(oy0 / res) - padY - (nv >> 1)) * res;
+  const box = { res, utmBounds: [e0, n0, e0 + nx * res, n0 + ny * res] } as unknown as S2Grid;
   const layout: SimLayout = { pattern, width, spacing, rotationDeg: 0 };
 
-  const score = (du: number, dv: number) => pureVerdictCount(fieldVerdicts(box, [ox0 + du, oy0 + dv], layout, sensor));
-  const search = (axis: 'u' | 'v', other: number): number => {
-    // Strictly greater keeps the FIRST maximiser, so a flat optimum resolves to
-    // the smallest shift and an already-aligned pattern is left alone.
-    let best = 0, bestScore = -1;
+  // What is counted: the pure pixels, or first the ones that hold within the
+  // CE90 the reader places for (SensorParams.placeHeldM). Two strips of one
+  // crop with no alley between them are one strip twice as wide.
+  const lands = ce90Shifts(placedFor(sensor, two && !(spacing > 0) ? 2 * width : width), 0);
+  const inner = lands.length ? new Uint8Array(nx * ny) : null;
+  const score = (du: number, dv: number) => {
+    const verdicts = fieldVerdicts(box, [ox0 + du, oy0 + dv], layout, sensor);
+    let pure = 0;
+    for (let r = padY; r < padY + nv; r++) {
+      for (let c = padX, k = r * nx + padX; c < padX + nu; c++, k++) if (verdicts[k] <= MAX_COVER) pure++;
+    }
+    if (!inner || pure === 0) return pure;
+    // Only the stretch counted is asked about again: the margin reads mixed, which no landing can hold.
+    inner.fill(MIXED);
+    for (let r = padY; r < padY + nv; r++) for (let c = padX, k = r * nx + padX; c < padX + nu; c++, k++) inner[k] = verdicts[k];
+    const mask = heldMask(inner, lands.length, (q, need) => fieldVerdicts(box, [ox0 + du - lands[q][0], oy0 + dv - lands[q][1]], layout, sensor, need));
+    let held = 0;
+    for (let k = 0; k < mask.length; k++) if (mask[k]) held++;
+    return held * HELD_FIRST + pure;
+  };
+  const reach = Math.min(period, res);
+  const search = (axis: 'u' | 'v', other: number, from = 0): number => {
+    // Strictly greater keeps the place it starts from, then the FIRST
+    // maximiser: a flat optimum resolves to the smallest shift, and a pattern
+    // already at its best is left alone. (Strictly fewer, and the first
+    // minimiser, for a lattice that falls anywhere: SensorParams.anyPosition.)
+    let best = from, bestScore = axis === 'u' ? score(from, other) : score(other, from);
     for (let k = 0; k < STRIP_PHASE_STEPS; k++) {
-      const d = (k / STRIP_PHASE_STEPS) * period;
+      const d = (k / STRIP_PHASE_STEPS) * reach;
       const sc = axis === 'u' ? score(d, other) : score(other, d);
-      if (sc > bestScore) { bestScore = sc; best = d; }
+      if (keepsCount(sensor, sc, bestScore)) { bestScore = sc; best = d; }
     }
     return best;
   };
   // Row-type patterns vary across rows only, and column-type along rows only, so
-  // one axis is searched with the other left where it is. A checker varies both
-  // ways; searching v with u fixed and then u at that v is two 1-D passes rather
-  // than a 2-D grid, which is what the old search did too.
-  const dv = vAxis ? search('v', 0) : 0;
-  const du = uAxis ? search('u', dv) : 0;
+  // one axis is searched with the other left where it is.
+  if (!uAxis) return [0, search('v', 0)];
+  if (!vAxis) return [search('u', 0), 0];
+  let u0 = 0, v0 = 0, top = noCountYet(sensor);
+  for (let i = 0; i < CHECKER_COARSE; i++) {
+    for (let j = 0; j < CHECKER_COARSE; j++) {
+      const du = (i / CHECKER_COARSE) * reach, dv = (j / CHECKER_COARSE) * reach;
+      const sc = score(du, dv);
+      if (keepsCount(sensor, sc, top)) { top = sc; u0 = du; v0 = dv; }
+    }
+  }
+  // Refined an axis at a time from there: each pass starts from the pick so
+  // far and leaves it only for a phase that is strictly better.
+  let dv = search('v', u0, v0);
+  const du = search('u', dv, u0);
+  dv = search('v', du, dv);
   return [du, dv];
 }
 
@@ -3698,28 +5049,15 @@ export function simulatePatch(
 ): PatchSim {
   const nx = Math.max(1, Math.round(sizeM / gsd));
   const ny = nx;
-  const { coverSpecies, nSpecies } = speciesChannel(layout);
-  const imported = importedOf(layout);
-  let agg: AggregateResult;
-  if (imported) {
-    agg = aggregateImported(imported, minE, minN, nx, ny, gsd, sensor, coverSpecies, nSpecies);
-  } else {
-    const g = strideFor(gsd, minFeatureM(layout));
-    const fineRes = gsd / g;
-    const rows = ny * g, cols = nx * g;
-    const cropMap = buildCropMap(minE, minN, rows, cols, fineRes, patternOx, patternOy, layout);
-    const simsGrid: Float64Array[] = new Array(rows * cols).fill(EMPTY);
-    agg = aggregate(simsGrid, rows, cols, g, sensor.sigmaX, sensor.sigmaY, true, 0, cropMap, sensor.mixThreshold, sensor.offX ?? 0, sensor.offY ?? 0, coverSpecies, nSpecies);
-  }
-  markPsfBlind(agg, sensor);
-  const st = coverStats({ mixed: agg.cropMapMixed, coverSpecies, nSpecies, offTrial: agg.cropMapProportionOffTrial });
+  // The driver's own simulation of that square: one model for every caller.
+  const sim = simulateField({ res: gsd, utmBounds: [minE, minN, minE + nx * gsd, minN + ny * gsd] } as unknown as S2Grid, [patternOx, patternOy], layout, sensor);
   return {
-    proportionA: agg.cropMapProportionA, proportionBare: agg.cropMapProportionBare, mixed: agg.cropMapMixed,
-    nx: agg.colsAgg, ny: agg.rowsAgg,
-    purePct: st.purePct,
-    nSpecies, proportionBySpecies: agg.cropMapSpecies,
-    meanBySpecies: meanPerSpecies(agg.cropMapSpecies, nSpecies, agg.cropMapMixed.length, agg.cropMapProportionOffTrial),
-    proportionOffTrial: agg.cropMapProportionOffTrial,
+    proportionA: sim.proportionA, proportionBare: sim.proportionBare, mixed: sim.mixed,
+    nx, ny,
+    purePct: sim.purePct,
+    nSpecies: sim.nSpecies, proportionBySpecies: sim.proportionBySpecies,
+    meanBySpecies: sim.meanBySpecies,
+    proportionOffTrial: sim.proportionOffTrial,
   };
 }
 
@@ -3752,37 +5090,24 @@ export function resolutionSweep(
     wMinE = Math.max(minE, imported.bbox[0]); wMaxE = Math.min(maxE, imported.bbox[2]);
     wMinN = Math.max(minN, imported.bbox[1]); wMaxN = Math.min(maxN, imported.bbox[3]);
   }
-  const channel = imported ? speciesChannel(layout) : { coverSpecies: null, nSpecies: 0 };
   return gsds.map(gsd => {
     const oMinE = Math.floor(wMinE / gsd) * gsd;
     const oMinN = Math.floor(wMinN / gsd) * gsd;
     const nx = Math.max(1, Math.ceil((wMaxE - oMinE) / gsd));
     const ny = Math.max(1, Math.ceil((wMaxN - oMinN) / gsd));
-    let agg: AggregateResult;
-    if (imported) {
-      agg = aggregateImported(imported, oMinE, oMinN, nx, ny, gsd, sensor, channel.coverSpecies, channel.nSpecies);
-    } else {
-      const g = strideFor(gsd, minFeatureM(layout));
-      const fineRes = gsd / g;
-      const rows = ny * g, cols = nx * g;
-      const cropMap = buildCropMap(oMinE, oMinN, rows, cols, fineRes, minE, minN, layout);
-      const simsGrid: Float64Array[] = new Array(rows * cols).fill(EMPTY);
-      // null and 0 are aggregate's own defaults: a periodic layout runs exactly as before.
-      agg = aggregate(simsGrid, rows, cols, g, sensor.sigmaX, sensor.sigmaY, true, 0, cropMap, sensor.mixThreshold, sensor.offX ?? 0, sensor.offY ?? 0,
-        channel.coverSpecies, channel.nSpecies);
-    }
-    // A periodic layout has no off-trial channel to mark, so its blind pixels
-    // are skipped here by name.
-    const blind = markPsfBlind(agg, sensor);
+    // The driver's own simulation of that window: one model for every caller.
+    const sim = simulateField({ res: gsd, utmBounds: [oMinE, oMinN, oMinE + nx * gsd, oMinN + ny * gsd] } as unknown as S2Grid, [minE, minN], layout, sensor);
     // Off-trial ground is not a resolved pixel of an imported trial; the
-    // off-trial channel only exists for one, so periodic layouts count every pixel.
-    const off = imported ? agg.cropMapProportionOffTrial : null;
+    // off-trial channel is only read for one. A periodic layout has no ground
+    // off the trial, so an off-trial verdict there is a pixel whose kernel saw
+    // nothing (psfBlindPixels), and is left out as it always was.
+    const off = imported ? sim.proportionOffTrial : null;
     let pure = 0, counted = 0;
-    for (let k = 0; k < agg.cropMapMixed.length; k++) {
-      if (blind && blind[k]) continue;
+    for (let k = 0; k < sim.mixed.length; k++) {
+      if (!imported && sim.mixed[k] === OFF_TRIAL.id) continue;
       if (off && off[k] > 0.5) continue;
       counted++;
-      if (agg.cropMapMixed[k] !== 255 && !(off && agg.cropMapMixed[k] === OFF_TRIAL.id)) pure++;
+      if (sim.mixed[k] !== MIXED && !(off && sim.mixed[k] === OFF_TRIAL.id)) pure++;
     }
     return { gsd, purePct: counted ? (100 * pure) / counted : 0 };
   });

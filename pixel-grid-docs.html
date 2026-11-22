@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pixel Grid Designer: documentation</title>
+    <!-- A page of text and tables, with no script: everything the designer's
+         panel used to say at length is said here, once, and the panel links to
+         the section. The satellites table is checked against sensors.ts by the
+         regression suite, so a figure changed there and not here fails the build. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" media="print" onload="this.media='all'" />
+    <style>
+      :root { --bg: #0b0e12; --panel: #11151a; --line: #ffffff1a; --text: #dbe2ea; --dim: #94a3b8; --faint: #64748b; --head: #ffffff; --link: #38bdf8; --warn: #fcd34d; }
+      * { box-sizing: border-box; }
+      html { scroll-padding-top: 16px; }
+      body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.6 Inter, system-ui, sans-serif; }
+      a { color: var(--link); text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      .wrap { display: grid; grid-template-columns: 250px minmax(0, 1fr); max-width: 1180px; margin: 0 auto; }
+      nav { position: sticky; top: 0; align-self: start; height: 100vh; overflow-y: auto; padding: 22px 16px 22px 20px; border-right: 1px solid var(--line); font-size: 14px; }
+      nav .home { display: block; margin-bottom: 14px; font-weight: 600; color: var(--head); }
+      nav .open { display: inline-block; margin-bottom: 16px; padding: 4px 10px; border: 1px solid #0ea5e966; border-radius: 6px; background: #0ea5e91a; }
+      nav h2 { margin: 16px 0 4px; font-size: 12px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); }
+      nav a.item { display: block; padding: 2px 0; color: var(--dim); }
+      nav a.item:hover { color: var(--head); text-decoration: none; }
+      main { padding: 28px 34px 80px; min-width: 0; }
+      h1 { margin: 0 0 6px; font-size: 26px; font-weight: 600; color: var(--head); }
+      .lead { margin: 0 0 26px; color: var(--dim); max-width: 70ch; }
+      section { padding-top: 14px; margin-bottom: 26px; border-top: 1px solid var(--line); }
+      h2.t { margin: 8px 0 8px; font-size: 19px; font-weight: 600; color: var(--head); }
+      h3 { margin: 18px 0 6px; font-size: 15px; font-weight: 600; color: var(--head); }
+      p, li { max-width: 74ch; }
+      p { margin: 0 0 10px; }
+      ul, ol { margin: 0 0 10px; padding-left: 22px; }
+      li { margin-bottom: 4px; }
+      b, strong { color: var(--head); font-weight: 600; }
+      code, .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13.5px; }
+      .f { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13.5px; color: var(--head); white-space: nowrap; }
+      .box { margin: 0 0 12px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); max-width: 78ch; }
+      .box.warn { border-color: #f59e0b55; background: #f59e0b12; color: #fde68a; }
+      dl { margin: 0 0 10px; display: grid; grid-template-columns: minmax(150px, 220px) minmax(0, 1fr); gap: 5px 16px; max-width: 90ch; }
+      dt { color: var(--head); font-weight: 500; }
+      dd { margin: 0; color: var(--text); }
+      .scroll { overflow-x: auto; margin: 0 0 12px; }
+      table { border-collapse: collapse; font-size: 14px; min-width: 760px; }
+      th, td { padding: 5px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+      th { font-size: 12px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); white-space: nowrap; }
+      td.n { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13.5px; white-space: nowrap; text-align: right; }
+      th.n { text-align: right; }
+      tr.group td { padding-top: 12px; color: var(--dim); font-size: 13px; }
+      .dim { color: var(--dim); }
+      @media (max-width: 860px) {
+        .wrap { grid-template-columns: minmax(0, 1fr); }
+        nav { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+        main { padding: 20px 16px 60px; }
+        dl { grid-template-columns: minmax(0, 1fr); gap: 0 0; }
+        dd { margin-bottom: 8px; }
+      }
+      @media print {
+        :root { --bg: #fff; --panel: #f6f7f9; --line: #d5d9df; --text: #111; --dim: #333; --faint: #555; --head: #000; --link: #0b5cab; }
+        nav { display: none; }
+        .wrap { display: block; }
+        .box.warn { color: #111; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <nav>
+        <a class="home" href="#top">Pixel Grid Designer</a>
+        <a class="open" href="./pixel-grid.html">Open the designer</a>
+        <h2>The page</h2>
+        <a class="item" href="#overview">The three steps</a>
+        <a class="item" href="#map">The map and its layers</a>
+        <h2>The model</h2>
+        <a class="item" href="#pixel-model">How a pixel is read</a>
+        <a class="item" href="#purity">Purity and its threshold</a>
+        <a class="item" href="#geolocation">Geolocation error (CE90)</a>
+        <a class="item" href="#hold">Pixels that hold</a>
+        <h2>Satellites</h2>
+        <a class="item" href="#satellites">The satellites and their figures</a>
+        <a class="item" href="#pansharpened">Pansharpened products</a>
+        <a class="item" href="#grid-position">Fixed grid or tasked</a>
+        <a class="item" href="#place-for">Place the trial for</a>
+        <h2>The trial</h2>
+        <a class="item" href="#designs">Designs</a>
+        <a class="item" href="#imported">Imported trial</a>
+        <a class="item" href="#suggest">Suggest a design</a>
+        <a class="item" href="#plot-size">Plot size required</a>
+        <a class="item" href="#curves-noise">Growth curves and noise</a>
+        <h2>The figures</h2>
+        <a class="item" href="#budget">Every source of blur</a>
+        <a class="item" href="#note-figures">Minimum plot, by the note</a>
+        <a class="item" href="#not-simulated">What is not simulated</a>
+        <h2>The results</h2>
+        <a class="item" href="#pca">The chart</a>
+        <a class="item" href="#satellites-table">Across satellites</a>
+        <h2>About</h2>
+        <a class="item" href="#storage">What stays in the browser</a>
+        <a class="item" href="#sources">Sources</a>
+      </nav>
+
+      <main id="top">
+        <h1>Pixel Grid Designer</h1>
+        <p class="lead">A field trial is read by a satellite through pixels that are larger and blurrier than they look. This page says how the designer decides which pixels belong to one plot only, and what every figure it shows means.</p>
+
+        <section id="overview">
+          <h2 class="t">The three steps</h2>
+          <ol>
+            <li><b>Experiment area.</b> Find a place, then draw a box or trace the field's shape on the map. <span class="f">★ Set as default field</span> pins the field: Reset returns to it.</li>
+            <li><b>Simulate experiment.</b> Six folds, one open at a time: Satellite, Design, Suggest a design, Plot size required, Growth curves, Noise and purity threshold. Each fold's title says what it holds while it is shut.</li>
+            <li><b>Pixel purity.</b> The simulated pixels as a chart, and the same trial read by every satellite of the list.</li>
+          </ol>
+          <p>A design can be typed, or a trial built with Suggest a design, before any area is drawn: the build makes an area around the trial.</p>
+          <p>Everything is computed in the browser. The header's Reset clears the field and every setting, except a pinned field.</p>
+        </section>
+
+        <section id="map">
+          <h2 class="t">The map and its layers</h2>
+          <p>The Layers button holds the basemap (Dark, Satellite, Topo, Streets) and seven switches.</p>
+          <dl>
+            <dt>Real field</dt><dd>The planting pattern, drawn under the pixel grid.</dd>
+            <dt>In field only</dt><dd>Only the pixels that overlap the field.</dd>
+            <dt>PSF blur</dt><dd>The sensor's blur spot, to scale. Click a pixel to move it there.</dd>
+            <dt>σ PSF, geo, eff</dt><dd>Three rings of one σ, to scale: the blur, the geolocation error and the two combined. The two broken circles hold 90 % of a pixel's signal: without the geolocation error (2.146 σ<sub>PSF</sub>) and with it (2.146 σ<sub>eff</sub>).</dd>
+            <dt>Signal of a pixel</dt><dd>A pixel's signal as 1000 dots, each in the colour of the ground it lands on, with the share of each plot listed. The first share is the pixel's purity.</dd>
+            <dt>Simulation</dt><dd>The simulated pixels, each in the blend of what it sees.</dd>
+            <dt>Pure pixels</dt><dd>Pure pixels outlined, the others under a dark veil. With a geolocation error there are three levels: a solid outline for a pixel that <a href="#hold">holds within the CE90</a>, a broken outline and half the veil for a pixel that is pure only with the image exactly in place, the whole veil for the rest.</dd>
+          </dl>
+          <p>For a satellite with a fixed grid, the grid drawn is the real one. For a tasked satellite it is one possible grid: see <a href="#grid-position">Fixed grid or tasked</a>.</p>
+        </section>
+
+        <section id="pixel-model">
+          <h2 class="t">How a pixel is read</h2>
+          <p>The model is the one of the PHENET note <i>Plot size and effective blur</i>.</p>
+          <ul>
+            <li>A pixel's value is a weighted mean of the ground around its centre. The weight is a Gaussian spot centred on the pixel's centre: the point spread function (PSF), of standard deviation σ<sub>PSF</sub> along each axis.</li>
+            <li>The spot is given by its full width at half maximum: <span class="f">FWHM = 2.3548 σ<sub>PSF</sub></span>. <span class="f">r = FWHM / GSD</span> compares it with the pixel: at r = 1 the spot fits in one pixel, above 1 it spills into the neighbours.</li>
+            <li>No pixel square is added to the spot. A FWHM measured on images already contains the detector's footprint, the motion blur and what is left of the atmosphere.</li>
+            <li>The spot is never narrower than the pixel's own footprint, <span class="f">GSD / √12</span>: no end-to-end blur can be. A blur typed in below that width is simulated at that width. Only a blur of exactly 0 gives a plain square pixel.</li>
+          </ul>
+          <p>For every pixel the designer works out, from the plots' outlines, the share of the spot that falls on each cover: each plot or strip, the bare soil of the alleys, and the ground outside the trial.</p>
+        </section>
+
+        <section id="purity">
+          <h2 class="t">Purity and its threshold</h2>
+          <p>A pixel's <b>purity</b> is the share of its signal that comes from its dominant plot. Its <b>contamination</b> is the rest. A pixel is <b>pure</b> when its contamination is at most ε: at least 90 % of one cover at the default threshold.</p>
+          <ul>
+            <li>The threshold is set under Noise and purity threshold, or in Suggest a design: it is one figure for the whole page. Default 90 % (ε = 10 %), the note's value. The note uses 5 % as a stricter case.</li>
+            <li>It goes from 50 to 99 %. 100 % is not offered: a Gaussian never reaches zero, so no pixel would ever be pure.</li>
+            <li>A share of pure pixels is given over the pixels of crop the design plants. Pixels of nothing but alley soil are counted apart and not held against the design.</li>
+          </ul>
+        </section>
+
+        <section id="geolocation">
+          <h2 class="t">Geolocation error (CE90)</h2>
+          <p>An image never lands exactly where its coordinates say. Providers give this as a <b>CE90</b>: the radius of the circle that contains 90 % of the errors. Per axis, <span class="f">σ<sub>geo</sub> = CE90 / 2.146</span>. A CE90 of 0 means no error.</p>
+          <p>The CE90 is set in the Satellite fold, in one of three ways.</p>
+          <dl>
+            <dt>Default</dt><dd>A third of a pixel: <span class="f">σ<sub>geo</sub> = GSD / 3</span>, so <span class="f">CE90 = 0.715 GSD</span>. It is the note's figure when nothing is known, which it calls typical of a well-registered product. Every Sentinel-2 band takes a third of the 10 m pixel, since the 20 m and 60 m bands are the same instrument, registered with the 10 m ones.</dd>
+            <dt>As delivered (Use)</dt><dd>Every satellite takes the figure its own provider states for an image with no ground control: this one in the fold, and each row of the satellites table at its own. The figures are in the <a href="#satellites">satellites table</a>. They apply to one image read where it was delivered. Images registered to each other, or to ground control, land much closer.</dd>
+            <dt>A value typed</dt><dd>The same CE90 for every satellite.</dd>
+          </dl>
+          <p>The default is optimistic for the 0.4 to 0.5 m pansharpened products: the note measured about 1 m between images.</p>
+          <h3>The effective blur</h3>
+          <p><span class="f">σ<sub>eff</sub> = √(σ<sub>PSF</sub>² + σ<sub>geo</sub>²)</span> merges the blur and the geolocation error into one. The note's closed forms use it, and so does the "average image" column of <a href="#plot-size">Plot size required</a>. The simulation does not blur the geolocation error in: it counts the pixels that <a href="#hold">hold within the CE90</a>.</p>
+        </section>
+
+        <section id="hold">
+          <h2 class="t">Pixels that hold within the CE90</h2>
+          <p>A pixel chosen by its coordinates must stay pure for the same plot wherever the image lands. A pixel <b>holds</b> when it is pure for one plot with the image in place, and still pure for that plot with the image pushed by the CE90 in each of eight directions: four square to the plot's borders and four towards its corners.</p>
+          <ul>
+            <li>A pixel 10 m from a border can be pure and not hold.</li>
+            <li>When the CE90 is at least half the short side of a plot or a strip, nothing can hold: the count is 0.</li>
+            <li>The satellites table shows this share in its CE90 column, the map as the solid outlines of the Pure pixels layer.</li>
+          </ul>
+        </section>
+
+        <section id="satellites">
+          <h2 class="t">The satellites and their figures</h2>
+          <p>Each satellite brings its pixel size and its blur. Both can be edited for the satellite selected. A Custom sensor takes any pixel size, with a default blur of σ = 0.55 px and no provider's CE90.</p>
+          <div class="scroll">
+            <table>
+              <thead>
+                <tr><th>Satellite</th><th class="n">Pixel</th><th class="n">FWHM</th><th class="n">r</th><th>Blur from</th><th class="n">CE90, default</th><th class="n">CE90, as delivered</th><th>Provider's statement</th></tr>
+              </thead>
+              <tbody>
+                <tr class="group"><td colspan="8">Fixed grid, read live from the catalog</td></tr>
+                <tr data-sat="s2-10"><td>Sentinel-2 (B02, B03, B04, B08)</td><td class="n">10 m</td><td class="n">14 m</td><td class="n">1.40</td><td>measured</td><td class="n">7.15 m</td><td class="n">6.9 m</td><td>better than 8 m for 95.5 % of products (<a href="https://www.cesbio.cnrs.fr/multitemp/a-first-peek-at-new-sentinel2-geometric-processing/" target="_blank" rel="noopener noreferrer">ESA, quoted by CESBIO</a>)</td></tr>
+                <tr data-sat="s2-20"><td>Sentinel-2 (B05 to B07, B8A, B11, B12)</td><td class="n">20 m</td><td class="n">29.2 m</td><td class="n">1.46</td><td><a href="https://sentiwiki.copernicus.eu/web/s2-mission" target="_blank" rel="noopener noreferrer">published MTF</a></td><td class="n">7.15 m</td><td class="n">6.9 m</td><td>as the 10 m bands</td></tr>
+                <tr data-sat="s2-60"><td>Sentinel-2 (B01, B09, B10)</td><td class="n">60 m</td><td class="n">87.6 m</td><td class="n">1.46</td><td><a href="https://sentiwiki.copernicus.eu/web/s2-mission" target="_blank" rel="noopener noreferrer">published MTF</a></td><td class="n">7.15 m</td><td class="n">6.9 m</td><td>as the 10 m bands</td></tr>
+                <tr data-sat="hls-30"><td>Landsat · HLS (shared grid with Sentinel-2)</td><td class="n">30 m</td><td class="n">38.9 m</td><td class="n">1.30</td><td><a href="https://www.usgs.gov/landsat-missions/spatial-performance-landsat-8-instruments" target="_blank" rel="noopener noreferrer">published MTF</a></td><td class="n">21.5 m</td><td class="n">18.2 m</td><td>Tier 1 scenes: 12 m RMSE or better (<a href="https://developers.google.com/earth-engine/datasets/catalog/LANDSAT_LC08_C02_T1" target="_blank" rel="noopener noreferrer">USGS</a>)</td></tr>
+                <tr data-sat="ls-30"><td>Landsat C2 (native grid, half a pixel off Sentinel-2's)</td><td class="n">30 m</td><td class="n">38.9 m</td><td class="n">1.30</td><td><a href="https://www.usgs.gov/landsat-missions/spatial-performance-landsat-8-instruments" target="_blank" rel="noopener noreferrer">published MTF</a></td><td class="n">21.5 m</td><td class="n">18.2 m</td><td>as HLS</td></tr>
+                <tr class="group"><td colspan="8">Commercial, tasked: the grid falls where the image does</td></tr>
+                <tr data-sat="wv"><td>WorldView-2 · native MS</td><td class="n">1.6 m</td><td class="n">1.9 m</td><td class="n">1.19</td><td>measured</td><td class="n">1.14 m</td><td class="n">3.5 m</td><td>under 3.5 m CE90 without ground control (<a href="https://www.mass.gov/doc/digital-globe-worldview-2-data-sheet-0/download" target="_blank" rel="noopener noreferrer">DigitalGlobe</a>)</td></tr>
+                <tr data-sat="wv-ps"><td>WorldView-2 · pansharpened</td><td class="n">0.4 m</td><td class="n">1.1 m</td><td class="n">2.75</td><td>measured</td><td class="n">0.286 m</td><td class="n">3.5 m</td><td>as the native bands</td></tr>
+                <tr data-sat="pleiades"><td>Pléiades · native MS</td><td class="n">2 m</td><td class="n">5 m</td><td class="n">2.50</td><td>measured</td><td class="n">1.43 m</td><td class="n">8.5 m</td><td>under 8.5 m CE90 at 30 degrees without ground control (<a href="https://cnig.gouv.fr/IMG/documents_wordpress/2017/02/ADS_geopos_CNIG.pdf" target="_blank" rel="noopener noreferrer">Airbus DS, 2016</a>)</td></tr>
+                <tr data-sat="pleiades-ps"><td>Pléiades · pansharpened</td><td class="n">0.5 m</td><td class="n">3 m</td><td class="n">6.00</td><td>measured</td><td class="n">0.358 m</td><td class="n">8.5 m</td><td>as the native bands</td></tr>
+                <tr data-sat="skysat"><td>SkySat · pansharpened</td><td class="n">0.5 m</td><td class="n">0.73 m</td><td class="n">1.46</td><td><a href="https://www.eoportal.org/satellite-missions/skysat" target="_blank" rel="noopener noreferrer">published MTF</a></td><td class="n">0.358 m</td><td class="n">15.2 m</td><td>ortho products: less than 10 m RMSE (<a href="https://assets.planet.com/docs/Combined-Imagery-Product-Spec-Dec-2018.pdf" target="_blank" rel="noopener noreferrer">Planet, 2018</a>)</td></tr>
+                <tr data-sat="spot"><td>SPOT 6/7 · pansharpened</td><td class="n">1.5 m</td><td class="n">2.12 m</td><td class="n">1.41</td><td><a href="https://www.eoportal.org/satellite-missions/spot-6-7" target="_blank" rel="noopener noreferrer">published MTF</a></td><td class="n">1.07 m</td><td class="n">15 m</td><td>under 15 m CE90 at 30 degrees without ground control (<a href="https://cnig.gouv.fr/IMG/documents_wordpress/2017/02/ADS_geopos_CNIG.pdf" target="_blank" rel="noopener noreferrer">Airbus DS, 2016</a>)</td></tr>
+                <tr data-sat="planet"><td>PlanetScope</td><td class="n">3 m</td><td class="n">9.7 m</td><td class="n">3.23</td><td>measured</td><td class="n">2.15 m</td><td class="n">15.2 m</td><td>ortho products: less than 10 m RMSE (<a href="https://assets.planet.com/docs/Combined-Imagery-Product-Spec-Dec-2018.pdf" target="_blank" rel="noopener noreferrer">Planet, 2018</a>)</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="dim">A provider's RMSE or 95 % radius is converted to a CE90 for a circular normal error.</p>
+          <h3>Where a blur comes from</h3>
+          <dl>
+            <dt>Measured</dt><dd>A FWHM fitted on real images of the PHENET trials at Mauguio and Toulouse, by blurring a very-high-resolution reference of the same scene onto the sensor's grid. It describes the product as delivered. These are the figures to trust.</dd>
+            <dt>Published MTF</dt><dd><span class="f">σ = √(−2 ln M) / π</span> pixels, from the sensor's modulation transfer function at the Nyquist frequency, M, taking the blurriest end of each published range. It describes the instrument. For the tasked sensors the measured blur is two to four times wider than this.</dd>
+          </dl>
+        </section>
+
+        <section id="pansharpened">
+          <h2 class="t">Pansharpened products</h2>
+          <div class="box warn">A pansharpened product is sharp only in the panchromatic band. An index is computed on the native multispectral bands, and it is their blur that reaches it.</div>
+          <ul>
+            <li><b>WorldView-2 and Pléiades pansharpened.</b> Size a trial on the native row of the same satellite. The default geolocation error, a third of the pansharpened pixel, is also too kind here: the note measured about 1 m between images.</li>
+            <li><b>SkySat and SPOT 6/7 pansharpened.</b> No blur was measured for their native bands (about 1 m for SkySat, 6 m for SPOT), and the list has no native row for them. Their row flatters a trial read through an index.</li>
+          </ul>
+        </section>
+
+        <section id="grid-position">
+          <h2 class="t">Fixed grid or tasked</h2>
+          <p>Where the pixel grid falls on the plots changes how many pixels are pure. Whether that position can be chosen depends on the satellite.</p>
+          <dl>
+            <dt>Fixed grid</dt><dd>Sentinel-2 and Landsat deliver every image on the same grid, read live from the catalog. The trial can be planted on it, so it is counted at the position on the grid that keeps the <b>most</b> pure pixels.</dd>
+            <dt>Tasked</dt><dd>Each image comes on a grid of its own, which cannot be known when the trial is planted. The trial is counted at the position on that grid that keeps the <b>fewest</b> pure pixels. This is the rule in the satellites table, in the suggestions and on the map, where strips or a block trial are drawn at that position.</dd>
+          </dl>
+          <ul>
+            <li>Strips and checkerboards are slid over one pixel. A block trial is tried at 24 positions a side.</li>
+            <li>An imported trial stays on the map where its file has it. In the table, on a tasked satellite's row, it is counted at its worst shift on the grid.</li>
+            <li>In a "vs best" comparison only the angle of a tasked satellite's trial can be chosen: it is the angle whose worst position keeps the most.</li>
+            <li>The grid drawn for a tasked satellite is a grid to ask the provider for, or to resample onto. The counts do not rely on getting it.</li>
+          </ul>
+        </section>
+
+        <section id="place-for">
+          <h2 class="t">Place the trial for</h2>
+          <p>Wherever the designer chooses a trial's position on the pixel grid (strips slid along it, a block trial staked, an imported trial's best placement, a design suggested), the two buttons of the Satellite fold say which position it looks for.</p>
+          <dl>
+            <dt>Pixels that hold</dt><dd>The most pixels that stay pure wherever the image lands within the CE90. The default.</dd>
+            <dt>Pure pixels</dt><dd>The most pure pixels with the image exactly in place.</dd>
+          </dl>
+          <p>They are not the same position. With no geolocation error the two are one, and the buttons are off. For a tasked satellite it is the position that keeps the fewest, of the same count.</p>
+        </section>
+
+        <section id="designs">
+          <h2 class="t">Designs</h2>
+          <dl>
+            <dt>Alternating rows or columns</dt><dd>Two crops in strips. Strip width, and Row spacing: bare soil between strips, drawn in brown.</dd>
+            <dt>Checkerboard</dt><dd>Square cells of two crops. The strip width is the cell's side.</dd>
+            <dt>Randomised blocks (RCBD)</dt><dd>2 to 8 species in 1 to 20 blocks. Every block holds each species once, in a random order that never puts a species beside itself in the next block. Per row: how many blocks sit side by side before the next row starts; a row runs across the plots, so more per row makes the trial wider and shorter. Plot length and width, Plot alley (between plots of a block), Block alley, and Seed: the same seed replays the same layout. With two species the only layout that keeps them apart is a checkerboard, so the seed only picks which one starts.</dd>
+            <dt>Imported trial</dt><dd>The plots of a file: see <a href="#imported">Imported trial</a>.</dd>
+          </dl>
+          <p><b>Angle</b> is counted from the pixel rows, anticlockwise from east: 0 runs along them. <span class="f">vs aligned</span> compares the design with the same design along the pixel rows, satellite by satellite.</p>
+        </section>
+
+        <section id="imported">
+          <h2 class="t">Imported trial</h2>
+          <ul>
+            <li><b>Files.</b> A zipped shapefile, the shapefile's parts selected together (.shp, .dbf, .prj), GeoJSON, KML or KMZ. Up to 50 MB and 5000 plots. The plots must be drawn as polygons.</li>
+            <li><b>Coordinate system.</b> Read from the .prj, or from the GeoJSON's crs member. Systems on WGS84 or ETRS89 are read directly, and a number of national datums through their published shift to WGS84, with the accuracy stated on import. When a system cannot be read the import says so: export the layer in WGS84 (EPSG:4326).</li>
+            <li><b>Variety column.</b> Each distinct value is a species, with its own curve, colour and purity count. Plots sharing a value are its repetitions. At most 252 varieties. The attribute table shows the file's values: click a column to use it.</li>
+            <li><b>The area.</b> The area measured becomes the trial's outline, not the field drawn. Remove puts the field back.</li>
+            <li><b>Angle.</b> Changing it turns the whole trial about its centre. <span class="f">as in file</span> returns to the file's own angle.</li>
+          </ul>
+          <h3>Best placement</h3>
+          <p><span class="f">vs best</span> compares the trial as drawn with the same trial at the angle and position that keep the most pure pixels, searched for each satellite on its own, so the angle changes from one row to the next. Clicking a row puts the trial at that placement on the map. A dot in the angle column means no placement was searched at that size (too many pixels): the trial is as the file has it.</p>
+        </section>
+
+        <section id="suggest">
+          <h2 class="t">Suggest a design</h2>
+          <p>Say what the trial has to hold, and Build makes the smallest trial that holds it, for the satellite chosen in the fold. Build also makes that satellite the page's.</p>
+          <dl>
+            <dt>Randomised blocks</dt><dd>Species, Repetitions (blocks), and Pixels per plot: the fewest pixels every plot must keep. Plot alley and Block alley are 0 by default: an alley takes ground and gives no pixel. With several rows of blocks the block alley is widened, if need be, to differ from the plot alley by whole pixels.</dd>
+            <dt>Rows or columns</dt><dd>Pixels per strip: the fewest pure pixels every strip must keep over its whole length, which is its pixels across times its length in pixels. The strips built are the thinnest that keep a pixel across, widened only where the field's strips are too short to hold the count.</dd>
+            <dt>Checkerboard</dt><dd>Pixels per cell.</dd>
+            <dt>Purity</dt><dd>The page's own threshold: changing it here changes it everywhere.</dd>
+            <dt>Angle</dt><dd>At 0 the trial lies along the pixel rows: plots of whole pixels all keep the same count, and the trial is the smallest there is. Turned, each plot lies its own way across the pixels and the worst-placed one sets the size, so the plots come out larger. Strips turned cross the pixels obliquely, and the pixels across are a mean along the strip; for a checkerboard turned, the count is the mean over the cells.</dd>
+            <dt>Pixels must hold within the CE90</dt><dd>Ticked, a pixel counts only if it <a href="#hold">holds</a>. Unticked, the pixels pure with the image exactly in place are counted.</dd>
+          </dl>
+          <p>With no area, or one too small, the build makes an area around the trial. Plots are searched up to 1000 m.</p>
+        </section>
+
+        <section id="plot-size">
+          <h2 class="t">Plot size required</h2>
+          <p>The smallest plot, of the same shape as the design's, that keeps a given number of pure pixels wherever the pixel grid falls. Every side is counted with its own distance: the share kept is the share kept across the width times the share kept along the length. Click a size to set the design to it.</p>
+          <p>With a geolocation error the card has three columns, which are three ways of reading it.</p>
+          <dl>
+            <dt>Shift corrected</dt><dd>Each image is put back in place before its pixels are read (co-registration). Only the blur is left: σ<sub>PSF</sub>, with no shift.</dd>
+            <dt>Average image</dt><dd>The note's reading: blur and shift merged in σ<sub>eff</sub>. Right for a mean over many images. In one image a pixel can take more from its neighbours, or less.</dd>
+            <dt>9 images in 10</dt><dd>The same pixels stay pure in 9 images out of 10: blur σ<sub>PSF</sub>, with the image anywhere within its CE90. The reading a list of pixels chosen by their coordinates needs.</dd>
+          </dl>
+          <dl>
+            <dt>Most in this field</dt><dd>For a block trial: the largest plots, of the design's shape, with which the trial still fits inside the area, a pixel clear of its edge, in the arrangement of blocks that lets them grow the most. More needs a larger area, fewer plots or another plot shape.</dd>
+            <dt>Now: pure px in every plot</dt><dd>The fewest pure pixels in a plot, over every placement of the pixel grid. A trial has many plots and each sits differently on the grid, so this is what every plot can count on.</dd>
+            <dt>Now: purest pixel, from outside</dt><dd>The share of its signal that the purest pixel takes from outside its plot, at the grid placement that is worst for it. A plot holds a pure pixel once this is at most ε.</dd>
+          </dl>
+          <p>For strips the rows count pixels across a strip.</p>
+        </section>
+
+        <section id="curves-noise">
+          <h2 class="t">Growth curves and noise</h2>
+          <p>Each species has an NDVI curve over the season, picked from the crop presets or edited: a double logistic with a peak (L1), a green-up day and rate (x01, k1), a senescence day and rate (x02, k2) and a switch day (tc). A pixel's series is the mix of the curves of what it sees, in the shares worked out above. On the season chart the dashed line is what a mixed pixel records, and the grey band is the noise (±σ).</p>
+          <p>Noise is added to each pixel's series. <span class="f">mag</span> is its peak variance, in NDVI squared. <span class="f">α</span> and <span class="f">β</span> shape when in the season it peaks, as a Beta curve: at α = β = 2 it peaks mid-season.</p>
+        </section>
+
+        <section id="budget">
+          <h2 class="t">Every source of blur</h2>
+          <p>The Satellite fold lists each term at the page's current setting, in the note's symbols.</p>
+          <dl>
+            <dt>GSD</dt><dd>Ground sampling distance: the size of a pixel on the ground.</dd>
+            <dt>FWHM</dt><dd>Full width at half maximum of the PSF, 2.3548 σ<sub>PSF</sub>. Marked measured, or published MTF.</dd>
+            <dt>r = FWHM / GSD</dt><dd>The blur spot compared with the pixel.</dd>
+            <dt>α</dt><dd>Share of contrast kept at the Nyquist frequency of the pixel grid, <span class="f">α = exp(−0.890 r²)</span>. Sentinel-2 is specified at 0.15 to 0.30. A small α means the optics, not the pixel, limit the resolution.</dd>
+            <dt>σ<sub>PSF</sub>, σ<sub>geo</sub>, σ<sub>eff</sub></dt><dd>See <a href="#pixel-model">How a pixel is read</a> and <a href="#geolocation">Geolocation error</a>.</dd>
+            <dt>Pixel footprint</dt><dd>Blur from integrating the signal over one pixel, GSD / √12. A measured FWHM already contains it, so it is added neither to σ<sub>eff</sub> nor to the simulation.</dd>
+            <dt>σ simulated</dt><dd>The blur each pixel is read with: σ<sub>PSF</sub>, or the pixel's footprint when the blur typed is narrower.</dd>
+            <dt>k</dt><dd><span class="f">k = Q⁻¹(ε)</span>, Q being the upper tail of the normal law: 1.28 at 10 %, 1.64 at 5 %.</dd>
+            <dt>Buffer b = k σ<sub>eff</sub></dt><dd>A pixel is pure only if its centre lies at least b inside the plot's edge.</dd>
+            <dt>Pure core L − 2b</dt><dd>The zone of the plot where pure pixels can lie: the plot side L less a buffer along each edge.</dd>
+            <dt>Min. plot, any pixel</dt><dd>The note's closed form for a square plot: the smallest side that keeps at least one pure pixel whatever the grid placement, <span class="f">L ≈ GSD + 2 z σ<sub>eff</sub></span>, with <span class="f">z = Q⁻¹(1 − √(1 − ε))</span>. It counts the nearest border on each side only. Plot size required counts the opposite border too, for any plot shape, and asks for a little more.</dd>
+            <dt>Grid phase</dt><dd>Known for a fixed grid, unknown for a tasked sensor: see <a href="#grid-position">Fixed grid or tasked</a>.</dd>
+            <dt>Grid rotation</dt><dd>The angle between the plot rows and the pixel grid.</dd>
+            <dt>Noise</dt><dd>Standard deviation of the noise added to each pixel's NDVI series, at its peak.</dd>
+          </dl>
+        </section>
+
+        <section id="note-figures">
+          <h2 class="t">Minimum plot, by the note</h2>
+          <p>The note's own figures for the sensor, for a square plot and whatever the trial drawn. They are the smallest side at which a pixel stays pure in the worst of the note's 204 placements of the grid: a shift of up to one pixel, four directions, three positions of the grid, four rotations. Sides are tried a quarter of a metre apart.</p>
+          <dl>
+            <dt>Central pixel</dt><dd>The pixel the plot's coordinates name must stay pure, wherever the image lands within one pixel. The conservative figure, and the one the note sizes a tasked sensor by.</dd>
+            <dt>Registered to ½ px</dt><dd>The same, with the images registered to each other within half a pixel: the note's realistic registration.</dd>
+            <dt>Any pixel, swept</dt><dd>At least one pixel, whichever it is, stays pure in every placement. The closed form above is its approximation.</dd>
+            <dt>On a 2 m grid</dt><dd>Central pixel, with the sensor's blur resampled onto 2 m pixels and its geolocation error the same share of a pixel (2/3 m by default). What is left once the pixel size is the same for every sensor: the optics alone.</dd>
+            <dt>Largest pixel for L</dt><dd>The note's hard ceiling. With this ratio of blur to pixel, the largest pixel at which even a pixel exactly on the plot's centre is pure: <span class="f">GSD = L / (2 c z)</span>, <span class="f">c = σ<sub>eff</sub> / GSD</span>. A sensor with larger pixels cannot follow the plot at any position.</dd>
+            <dt>Centred pixel</dt><dd>Contamination of a pixel sitting exactly on the centre of a square plot of side L: the best a pixel of the plot can do.</dd>
+            <dt>Random placements</dt><dd>The grid dropped at random on a square plot of side L, at any position and rotation: the mean number of pure pixels, and how often at least one is left.</dd>
+          </dl>
+        </section>
+
+        <section id="not-simulated">
+          <h2 class="t">What is not simulated</h2>
+          <dl>
+            <dt>Per-band FWHM</dt><dd>The FWHM differs between bands (PlanetScope: 9.7 to 12 m). One value is used for all bands.</dd>
+            <dt>Heavier tails</dt><dd>A real PSF has heavier tails than a Gaussian (adjacency effect), which adds contamination far from an edge.</dd>
+            <dt>Variance between replicates</dt><dd>Two replicates of the same variety differ, by about 0.17 LAI at the peak at Toulouse. Here every plot of a variety has the same curve.</dd>
+            <dt>Other grid rotations</dt><dd>The note keeps the worst case over four grid rotations. Only the rotation drawn is simulated.</dd>
+          </dl>
+        </section>
+
+        <section id="pca">
+          <h2 class="t">The chart</h2>
+          <p>Each dot is a pixel of the trial, placed by a principal component analysis of the pixels' NDVI series over the season. Pure pixels of one species gather; mixed pixels spread between them.</p>
+          <dl>
+            <dt>Scatter</dt><dd>The first two axes. Lasso selects pixels on the chart, which are highlighted on the map.</dd>
+            <dt>Variance</dt><dd>The variance carried by each axis.</dd>
+            <dt>Loadings</dt><dd>How each time step of the season weighs in the components.</dd>
+            <dt>Purity</dt><dd>The pure pixels of each species, the pixels of pure bare soil and the mixed ones. The share at the bottom is over the pixels of crop the design plants, then over all the trial's pixels once alleys and edges are counted.</dd>
+          </dl>
+          <p>On a field too fine to draw every pixel, the chart is computed on a sample, and says so.</p>
+        </section>
+
+        <section id="satellites-table">
+          <h2 class="t">Across satellites</h2>
+          <p>The same trial read by every satellite of the list, each at its own pixel size, blur and CE90. The satellite selected is taken as it stands on the page. Click a row to select that satellite: the map then shows the field as it sees it.</p>
+          <dl>
+            <dt>pure</dt><dd>Pure pixels, as a share of the pixels of crop the design plants. Green from 70 %, amber from 40 %, red below.</dd>
+            <dt>CE90</dt><dd>The share that <a href="#hold">holds within the CE90</a> of that satellite.</dd>
+            <dt>per plot</dt><dd>The fewest pure pixels in a plot, counted over the pixels that hold when a geolocation error is set. In red, how many plots have none.</dd>
+            <dt>angle</dt><dd>In a "vs best" comparison, the angle to the pixel rows of the <a href="#imported">best placement</a> for that satellite.</dd>
+            <dt>◦</dt><dd>Sampled over the central part of a large field.</dd>
+          </dl>
+          <p>A fixed-grid satellite is counted at the best position on its grid, a tasked one at the worst: see <a href="#grid-position">Fixed grid or tasked</a>. Hovering a row gives its counts.</p>
+          <p>In a comparison (<span class="f">vs aligned</span>, <span class="f">vs best</span>) each satellite has two groups of figures: the design as drawn and the other placement. The two placements catch different numbers of edge pixels, so their totals differ and only the counts compare. The Charts view shows one small PCA per satellite in place of the table.</p>
+        </section>
+
+        <section id="storage">
+          <h2 class="t">What stays in the browser</h2>
+          <ul>
+            <li>The field, the design and every setting are kept in this browser's storage and come back on a refresh. A trial too large to keep is loaded for the session only, and the page says so.</li>
+            <li>A trial file is read in the browser. It is not sent anywhere.</li>
+            <li>The page contacts outside services for the map tiles, the place search and, for a fixed-grid satellite, the public catalog its grid is read from (Microsoft Planetary Computer, or Element 84 Earth Search).</li>
+          </ul>
+        </section>
+
+        <section id="sources">
+          <h2 class="t">Sources</h2>
+          <ul>
+            <li>PHENET note, <i>Plot size and effective blur</i>: the model, the default geolocation error, the measured FWHM and the minimum-plot figures. The note is not published.</li>
+            <li>Published MTF figures and providers' geolocation statements: linked in the <a href="#satellites">satellites table</a>.</li>
+          </ul>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>

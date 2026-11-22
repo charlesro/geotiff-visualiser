@@ -326,11 +326,10 @@ function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, plant
                 <p className="mt-2 text-[14px] text-neutral-500">
                   <span className="text-neutral-300">{fmt(purity.pureCrop)}</span>
                   {planted != null && planted >= 1
-                    ? <> of the {fmt(Math.round(planted))} pixels of crop this design plants are one pure species
+                    ? <> pure of the {fmt(Math.round(planted))} pixels of crop planted
                         (<span className="text-neutral-300">{((100 * purity.pureCrop) / planted).toFixed(0)}%</span>),
-                        which is {pctOf(purity.pureCrop)} of the {fmt(purity.total)} trial pixels once alley and edge are counted.</>
-                    : <> of {fmt(purity.total)} trial pixels are one pure species ({pctOf(purity.pureCrop)}).</>}
-                  {' '}Pure: at least {threshold}% one cover.
+                        {' '}{pctOf(purity.pureCrop)} of the {fmt(purity.total)} trial pixels.</>
+                    : <> pure of {fmt(purity.total)} trial pixels ({pctOf(purity.pureCrop)}).</>}
                 </p>
               </>
             ) : (

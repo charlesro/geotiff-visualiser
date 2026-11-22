@@ -30,7 +30,7 @@ export const SHOW_GRID_STEP = false;
 export const STEP_NO = SHOW_GRID_STEP ? { area: 1, grid: 2, sim: 3, pca: 4 } : { area: 1, grid: 2, sim: 2, pca: 3 };
 
 /** The folds of the Simulate experiment step. */
-export type SimSection = 'design' | 'suggest' | 'size' | 'curves' | 'noise' | null;
+export type SimSection = 'sat' | 'design' | 'suggest' | 'size' | 'curves' | 'noise' | null;
 
 export interface StepProps {
   activeStep: 'area' | 'grid' | 'sim' | 'pca' | null;
