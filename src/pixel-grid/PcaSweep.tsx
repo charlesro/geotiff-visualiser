@@ -213,7 +213,6 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
                plantCount: s.plantCount, contrastDead: s.contrastDead,
                geoRobust: s.current ? undefined : s.geoRobust, geoRobustPure: s.current ? undefined : s.geoRobustPure,
                geoMean: s.current ? undefined : s.geoMean, ce90M: s.ce90M,
-               plots: s.current ? undefined : s.plots, plotsRobust: s.current ? undefined : s.plotsRobust,
                minPlotM: s.minPlotM, plotSideM: s.plotSideM,
                pureCount: s.current ? NaN : (s.pureCount ?? NaN), trialCount: s.trialCount ?? NaN,
                partial: !!s.partial, pts, tooFew: fit.tooFew, waiting: false };
@@ -267,6 +266,7 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
                 c.contrastDead
                   ? 'Two varieties cannot be told apart at this pixel size'
                   : c.nEff ? `the mixed ones are worth ${c.nEff.toFixed(1)} more clean pixels per variety if you unmix them` : null,
+                c.minPlotM !== undefined ? `closed form: a side of ${c.minPlotM.toFixed(1)} m or more${c.plotSideM !== undefined ? `, here ${c.plotSideM} m` : ''}` : null,
               ].filter(Boolean).join(' · ')}>
               <span className={c.resolvingPct === null ? 'text-rose-400' : pc(c.resolvingPct)}>
                 {c.resolvingPct === null ? 'n/a' : `${c.resolvingPct.toFixed(0)}%`}
@@ -291,23 +291,10 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
             within CE90 <span className={c.geoRobust < 0.5 ? 'text-rose-400' : 'text-neutral-300'}>{pct0(c.geoRobust)}</span>
           </div>
         )}
-        {/* Pure pixels per plot, over the robust set when there is one: the
-            fewest any plot holds, or how many plots hold none. The note's
-            closed-form minimum plot side is in the tooltip; the plot-size card
-            of step 3 gives the size a design needs. */}
-        {(() => {
-          const t = c.plotsRobust ?? c.plots;
-          if (!t) return null;
-          const small = c.minPlotM !== undefined && c.plotSideM !== undefined && c.plotSideM < c.minPlotM;
-          return (
-            <div className={`whitespace-nowrap px-0.5 font-mono text-[12px] leading-tight tracking-tight ${small && t.none === 0 ? 'text-amber-300/80' : 'text-neutral-500'}`}
-              title={`Pure pixels per plot: minimum ${t.min}, median ${t.median} · ${t.none} of ${t.plots} plots have none${c.minPlotM !== undefined ? ` · closed form: a side of ${c.minPlotM.toFixed(1)} m or more${c.plotSideM !== undefined ? `, here ${c.plotSideM} m` : ''}` : ''}`}>
-              {t.none > 0
-                ? <span className="text-rose-400">{t.none}/{t.plots} plots empty</span>
-                : <>min <span className="text-neutral-300">{t.min}</span> px / plot</>}
-            </div>
-          );
-        })()}
+        {/* The fewest pixels a plot keeps had a line here ("min 4 px / plot",
+            "16/16 plots empty"), the same figure as the table's last column;
+            both were removed on request on 2026-11-24. The closed-form plot
+            side it carried in its tooltip is in the share's tooltip above. */}
         <div className="pointer-events-none">
           {c.waiting
             ? <div className="flex items-center justify-center text-[12px] text-neutral-600" style={{ height: 92 }}>…</div>

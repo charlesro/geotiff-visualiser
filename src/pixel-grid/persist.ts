@@ -16,7 +16,35 @@ import { useEffect, useState, type Dispatch, type SetStateAction } from 'react';
  * The pinned default field ("★ Set as default field", key pixelGrid.defaultField)
  * is deliberately OUTSIDE the prefix: Reset returns to it rather than erasing it.
  */
-const PREFIX = 'pgrid.v1.';
+let PREFIX = 'pgrid.v1.';
+
+/**
+ * Show a worked example of the documentation instead of the visitor's own
+ * designer: the page was opened by an "Open this example" link (`?example=ID`,
+ * examples.ts), and main.tsx calls this before anything is read.
+ *
+ * An example has a store of its OWN, and that store is started afresh from the
+ * example's settings every time the page loads. Writing the settings into the
+ * visitor's own store would have replaced their field and their design with the
+ * documentation's, with no way back; and an example that came back as it was
+ * last left would not be "these exact settings". Their own designer is at the
+ * address without `?example=`, untouched.
+ *
+ * It is a function called by the entry, not something this module works out
+ * from the address: this module imports nothing of the designer, and the tests
+ * load it on its own.
+ */
+export function openExampleStore(id: string, seed: Record<string, unknown>): void {
+  PREFIX = `pgrid.ex.${id}.`;
+  try {
+    const old: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith(PREFIX)) old.push(k); }
+    old.forEach(k => localStorage.removeItem(k));
+    for (const [name, value] of Object.entries(seed)) localStorage.setItem(PREFIX + name, JSON.stringify(value));
+  } catch {
+    /* storage blocked: the page opens on its defaults, as it would for anyone */
+  }
+}
 /** Saved before this module existed; Reset clears it too. */
 const LEGACY_KEYS = ['pgrid_panel_w'];
 

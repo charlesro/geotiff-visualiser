@@ -9,12 +9,12 @@ import { useExperiment, usePcaSim, useSimulation } from './use-simulation';
 import { pixelVerdicts } from './pixel-verdicts';
 import { aoiUtmOrigin, utmEpsg, utmZoneForLng, type LngLatBounds } from './s2-grid';
 import { buildBlockPlan, stakeMesh, utmEnvelope, type BlockDesign } from './simulate';
-import { fieldSeat } from './trial-seat';
-import { ladderRungs, latticePhase, type Rung } from './sensors';
+import { fieldAngle, fieldSeat, trialFitsField } from './trial-seat';
+import { SOURCES, ladderRungs, latticePhase, type Rung } from './sensors';
 import { blockPlotCounts, ladderStep } from './ladder-step';
 import { suggestBlockDesign, suggestChecker, suggestStrips, type CheckerSuggestion, type StripSuggestion } from './suggest-design';
-import { PER_STRIP_DEFAULT, type SuggestAsk, type SuggestOutcome } from './steps/SuggestDesign';
-import { SHOW_GRID_STEP, type SimSection } from './steps/props';
+import { PER_STRIP_DEFAULT, SUGGEST_FIT, type SuggestAsk, type SuggestOutcome } from './steps/SuggestDesign';
+import { SHOW_GRID_STEP, type MostUndo, type PlotsSetting, type SimSection } from './steps/props';
 import { readDesignFiles } from './design-import';
 import { convexHull } from './imported-plan';
 import { polyBbox, viewShowsField, type Poly } from './geometry';
@@ -117,13 +117,19 @@ export default function PixelGridApp() {
   // one before it, `simSection`, began with the design open and was saved that
   // way in every browser that had the page.
   const [simSection, setSimSection] = usePersistentState<SimSection>('simFold', null,
-    v => v === null || oneOf('sat', 'design', 'suggest', 'size', 'curves', 'noise')(v));
+    v => v === null || oneOf('sat', 'design', 'suggest', 'size', 'curves')(v));
   const [blurOpen, setBlurOpen] = usePersistentState('blurOpen', false, isBool);
   const [pcaRetuneOpen, setPcaRetuneOpen] = usePersistentState('pcaRetuneOpen', false, isBool);
   const [compareAligned, setCompareAligned] = usePersistentState('compareAligned', false, isBool);  // rotated vs 0° ladders
   const [ladderView, setLadderView] = usePersistentState<'table' | 'charts'>('ladderView', 'table', oneOf('table', 'charts'));
   // The count the plot-size card's typed row asks for (steps 2 and 3 show the same card).
   const [wantPure, setWantPure] = usePersistentState('wantPure', 16, v => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 400);
+  // What "Use these" of the plot-size card replaced, for its Undo: plot sides as the design fields accept them.
+  const isPlots = (v: unknown) => !!v && typeof v === 'object' && inRange(0.1, 1000)((v as PlotsSetting).plotLength)
+    && inRange(0.1, 1000)((v as PlotsSetting).plotWidth) && Number.isInteger((v as PlotsSetting).blocksPerRow) && (v as PlotsSetting).blocksPerRow >= 1
+    && ((v as PlotsSetting).rotation === undefined || inRange(-90, 90)((v as PlotsSetting).rotation));
+  const [mostUndo, setMostUndo] = usePersistentState<MostUndo | null>('mostUndo', null,
+    v => v === null || (!!v && typeof v === 'object' && isPlots((v as MostUndo).from) && isPlots((v as MostUndo).to)));
   /**
    * Where the design was before the aligned placement was adopted from the
    * ladder, so the comparison outlives the choice made with it.
@@ -448,16 +454,46 @@ export default function PixelGridApp() {
       // A request saved before the angle existed has none: along the pixel rows.
       && ((v as SuggestAsk).angle === undefined || inRange(-90, 90)((v as SuggestAsk).angle))
       && ((v as SuggestAsk).stripAlley === undefined || inRange(0, 100)((v as SuggestAsk).stripAlley))
-      && ((v as SuggestAsk).perStrip === undefined || inRange(1, 2000)((v as SuggestAsk).perStrip)));
+      && ((v as SuggestAsk).perStrip === undefined || inRange(1, 2000)((v as SuggestAsk).perStrip))
+      && ((v as SuggestAsk).repsMax === undefined || isBool((v as SuggestAsk).repsMax)));
   const [suggestBusy, setSuggestBusy] = useState(false);
   const [suggestOutcome, setSuggestOutcome] = useState<SuggestOutcome | null>(null);
+  /** How far a build has got: steps done of all, and what is being worked out. Null when none runs. */
+  const [suggestProgress, setSuggestProgress] = useState<{ done: number; total: number; what: string } | null>(null);
+  /**
+   * A build's ticket: a field redrawn or cleared, or another layout picked,
+   * while a build is between two of its steps, and that build stops without
+   * writing anything (Neon's review, 2026-11-25: it went on to put its trial
+   * on the new field, or back in the old layout).
+   */
+  const buildRun = useRef(0);
+  useEffect(() => { buildRun.current++; }, [aoi?.join(','), fieldRing, exp.pattern]); // eslint-disable-line react-hooks/exhaustive-deps
   const buildSuggested = () => {
     if (suggestBusy) return;
     const grid = gridApi.build;
     // The satellites of the table, the one selected taken as it stands in step 2.
     const sats = ladderRungs({ id: gridApi.sourceId, res: grid?.res ?? gridApi.pxSize, sigmaX, sigmaY });
-    const sat = sats.find(g => g.id === suggestAsk.sat) ?? sats.find(g => g.id === gridApi.sourceId);
-    if (!sat) return;
+    /**
+     * "Coarsest that fits the field" (2026-11-24: "i dont specify sattelite [...]
+     * i just say the species and the number of pixels and it gives me the
+     * biggest gsd that works"): no satellite is named; the satellites of the
+     * list are tried from the coarsest pixel down, each with its own blur and
+     * CE90 as delivered, and the first whose smallest block trial fits the
+     * field drawn is built. A block trial, on a field there is.
+     */
+    const fitSearch = suggestAsk.sat === SUGGEST_FIT && exp.pattern === 'block';
+    /**
+     * "As many repetitions as fit the field" (2026-11-25: "one with both
+     * satellite and area constrained where you give the max number of
+     * repetition that can fit"): the satellite named, the field drawn, and the
+     * repetitions found, from 1 to 20, as the most whose smallest trial fits.
+     * With the coarsest satellite asked for too there would be two unknowns:
+     * that one is answered first, at the repetitions typed.
+     */
+    const repsSearch = !!suggestAsk.repsMax && exp.pattern === 'block' && !fitSearch;
+    if ((fitSearch || repsSearch) && !aoi) return;
+    const named = sats.find(g => g.id === suggestAsk.sat) ?? sats.find(g => g.id === gridApi.sourceId);
+    if (!named && !fitSearch) return;
     /**
      * NO EXPERIMENT AREA IS NEEDED. Where there is one and the trial fits it,
      * the trial goes in the middle of it. Where there is none, or it is too
@@ -471,19 +507,65 @@ export default function PixelGridApp() {
     const centre: [number, number] = aoi ? [(aoi[0] + aoi[2]) / 2, (aoi[1] + aoi[3]) / 2]
       : view ? [view.lng, view.lat] : [initialCenter[1], initialCenter[0]];
     const epsg = grid?.epsg ?? utmEpsg(utmZoneForLng(centre[0]), centre[1] < 0);
-    const r = sat.res;
-    // The trial's angle to the pixel rows, and its own box's half sides when turned by it.
-    const angle = suggestAsk.angle ?? 0;
+    // The trial's angle to the pixel rows as asked. A build may turn it to the field's own direction (below).
+    const askedAngle = suggestAsk.angle ?? 0;
     // A quarter turn lies along the pixels (suggestBlockDesign sizes it as it does no turn at all).
-    const turned = Math.abs(angle % 90) > 1e-9;
-    const rad = (angle * Math.PI) / 180, cosA = Math.abs(Math.cos(rad)), sinA = Math.abs(Math.sin(rad));
-    const halfBox = (u: number, v: number): [number, number] => [(u * cosA + v * sinA) / 2, (u * sinA + v * cosA) / 2];
+    const isTurned = (deg: number) => Math.abs(deg % 90) > 1e-9;
+    // A trial's own box's half sides when it is turned by `deg`.
+    const halfBoxAt = (deg: number) => {
+      const rad = (deg * Math.PI) / 180, cosA = Math.abs(Math.cos(rad)), sinA = Math.abs(Math.sin(rad));
+      return (u: number, v: number): [number, number] => [(u * cosA + v * sinA) / 2, (u * sinA + v * cosA) / 2];
+    };
+    /**
+     * "this one could fit in if it was rotated" (2026-11-25): on a traced field
+     * that is turned to the pixel rows, a trial that does not fit at the angle
+     * asked is tried along the field's two directions (its smallest enclosing
+     * rectangle's sides), and the first angle at which it fits is built.
+     */
+    const fieldDeg = aoi ? fieldAngle(fieldRing, aoi, epsg) : null;
+    const angles = fieldDeg == null ? [askedAngle]
+      : [askedAngle, ...[fieldDeg, fieldDeg <= 0 ? fieldDeg + 90 : fieldDeg - 90].filter(d => Math.abs(d - askedAngle) > 1e-6)];
     // Alternating rows or columns have no trial to size: their strips are
     // (suggestStrips), and a checkerboard's cells (suggestChecker).
     const kind = exp.pattern === 'row' || exp.pattern === 'col' || exp.pattern === 'checker' ? exp.pattern : null;
-    if (kind) { buildStrips(kind, sat, epsg, centre, angle); return; }
+    if (kind) { if (named) buildStrips(kind, named, epsg, centre, askedAngle); return; }
     setSuggestBusy(true);
-    window.setTimeout(() => {
+    /**
+     * A bar under the button (2026-11-25: "can you make a loading bar for the
+     * build this trial"): the build is cut into steps, one per satellite tried,
+     * one per count of repetitions tried, then the trial and its count on the
+     * field, and the page is drawn between two steps.
+     */
+    const finish = () => { setSuggestBusy(false); setSuggestProgress(null); };
+    /**
+     * The satellites "Coarsest that fits" tries: the list from the coarsest
+     * pixel down, a sensor of one's own and the pansharpened products left out
+     * (Neon, 2026-11-25): a trial is designed on native multispectral pixels,
+     * as the satellites list says.
+     */
+    const fitOrder = fitSearch ? sats.filter(g => g.id !== 'custom' && !/pansharpened/i.test(SOURCES.find(s => s.id === g.id)?.provider ?? '')).sort((a, b) => b.res - a.res) : [];
+    // A satellite named, on a field turned to the rows: first tried on the field, along it when only that fits.
+    const preTry = !fitSearch && !repsSearch && !!aoi && angles.length > 1;
+    let done = 0;
+    const total = fitOrder.length + (repsSearch ? 20 : 0) + (preTry ? 1 : 0) + 2;
+    const run = ++buildRun.current;
+    /** A step of the bar; false when the build was overtaken meanwhile, and has to stop. */
+    const step = async (what: string): Promise<boolean> => {
+      setSuggestProgress({ done, total, what });
+      done++;
+      // A frame for the bar to be drawn in, then the next step; a hidden tab draws no frames, and the timer goes on.
+      await new Promise<void>(r => {
+        let gone = false;
+        const go = () => { if (!gone) { gone = true; window.setTimeout(r, 0); } };
+        requestAnimationFrame(go);
+        window.setTimeout(go, 50);
+      });
+      return run === buildRun.current;
+    };
+    window.setTimeout(async () => {
+     // Everything a build needs for one satellite: its CE90, its lattice, its search.
+     const withSat = (sat: Rung, angle: number) => {
+      const r = sat.res, turned = isTurned(angle), halfBox = halfBoxAt(angle);
       const ce90M = suggestAsk.hold ? Math.round(gridApi.ce90At(r, sat.id) * 100) / 100 : 0;
       // Where the page will then put what is built: for the pixels that hold within this satellite's CE90, or for the pure ones.
       const placeHeldM = gridApi.placeFor === 'held' ? Math.round(gridApi.ce90At(r, sat.id) * 100) / 100 : 0;
@@ -506,15 +588,15 @@ export default function PixelGridApp() {
           aoi: ground, fieldRing: ring, epsg, threshold: exp.threshold, blockDesign: design,
           layout: { pattern: 'block', width: exp.stripWidth, spacing: exp.spacing, rotationDeg: angle },
           importedAngle: 0, importedFileAngle: 0, importedBasePlan: undefined,
-          geoAuto: suggestAsk.hold ? gridApi.geoAuto : false, geoManual: suggestAsk.hold ? gridApi.geoManual : 0, geoProvider: suggestAsk.hold && gridApi.geoProvider,
-          placeFor: gridApi.placeFor, pageGeo: { auto: gridApi.geoAuto, manualM: gridApi.geoManual, provider: gridApi.geoProvider },
+          geoAuto: false, geoManual: suggestAsk.hold ? gridApi.geoManual : 0, geoProvider: suggestAsk.hold && !gridApi.geoTyped,
+          placeFor: gridApi.placeFor, pageGeo: { auto: false, manualM: gridApi.geoManual, provider: !gridApi.geoTyped },
         }, angle, sat);
         if (!c) throw new Error('This trial is too large to be counted plot by plot at an angle. Ask for fewer pixels, species or repetitions, or build it along the pixel rows (angle 0).');
         return c;
       };
       type Count = ReturnType<typeof countOn>;
-      const ask = (field: { u: number; v: number } | null, stakeSteps: number | undefined, countAt?: Count) => suggestBlockDesign({
-        nSpecies: suggestAsk.species, nBlocks: suggestAsk.reps, pixels: wantPure,
+      const ask = (field: { u: number; v: number } | null, stakeSteps: number | undefined, countAt?: Count, reps = suggestAsk.reps) => suggestBlockDesign({
+        nSpecies: suggestAsk.species, nBlocks: reps, pixels: wantPure,
         res: r, sigmaX: sat.sigmaX, sigmaY: sat.sigmaY, threshold: exp.threshold / 100, anyPosition: sat.anyPosition, placeHeldM, ce90M,
         // The alleys asked for in the panel, none by default: NOT the design's
         // own, which are whatever the layout last had.
@@ -528,11 +610,10 @@ export default function PixelGridApp() {
       // A trial fits a traced field when it has a seat wholly inside the
       // outline, which the box of an oblique parcel says nothing about. A field
       // that is a box holds a turned trial when it holds the trial's own box.
-      const fitsField = (u: number, v: number) => {
-        const seat = aoi ? fieldSeat(fieldRing, aoi, epsg, u, v, angle) : null;
-        const [hu, hv] = halfBox(u, v);
-        return seat ? seat.clearance > 0 : 2 * hu <= field.u + 1e-6 && 2 * hv <= field.v + 1e-6;
-      };
+      // With a pixel to spare all round, as Most in this field asks (2026-11-25): a trial that only just
+      // fitted had its edge plots cut by the field's outline, and the table counted none in them.
+      // The same test as Most in this field's (trial-seat.ts trialFitsField).
+      const fitsField = (u: number, v: number) => !!aoi && trialFitsField(fieldRing, aoi, epsg, u, v, angle, r);
       // The area the page makes for a trial that has none to go in: the trial's
       // own box, and a margin that keeps it clear of the edge.
       const [cE, cN] = toUtm.forward(centre);
@@ -551,13 +632,117 @@ export default function PixelGridApp() {
         const own = areaFor(cmOf(size.totalU), cmOf(size.totalV));
         return countOn(own, ringOf(own))(design);
       };
+      return { r, ce90M, ask, had, field, said, stepsOn, countOn, countOnOwn, areaFor, ringOf, toLngLat, turned, halfBox };
+     };
+     /** A satellite's smallest trial on the field, at the angle asked, else along the field: the first angle at which it fits, or the one asked. */
+     const onTheField = (g: Rung, n = suggestAsk.reps) => {
+       let first: { deg: number; tried: ReturnType<ReturnType<typeof withSat>['ask']> } | null = null;
+       let error: string | undefined;
+       for (const deg of angles) {
+         const w = withSat(g, deg);
+         let tried: ReturnType<typeof w.ask> = null;
+         // A turned trial too large to count plot by plot does not fit at that angle; another angle may (Neon, 2026-11-25).
+         try { tried = w.had ? w.ask(w.field, w.stepsOn(aoi!), w.turned ? w.countOn(aoi!, fieldRing) : undefined, n) : null; }
+         catch (e) { error = e instanceof Error ? e.message : String(e); continue; }
+         if (tried && tried.fits !== false) return { deg, tried, fits: true };
+         if (!first) first = { deg, tried };
+       }
+       return { deg: first?.deg ?? askedAngle, tried: first?.tried ?? null, fits: false, error: first ? undefined : error };
+     };
+      // The coarsest satellite whose smallest trial fits the field: the list from the
+      // coarsest pixel down, a sensor of one's own left out. The one tried just before
+      // it, coarser and too large for the field, is said too.
+      let sat: Rung | undefined = named, coarser: NonNullable<SuggestOutcome['fit']>['coarser'] = null;
+      let angle = askedAngle;
+      // The trial a search already found for the satellite, angle and repetitions built: not asked for twice.
+      let found: ReturnType<typeof onTheField>['tried'] = null;
+      if (fitSearch) {
+        sat = undefined;
+        let error: string | undefined;
+        try {
+          for (const g of fitOrder) {
+            if (!await step(`Trying ${g.name} · ${g.res} m`)) { finish(); return; }
+            const on = onTheField(g);
+            if (on.fits) { sat = g; angle = on.deg; found = on.tried; break; }
+            if (on.error) error = on.error;
+            coarser = { name: g.name, res: g.res, footprint: on.tried ? on.tried.footprint : null };
+          }
+        } catch (e) {
+          error = e instanceof Error ? e.message : String(e);
+        }
+        if (!sat) {
+          const [e0, n0, e1, n1] = utmEnvelope(aoi!, epsg);
+          // None fits: said as such, or, when some could not even be counted, why.
+          setSuggestOutcome({ satId: '', sat: '', res: 0, pixels: wantPure, ce90M: 0, threshold: exp.threshold, field: { u: e1 - e0, v: n1 - n0 }, angle: askedAngle,
+            built: null, onField: null, area: null, ...(error ? { error } : { fit: { coarser: null, none: true } }) });
+          finish();
+          return;
+        }
+      }
+      if (!sat) { finish(); return; }
+      // The most repetitions whose smallest trial fits the field, every count from 1 to 20 tried
+      // (more repetitions may fit in another arrangement of blocks than fewer did).
+      let reps = suggestAsk.reps, most: SuggestOutcome['most'] = undefined;
+      if (repsSearch) {
+        const tried: (ReturnType<typeof onTheField> | null)[] = [];
+        let error: string | undefined;
+        try {
+          for (let n = 1; n <= 20; n++) {
+            if (!await step(`Trying ${n} ${n === 1 ? 'repetition' : 'repetitions'}`)) { finish(); return; }
+            tried[n] = aoi ? onTheField(sat, n) : null;
+            if (tried[n]?.error) error = tried[n]!.error;
+            // A trial of more blocks is never smaller than one of fewer, in its best arrangement: two counts
+            // in a row that do not fit, and no larger one will (Neon, 2026-11-25: all 20 were tried).
+            if (n >= 2 && !tried[n]?.fits && !tried[n - 1]?.fits) break;
+          }
+        } catch (e) {
+          error = e instanceof Error ? e.message : String(e);
+        }
+        const fits = (n: number) => !!tried[n]?.fits;
+        const best = [...Array(20).keys()].map(k => 20 - k).find(fits) ?? 0;
+        if (!best && error) {
+          setSuggestOutcome({ ...withSat(sat, askedAngle).said, built: null, onField: null, area: null, error });
+          finish();
+          return;
+        }
+        const next = best < 20 ? tried[best + 1] : null;
+        most = { reps: best, next: best < 20 ? { reps: best + 1, footprint: next?.tried ? next.tried.footprint : null } : null };
+        if (!best) {
+          setSuggestOutcome({ ...withSat(sat, askedAngle).said, built: null, onField: null, area: null, most });
+          finish();
+          return;
+        }
+        reps = best;
+        angle = tried[best]!.deg;
+        found = tried[best]!.tried;
+        // Written into the request as it is NOW: what was typed meanwhile stays (Neon, 2026-11-25).
+        if (reps !== suggestAsk.reps) setSuggestAsk(cur => ({ ...cur, reps }));
+      } else if (preTry) {
+        // A satellite named, on a turned field: along the field's own direction when only that fits.
+        if (!await step(`Trying ${sat.name} along the field`)) { finish(); return; }
+        try { const on = onTheField(sat, reps); if (on.fits) { angle = on.deg; found = on.tried; } } catch { /* the build below says why */ }
+      }
+      const { r, ce90M, ask: askReps, had, field, said, stepsOn, countOn, countOnOwn, areaFor, ringOf, toLngLat, turned, halfBox } = withSat(sat, angle);
+      const ask = (f: { u: number; v: number } | null, steps: number | undefined, countAt?: Parameters<typeof askReps>[2]) => askReps(f, steps, countAt, reps);
+      done = Math.max(done, total - 2);
+      if (!await step(`Building the trial for ${sat.name} · ${r} m`)) { finish(); return; }
       try {
         let ground: LngLatBounds | null = aoi, ring = fieldRing;
         let area: SuggestOutcome['area'] = null;
-        // In the area there is, when some arrangement fits it.
-        let built = aoi && had ? ask(field, stepsOn(aoi), turned ? countOn(aoi, fieldRing) : undefined) : null;
-        if (!built || built.fits === false) {
-          // Otherwise an area of its own: the trial, and a margin that keeps it
+        // In the area there is, when some arrangement fits it: the one a search found already, else asked now.
+        let built = found && found.fits !== false ? found : aoi && had ? ask(field, stepsOn(aoi), turned ? countOn(aoi, fieldRing) : undefined) : null;
+        /**
+         * A FIELD DRAWN IS THE READER'S, and is never replaced (2026-11-25: "it
+         * doesnt respect my field boundaries. it creates a new one"). A trial
+         * that does not fit it is not built, and the reader is told the size of
+         * the smallest one. Only with no field at all does the page make one.
+         */
+        if (aoi && built && built.fits === false) {
+          setSuggestOutcome({ ...said, built: null, onField: null, area: null, tooBig: { footprint: built.footprint } });
+          return;
+        }
+        if (!aoi && !built) {
+          // No field: an area of its own: the trial, and a margin that keeps it
           // clear of the edge wherever the staking then puts it. The mesh the
           // page will stake on depends on that area's size, which depends on
           // the trial: asked again until the two agree. A turned trial is not
@@ -576,13 +761,27 @@ export default function PixelGridApp() {
             ground = box;
             ring = ringOf(box);
             const [e0, n0, e1, n1] = utmEnvelope(box, epsg);
-            area = { how: aoi ? 'replaced' : 'made', u: e1 - e0, v: n1 - n0 };
+            area = { how: 'made', u: e1 - e0, v: n1 - n0 };
           } else if (!own) {
             built = null;
           }
         }
         let onField: SuggestOutcome['onField'] = null;
         if (built && ground) {
+          // What the satellites table will count for it on THIS area, plot by
+          // plot, while the trial is small enough for the table to count so.
+          // Counted BEFORE anything is written: a build overtaken meanwhile, or
+          // one whose count fails, leaves the page as it was.
+          if ((built.footprint[0] / r) * (built.footprint[1] / r) <= 15_000) {
+            if (!await step('Counting its pixels on the field')) { finish(); return; }
+            const row = ladderStep({
+              aoi: ground, fieldRing: ring, epsg, threshold: exp.threshold, blockDesign: built.design,
+              layout: { pattern: 'block', width: exp.stripWidth, spacing: exp.spacing, rotationDeg: angle },
+              importedAngle: 0, importedFileAngle: 0, importedBasePlan: undefined,
+              geoAuto: false, geoManual: gridApi.geoManual, geoProvider: !gridApi.geoTyped, placeFor: gridApi.placeFor,
+            }, angle, sat, true);
+            if (row.plots) onField = { pure: row.plots.min, held: row.plotsRobust?.min ?? null };
+          }
           cancelStake();
           exp.setPattern('block');
           exp.setBlockDesign(built.design);
@@ -597,23 +796,13 @@ export default function PixelGridApp() {
           const [hu, hv] = halfBox(built.footprint[0], built.footprint[1]);
           const [w, so] = toLngLat.forward([tE - hu, tN - hv]), [e, n] = toLngLat.forward([tE + hu, tN + hv]);
           mapRef.current?.fitBounds([[so, w], [n, e]], { padding: [60, 60], maxZoom: 21 });
-          // What the satellites table will count for it on THIS area, plot by
-          // plot, while the trial is small enough for the table to count so.
-          if ((built.footprint[0] / r) * (built.footprint[1] / r) <= 15_000) {
-            const row = ladderStep({
-              aoi: ground, fieldRing: ring, epsg, threshold: exp.threshold, blockDesign: built.design,
-              layout: { pattern: 'block', width: exp.stripWidth, spacing: exp.spacing, rotationDeg: angle },
-              importedAngle: 0, importedFileAngle: 0, importedBasePlan: undefined,
-              geoAuto: gridApi.geoAuto, geoManual: gridApi.geoManual, geoProvider: gridApi.geoProvider, placeFor: gridApi.placeFor,
-            }, angle, sat, true);
-            if (row.plots) onField = { pure: row.plots.min, held: row.plotsRobust?.min ?? null };
-          }
         }
-        setSuggestOutcome({ ...said, built, onField, area });
+        setSuggestOutcome({ ...said, built, onField, area, ...(fitSearch ? { fit: { coarser, none: false } } : {}), ...(most ? { most } : {}),
+          ...(angle !== askedAngle ? { alongField: true } : {}) });
       } catch (e) {
         setSuggestOutcome({ ...said, built: null, onField: null, area: null, error: e instanceof Error ? e.message : String(e) });
       } finally {
-        setSuggestBusy(false);
+        finish();
       }
     }, 30);
   };
@@ -724,7 +913,7 @@ export default function PixelGridApp() {
       : exp.pattern === 'block' && (!builtDesign || (sameSetting
         && (['nSpecies', 'nBlocks', 'blocksPerRow', 'plotLength', 'plotWidth', 'plotAlley', 'blockAlley'] as const).every(k => builtDesign[k] === exp.blockDesign[k]))));
   const suggest = { ask: suggestAsk, setAsk: setSuggestAsk,
-                    busy: suggestBusy, outcome: outcomeStands ? suggestOutcome : null, build: buildSuggested };
+                    busy: suggestBusy, progress: suggestProgress, outcome: outcomeStands ? suggestOutcome : null, build: buildSuggested };
 
   // Only what `geoKey` needs; the panels read the rest straight off `exp`.
   const { layoutSig, sensorSig, cropSig } = exp;
@@ -820,7 +1009,7 @@ export default function PixelGridApp() {
                       simSection, setSimSection, blurOpen, setBlurOpen, pcaRetuneOpen, setPcaRetuneOpen,
                       compareAligned, setCompareAligned, ladderView, setLadderView, compareFrom, setCompareFrom, setAngleByHand, setActiveStep,
                       pcaColorBy, setPcaColorBy, pcaShapeBy, setPcaShapeBy, importApi, curvesOpen, setCurvesOpen,
-                      wantPure, setWantPure, suggest };
+                      wantPure, setWantPure, mostUndo, setMostUndo, suggest };
 
   return (
     <div className="flex h-full w-full bg-[#050505] text-neutral-200 font-sans">

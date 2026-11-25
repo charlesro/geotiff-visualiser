@@ -329,7 +329,7 @@ function PcaSimVisual({ sim, species, colors, names, magnitude, threshold, plant
                   <span className="text-neutral-300">{fmt(purity.pureCrop)}</span>
                   {planted != null && planted >= 1
                     ? <> pure of the {fmt(Math.round(planted))} pixels of crop planted
-                        (<span className="text-neutral-300">{((100 * purity.pureCrop) / planted).toFixed(0)}%</span>),
+                        (<span className="text-neutral-300">{Math.min(100, (100 * purity.pureCrop) / planted).toFixed(0)}%</span>),
                         {' '}{pctOf(purity.pureCrop)} of the {fmt(purity.total)} trial pixels.</>
                     : <> pure of {fmt(purity.total)} trial pixels ({pctOf(purity.pureCrop)}).</>}
                 </p>

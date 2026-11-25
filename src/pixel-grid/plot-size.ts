@@ -49,6 +49,14 @@ export interface Viewing {
   angleDeg: number;
 }
 
+/**
+ * Where the pixel grid is taken to fall on a plot. 'worst': anywhere, so the
+ * plot is counted at the placement worst for it (a tasked sensor, whose grid
+ * is not known at planting). 'best': where the plot is best off, which a
+ * design on a fixed, known grid (Sentinel-2, Landsat) can choose.
+ */
+export type GridAt = 'worst' | 'best';
+
 /** A plot in its own frame: `a` along x, `b` along y, in metres. A strip has b = Infinity. */
 export interface Plot {
   a: number;
@@ -324,8 +332,8 @@ const MARGIN = 1.006;
  * there is no end to count to, and on a turned grid the same figure is the
  * density of pure pixels, pure band / GSD squared per metre of strip.
  */
-export function pureScales(plot: Plot, v: Viewing, wanted: number[]): (number | null)[] {
-  if (plot.a === Infinity && plot.b !== Infinity) return pureScales({ a: plot.b, b: Infinity }, v, wanted);
+export function pureScales(plot: Plot, v: Viewing, wanted: number[], where: GridAt = 'worst'): (number | null)[] {
+  if (plot.a === Infinity && plot.b !== Infinity) return pureScales({ a: plot.b, b: Infinity }, v, wanted, where);
   const short = Math.min(plot.a, plot.b);
   const usable = short > 0 && short < Infinity && v.gsd > 0 && v.threshold > 0 && v.threshold < 1 && v.sigma >= 0;
   if (!usable || !wanted.length) return wanted.map(() => null);
@@ -337,7 +345,9 @@ export function pureScales(plot: Plot, v: Viewing, wanted: number[]): (number | 
     return wanted.map(n => {
       if (!ok(n)) return null;
       // A millimetre over, so that the strip it names is on the right side of its own threshold.
-      const s = entryScale((n * v.gsd) / 2 + Math.max(0, v.shift), 0, plot, v.sigma, v.threshold) + 1e-3 / short;
+      // At the best place on the grid the outermost of n pixels is (n - 1) / 2 pixels from the middle line, not n / 2.
+      const reach = ((where === 'best' ? n - 1 : n) * v.gsd) / 2;
+      const s = entryScale(reach + Math.max(0, v.shift), 0, plot, v.sigma, v.threshold) + 1e-3 / short;
       return s * short <= SIDE_MAX ? s : null;
     });
   }
@@ -350,7 +360,7 @@ export function pureScales(plot: Plot, v: Viewing, wanted: number[]): (number | 
   let cap = (1.15 * (v.gsd + 2 * (1.3 * v.sigma + Math.max(0, v.shift)))) / short;
   let left = ns.map((n, k) => (n >= 1 ? k : -1)).filter(k => k >= 0);
   for (let attempt = 0; left.length && attempt < 40 && cap * short <= SIDE_MAX; attempt++) {
-    const got = scalesUnder(plot, v, lat, left.map(k => ns[k]), cap);
+    const got = scalesUnder(plot, v, lat, left.map(k => ns[k]), cap, where);
     const still: number[] = [];
     left.forEach((k, i) => {
       const s = got[i];
@@ -364,7 +374,7 @@ export function pureScales(plot: Plot, v: Viewing, wanted: number[]): (number | 
 }
 
 /** `pureScales` for one cap: null for an n it does not ask for, the cap itself when the plot must be larger. */
-function scalesUnder(plot: Plot, v: Viewing, lat: { ux: number; uy: number; aligned: boolean }, ns: number[], cap: number): (number | null)[] {
+function scalesUnder(plot: Plot, v: Viewing, lat: { ux: number; uy: number; aligned: boolean }, ns: number[], cap: number, where: GridAt = 'worst'): (number | null)[] {
   // Only a point inside the plot at the cap can be pure under it.
   const X = (cap * plot.a) / 2, Y = (cap * plot.b) / 2;
   const table = tableFor(plot, v, X, Y);
@@ -388,6 +398,23 @@ function scalesUnder(plot: Plot, v: Viewing, lat: { ux: number; uy: number; alig
     const count = pointsAt(fa, fb);
     return n <= count ? kth(buf, count, n - 1) : cap;
   };
+  const shift = Math.max(0, v.shift);
+  /** nthAt solved without the table, for the pixels the table puts near or under `near`. */
+  const exactNth = (fa: number, fb: number, n: number, near: number): number => {
+    const ga = frac(fa), gb = frac(fb), vals: number[] = [];
+    for (let c = 0; c < cand.length; c += 2) {
+      const p = cand[c] + ga, q = cand[c + 1] + gb;
+      const x = p * lat.ux - q * lat.uy, y = p * lat.uy + q * lat.ux;
+      if (x > X || x < -X || y > Y || y < -Y) continue;
+      if (entryAt(table, x, y) > near * 1.03) continue;
+      const ax = Math.abs(x), ay = Math.abs(y);
+      let late = 0;
+      for (const [cs, sn] of FINE_ARC) { const e = entryScale(ax + shift * cs, ay + shift * sn, plot, v.sigma, v.threshold); if (e > late) late = e; }
+      vals.push(late);
+    }
+    vals.sort((p1, p2) => p1 - p2);
+    return n <= vals.length ? Math.min(cap, vals[n - 1]) : near;
+  };
 
   // The sweep. An aligned lattice mirrors on both axes, a turned one only
   // through the centre: a quarter of the placements for one, half for the other.
@@ -408,6 +435,8 @@ function scalesUnder(plot: Plot, v: Viewing, lat: { ux: number; uy: number; alig
     }
   }
 
+  // The worst placement is the largest n-th entry scale; the best, the smallest.
+  const dir = where === 'best' ? -1 : 1;
   return ns.map((n, k) => {
     const at = swept[k];
     if (!at) return null;
@@ -415,14 +444,15 @@ function scalesUnder(plot: Plot, v: Viewing, lat: { ux: number; uy: number; alig
     // each other: step to a placement that is worse still, in directions that
     // turn from one round to the next (the n-th smallest has ridges, and a
     // fixed set of directions stalls on them), shrinking the step when none is.
-    const order = Array.from(at.keys()).sort((p, q) => at[q] - at[p]);
+    // For the best placement the same climb goes the other way.
+    const order = Array.from(at.keys()).sort((p, q) => dir * (at[q] - at[p]));
     const starts: number[] = [];
     for (const c of order) {
       if (starts.length >= STARTS) break;
       const ci = Math.floor(c / cols), cj = c % cols;
       if (starts.every(o => Math.abs(Math.floor(o / cols) - ci) > 1 || Math.abs((o % cols) - cj) > 1)) starts.push(c);
     }
-    let worst = at[order[0]];
+    let worst = at[order[0]], wa = Math.floor(order[0] / cols) / m, wb = (order[0] % cols) / m;
     if (worst >= cap) return cap;
     for (const c of starts) {
       let fa = Math.floor(c / cols) / m, fb = (c % cols) / m, s = at[c];
@@ -435,13 +465,16 @@ function scalesUnder(plot: Plot, v: Viewing, lat: { ux: number; uy: number; alig
           const ang = d < 8 ? (d * Math.PI) / 4 : round * 1.9416 + ((d - 8) * Math.PI) / 3;
           const na = fa + step * Math.cos(ang), nb = fb + step * Math.sin(ang);
           const val = nthAt(na, nb, n);
-          if (val > s + 1e-12) { s = val; fa = na; fb = nb; moved = true; break; }
+          if (dir * (val - s) > 1e-12) { s = val; fa = na; fb = nb; moved = true; break; }
         }
         if (!moved) step *= 0.6;
       }
-      if (s > worst) worst = s;
+      if (dir * (s - worst) > 0) { worst = s; wa = fa; wb = fb; }
     }
-    return worst;
+    // Within a CE90, the held table is read across a ridge where the worst landing turns from one
+    // side to the other, and its bilinear reading came 0.1 to 0.2 m over (Neon, 2026-11-25): at the
+    // placement found, the pixels are solved again, each at the latest of its landings.
+    return shift > 0 ? exactNth(wa, wb, n, worst) : worst;
   });
 }
 
@@ -531,6 +564,193 @@ export function purestShare(plot: Plot, v: Viewing): number {
     }
   }
   return worst;
+}
+
+/**
+ * THE PUREST PIXEL OF THE WEAKEST PLOT of a trial as it stands on the grid
+ * (2026-11-25): the plots by their centres in the grid's metres, all turned by
+ * `v.angleDeg`, on a lattice whose pixel edges are at `edge` + k gsd. For each
+ * plot, the best of the pixels within three of its centre, read in the plot's
+ * own frame; then the plot whose best is worst. The plot-size card reads it at
+ * the placement the engine gave the trial, so that it speaks of the map's trial.
+ */
+export function purestOfPlots(centres: [number, number][], plot: Plot, v: Viewing, edge: [number, number]): number {
+  if (!centres.length || !(v.gsd > 0)) return 0;
+  const g = v.gsd, t = (v.angleDeg * Math.PI) / 180, c = Math.cos(t), s = Math.sin(t);
+  let worst = 1;
+  for (const [E, N] of centres) {
+    const i0 = Math.floor((E - edge[0]) / g), j0 = Math.floor((N - edge[1]) / g);
+    let best = 0;
+    for (let i = i0 - 3; i <= i0 + 3; i++) {
+      for (let j = j0 - 3; j <= j0 + 3; j++) {
+        const dx = edge[0] + (i + 0.5) * g - E, dy = edge[1] + (j + 0.5) * g - N;
+        const share = heldShare(dx * c + dy * s, -dx * s + dy * c, plot, v);
+        if (share > best) best = share;
+      }
+    }
+    if (best < worst) worst = best;
+  }
+  return worst;
+}
+
+/**
+ * A TRIAL ON A KNOWN GRID: the plots of a trial laid along the pixel rows, by
+ * their centres in the trial's own frame (m, x along the plots' `a` side), on
+ * a lattice whose position is known, so that the whole trial can be put where
+ * it does best. Each plot is counted where it falls: plots that are not a
+ * whole number of pixels apart sit at different places on the lattice, and
+ * the weakest of them is what the trial keeps in every plot.
+ *
+ * Returned: the fewest pure pixels any plot keeps, at the place on the grid
+ * where that is the most (sampled over `m` x `m` positions of the trial within
+ * a pixel, so it can only err low), and what the purest pixel of the weakest
+ * plot keeps there. `approx` when the plots hold so many pixels that only a
+ * few positions could be tried. For a strip (b = Infinity) the count is the
+ * pixels across it, and only x is read.
+ */
+export function seatedTrial(centres: [number, number][], plot: Plot, v: Viewing): { count: number; keeps: number; approx: boolean; at: [number, number] } {
+  const none = { count: 0, keeps: 0, approx: false, at: [0, 0] as [number, number] };
+  if (!centres.length || !(v.gsd > 0) || !(plot.a > 0) || !(plot.b > 0) || !(v.threshold > 0) || !(v.threshold < 1)) return none;
+  const g = v.gsd, strip = plot.b === Infinity;
+  const X = plot.a / 2, Y = strip ? 0 : plot.b / 2;
+  const nx = Math.ceil(X / g) + 1;
+  // A strip: the half band within which a pixel centre is pure, as fewestPure finds it.
+  const half = strip && heldShare(0, 0, plot, v) >= v.threshold ? edge(x => heldShare(x, 0, plot, v) >= v.threshold, plot.a / 2) : -1;
+  const table = strip ? null : tableFor(plot, v, X, Y);
+  // Pixel centres sit at (i + 1/2 - phase) g from a plot centre whose phase on the lattice is `phase`.
+  // The pure pixels of a plot fill one region, symmetric on both axes and growing inwards (E rises
+  // outwards), so a column of pixels at x is pure for |y| up to yTop(x): found once per x by halving,
+  // and the column's pure pixels are then counted at once. The same test as entryAt(x, y) <= 1.
+  const tops = new Map<number, number>();
+  const yTop = (ax: number): number => {
+    const key = Math.round(ax * 1e6);
+    let top = tops.get(key);
+    if (top !== undefined) return top;
+    if (entryAt(table!, ax, 0) > 1) top = -1;
+    else if (entryAt(table!, ax, Y) <= 1) top = Y;
+    else {
+      let lo = 0, hi = Y;
+      for (let k = 0; k < 44; k++) { const mid = (lo + hi) / 2; if (entryAt(table!, ax, mid) <= 1) lo = mid; else hi = mid; }
+      top = lo;
+    }
+    tops.set(key, top);
+    return top;
+  };
+  const countAt = (px: number, py: number): number => {
+    let n = 0;
+    for (let i = -nx; i <= nx; i++) {
+      const x = (i + 0.5 - px) * g;
+      if (x > X || x < -X) continue;
+      if (strip) { if (Math.abs(x) <= half) n++; continue; }
+      const top = yTop(Math.abs(x));
+      if (top < 0) continue;
+      // Rows j with |(j + 1/2 - py) g| <= top.
+      const j0 = Math.ceil(py - 0.5 - top / g - 1e-12), j1 = Math.floor(py - 0.5 + top / g + 1e-12);
+      if (j1 >= j0) n += j1 - j0 + 1;
+    }
+    return n;
+  };
+  const purestAt = (px: number, py: number): number => {
+    let best = 0;
+    for (let i = -2; i <= 1; i++) {
+      for (let j = strip ? 0 : -2; j <= (strip ? 0 : 1); j++) {
+        const share = heldShare((i + 0.5 - px) * g, strip ? 0 : (j + 0.5 - py) * g, plot, v);
+        if (share > best) best = share;
+      }
+    }
+    return best;
+  };
+  // The places of the plots on the lattice, shared by every position of the trial: whole-pixel pitches give one.
+  const pairs = strip ? [...new Set(centres.map(([x]) => +frac(x / g).toFixed(9)))].map(x => [x, 0] as [number, number])
+    : [...new Set(centres.map(([x, y]) => `${+frac(x / g).toFixed(9)},${+frac(y / g).toFixed(9)}`))].map(k => k.split(',').map(Number) as [number, number]);
+  // A strip is one axis: its positions are tried finely. A plot is tried on a grid of positions, then refined below.
+  let m = strip ? 1024 : 32;
+  while (m > 2 && m * (strip ? 1 : m) * pairs.length * (2 * nx + 1) > WORK) m -= 2;
+  let most = -1, at: [number, number] = [0, 0];
+  for (let a = 0; a < m; a++) {
+    for (let b = 0; b < (strip ? 1 : m); b++) {
+      // Off the symmetric positions by a hair, as in fewestPure.
+      const sx = a / m + 1e-4, sy = strip ? 0 : b / m + 1.7e-4;
+      let weakest = Infinity;
+      for (const [px, py] of pairs) {
+        const c = countAt(frac(px + sx), frac(py + sy));
+        if (c < weakest) { weakest = c; if (weakest <= most) break; }
+      }
+      if (weakest > most) { most = weakest; at = [sx, sy]; }
+    }
+  }
+  // THE REFINEMENT. At the smallest plot that keeps n pixels, the place on the grid that does it can be a
+  // single point (four pixels in a square plot: its centre on a pixel corner), which positions 1/32 of a
+  // pixel apart miss. The n-th smallest entry scale of a plot is continuous in its place on the grid, so
+  // the largest over the plots is climbed down from the best positions tried, as pureScales climbs, and
+  // one pixel more is counted wherever that brings it to 1 or under.
+  // Only where the sweep was fine enough to start from and the count is small enough for a pixel to
+  // matter, and within a budget of work (Neon, 2026-11-25: unbounded, large plots froze the page).
+  if (!strip && most >= 0 && m >= 8 && most <= SURE) {
+    const big = tableFor(plot, v, X * 1.15, Y * 1.15);
+    const reachX = Math.ceil((1.15 * X) / g) + 1, reachY = Math.ceil((1.15 * Y) / g) + 1;
+    const cells = (2 * reachX + 1) * (2 * reachY + 1);
+    const buf = new Float64Array(cells);
+    let spent = 0;
+    const budget = 4 * WORK;
+    const nth = (px: number, py: number, n: number): number => {
+      let k = 0;
+      spent += cells;
+      for (let i = -reachX; i <= reachX; i++) {
+        const x = (i + 0.5 - px) * g;
+        for (let j = -reachY; j <= reachY; j++) {
+          const e = entryAt(big, x, (j + 0.5 - py) * g);
+          if (e < Infinity) buf[k++] = e;
+        }
+      }
+      return n <= k ? kth(buf, k, n - 1) : 2;
+    };
+    /** The worst plot's n-th entry scale at a position; it stops at `cut`, past which the position is no better. */
+    const late = (sx: number, sy: number, n: number, cut = Infinity) => {
+      let w = 0;
+      for (const [px, py] of pairs) { const e = nth(frac(px + sx), frac(py + sy), n); if (e > w) { w = e; if (w >= cut) break; } }
+      return w;
+    };
+    for (let extra = 0; extra < 4 && spent < budget; extra++) {
+      const n = most + 1, c = 8;
+      // Starts: the lowest of a coarse sweep, a few that are not next to each other, and the place found so far.
+      const sweep: [number, number, number][] = [];
+      for (let a = 0; a < c; a++) for (let b = 0; b < c; b++) sweep.push([a / c, b / c, late(a / c, b / c, n)]);
+      sweep.sort((p1, p2) => p1[2] - p2[2]);
+      const starts: [number, number, number][] = [[at[0], at[1], late(at[0], at[1], n)]];
+      for (const q of sweep) {
+        if (starts.length > 3) break;
+        if (starts.every(o => Math.abs(o[0] - q[0]) > 1.5 / c || Math.abs(o[1] - q[1]) > 1.5 / c)) starts.push(q);
+      }
+      let found: [number, number] | null = null;
+      for (const [fa0, fb0, s0] of starts) {
+        let fa = fa0, fb = fb0, val = s0;
+        for (let step = 0.7 / c, round = 0; round < 60 && step > 1e-4 && val > 1 && spent < budget; round++) {
+          let moved = false;
+          for (let dd = 0; dd < 14; dd++) {
+            const ang = dd < 8 ? (dd * Math.PI) / 4 : round * 1.9416 + ((dd - 8) * Math.PI) / 3;
+            const na = fa + step * Math.cos(ang), nb = fb + step * Math.sin(ang), nv = late(na, nb, n, val - 1e-12);
+            if (nv < val - 1e-12) { val = nv; fa = na; fb = nb; moved = true; break; }
+          }
+          if (!moved) step *= 0.6;
+        }
+        if (val <= 1) { found = [frac(fa), frac(fb)]; break; }
+      }
+      if (!found) break;
+      // Counted at the place found, by the same test as the sweep: the climb's table is a little coarser.
+      const weakest = Math.min(...pairs.map(([px, py]) => countAt(frac(px + found![0]), frac(py + found![1]))));
+      if (weakest <= most) break;
+      most = weakest; at = found;
+    }
+  }
+  // Where no position keeps a pure pixel in every plot, the place that brings the weakest plot's purest pixel closest.
+  const weakestPurest = (sx: number, sy: number) => Math.min(...pairs.map(([px, py]) => purestAt(frac(px + sx), frac(py + sy))));
+  let keeps = weakestPurest(at[0], at[1]);
+  if (most <= 0) {
+    for (let a = 0; a < 16; a++) for (let b = 0; b < (strip ? 1 : 16); b++) keeps = Math.max(keeps, weakestPurest(a / 16, strip ? 0 : b / 16));
+  }
+  // `at`: where the trial was put, as the fraction of a pixel its own origin is moved by along x and y.
+  return { count: Math.max(0, most), keeps, approx: m < 8, at };
 }
 
 /**

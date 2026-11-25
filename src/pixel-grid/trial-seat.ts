@@ -227,6 +227,60 @@ function isBoxRing(ring: Poly, [w, s, e, n]: LngLatBounds): boolean {
   return corners === 15;
 }
 
+/**
+ * The convex hull of a field's corners, by the monotone chain. Its own small
+ * copy: imported-plan.ts has one, but brings the shapefile reader with it.
+ */
+function hullOf(points: [number, number][]): [number, number][] {
+  const pts = points.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  if (pts.length < 3) return pts;
+  const cross = (o: [number, number], a: [number, number], b: [number, number]) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const chain = (list: [number, number][]) => {
+    const out: [number, number][] = [];
+    for (const q of list) { while (out.length >= 2 && cross(out[out.length - 2], out[out.length - 1], q) <= 0) out.pop(); out.push(q); }
+    out.pop();
+    return out;
+  };
+  return chain(pts).concat(chain(pts.slice().reverse()));
+}
+
+/**
+ * THE FIELD'S OWN DIRECTION (2026-11-25: "this one could fit in if it was
+ * rotated"): the angle of the smallest rectangle that holds the field's
+ * outline, counter-clockwise from east as a trial's angle is, folded into
+ * (-45, 45]. 0 for a field that is its box, one with no outline, or one within
+ * a degree of the pixel rows: its two directions are then 0 and 90 degrees,
+ * which differ for a block trial, whose species stack one way. Null with no
+ * field. Every side of the outline's hull is tried, since the smallest
+ * rectangle has a side on one of them.
+ */
+export function fieldAngle(fieldRing: Poly | null, aoi: LngLatBounds | null, epsg: number): number | null {
+  if (!aoi) return null;
+  // A field that is its box, or has no outline, lies along the pixel rows: its directions are 0 and 90 degrees
+  // (a block trial is not the same turned a quarter, its species stacking the other way; Neon's review, 2026-11-25).
+  if (!fieldRing || fieldRing.length < 3 || isBoxRing(fieldRing, aoi)) return 0;
+  const to = proj4('EPSG:4326', crsToProj4Def(`EPSG:${epsg}`));
+  // The smallest enclosing rectangle has a side on the HULL: a notch's edges are not candidates, its chord is.
+  const pts = hullOf(fieldRing.map(p => to.forward(p) as [number, number]));
+  if (pts.length < 3) return 0;
+  let best = Infinity, deg = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length], len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (!(len > 0)) continue;
+    const ux = (b[0] - a[0]) / len, uy = (b[1] - a[1]) / len;
+    let lo = Infinity, hi = -Infinity, lo2 = Infinity, hi2 = -Infinity;
+    for (const [x, y] of pts) {
+      const p = x * ux + y * uy, q = -x * uy + y * ux;
+      if (p < lo) lo = p; if (p > hi) hi = p; if (q < lo2) lo2 = q; if (q > hi2) hi2 = q;
+    }
+    const area = (hi - lo) * (hi2 - lo2);
+    if (area < best - 1e-6) { best = area; deg = (Math.atan2(uy, ux) * 180) / Math.PI; }
+  }
+  let d = ((deg % 90) + 90) % 90;
+  if (d > 45) d -= 90;
+  return Math.abs(d) < 1 ? 0 : Math.round(d * 10) / 10;
+}
+
 /** The last seats found, by what they were found from: every satellite of the table asks for the same one. */
 const seats = new Map<string, { centre: [number, number]; clearance: number }>();
 
@@ -264,6 +318,9 @@ export function trialFitsField(
 ): boolean {
   const seat = fieldSeat(fieldRing, aoi, epsg, totalU, totalV, rotationDeg);
   if (seat) return seat.clearance > marginM;
+  // A traced outline with no seat for the trial holds none of it, its box notwithstanding (a ring with
+  // no area among them: Neon's review, 2026-11-25).
+  if (fieldRing && fieldRing.length >= 3 && !isBoxRing(fieldRing, aoi)) return false;
   const [e0, n0, e1, n1] = utmEnvelope(aoi, epsg);
   const t = (rotationDeg * Math.PI) / 180, c = Math.abs(Math.cos(t)), s = Math.abs(Math.sin(t));
   return totalU * c + totalV * s <= e1 - e0 - 2 * marginM + 1e-6 && totalU * s + totalV * c <= n1 - n0 - 2 * marginM + 1e-6;

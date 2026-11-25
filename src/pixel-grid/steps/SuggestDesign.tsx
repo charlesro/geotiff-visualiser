@@ -21,7 +21,13 @@ import { SHOW_GRID_STEP, type StepProps } from './props';
  * and what was last built live in the page shell.
  */
 
-/** What is asked. `sat` is a satellite's id, or '' for the one selected in step 2. */
+/**
+ * The satellite list's first choice: no satellite named, the coarsest of the
+ * list whose smallest trial fits the field drawn (2026-11-24). A block trial only.
+ */
+export const SUGGEST_FIT = 'fit';
+
+/** What is asked. `sat` is a satellite's id, SUGGEST_FIT, or '' for the one selected in step 2. */
 export interface SuggestAsk {
   species: number;
   reps: number;
@@ -43,6 +49,8 @@ export interface SuggestAsk {
    * smallest; a request saved before the angle existed has none.
    */
   angle?: number;
+  /** Repetitions found as the most whose trial fits the field drawn, the satellite named (2026-11-25). */
+  repsMax?: boolean;
   /** Bare ground between strips, for alternating rows or columns, in metres. None unless asked for, as the alleys above. */
   stripAlley?: number;
   /**
@@ -76,11 +84,13 @@ export interface SuggestOutcome {
   /** The experiment area's extent before the build, along the pixel rows and across them, in metres. */
   field: { u: number; v: number };
   /**
-   * The area the build made for the trial, with its size in metres: where
-   * there was none ('made'), or where the one there could not hold the trial
-   * ('replaced'). Null when the trial went into the area as it was.
+   * The area the build made for the trial, with its size in metres, where
+   * there was none. Null when the trial went into the field drawn: a field
+   * drawn is never replaced (2026-11-25).
    */
-  area: { how: 'made' | 'replaced'; u: number; v: number } | null;
+  area: { how: 'made'; u: number; v: number } | null;
+  /** The smallest trial, when it does not fit the field drawn and nothing was built: its extent in metres. */
+  tooBig?: { footprint: [number, number] };
   /**
    * What the satellites table counts for this trial on this field, plot by
    * plot: the fewest pure pixels, and the fewest that hold within the CE90 in
@@ -97,20 +107,44 @@ export interface SuggestOutcome {
   cells?: { found: CheckerSuggestion | null };
   /** Why nothing was built, when something went wrong. */
   error?: string;
+  /**
+   * When the satellite was the coarsest that fits: the satellite tried just
+   * before the one built, coarser and too large for the field, with the trial
+   * it needed (null when none up to 1000 m was found); `none` when no
+   * satellite of the list fits.
+   */
+  fit?: { coarser: { name: string; res: number; footprint: [number, number] | null } | null; none: boolean };
+  /**
+   * When the repetitions were the most that fit: how many (0 when not one
+   * does), and the trial one more would need (null past 20, the most offered;
+   * its footprint null when none up to 1000 m was found).
+   */
+  most?: { reps: number; next: { reps: number; footprint: [number, number] | null } | null };
+  /** True when the trial did not fit at the angle asked and was turned along the field to fit (2026-11-25). */
+  alongField?: boolean;
 }
 
 /** A length as the design fields show it. */
 const m = (v: number) => String(+v.toFixed(2));
 
 export function SuggestDesign(p: StepProps) {
-  const { ask, setAsk, busy, outcome, build } = p.suggest;
-  const { sourceId, pxSize, sigmaX, sigmaY, ce90At } = p.gridApi;
+  const { ask, setAsk, busy, progress, outcome, build } = p.suggest;
+  const { sourceId, pxSize, sigmaX, sigmaY, ce90At, geoTyped, geoManual } = p.gridApi;
   const { threshold, setThreshold } = p.exp;
+  // Purity with its complement beside it, the epsilon the documentation's formulas use (2026-11-24).
+  const purityLabel = `Purity (ε = ${100 - threshold} %)`;
   const res = p.gridApi.build?.res ?? pxSize;
   // The satellites of the table, the one selected as it stands in step 2.
   const sats = ladderRungs({ id: sourceId, res, sigmaX, sigmaY });
+  // The coarsest satellite that fits the field: block trials only, on a field drawn.
+  const fit = ask.sat === SUGGEST_FIT && p.exp.pattern === 'block';
+  // The most repetitions that fit the field, for the satellite named.
+  const most = !!ask.repsMax && p.exp.pattern === 'block' && !fit;
+  const noField = (fit || most) && !p.area.aoi;
   const sat = sats.find(g => g.id === ask.sat) ?? sats.find(g => g.id === sourceId) ?? sats[0];
-  const ce90 = sat ? Math.round(ce90At(sat.res, sat.id) * 100) / 100 : 0;
+  // Coarsest that fits holds each satellite to its own CE90 as delivered, or to the one typed in the
+  // Satellite fold, for all of them (gridApi.ce90At): a CE90 of 0 typed leaves nothing to hold (Neon, 2026-11-25).
+  const ce90 = fit ? (geoTyped ? Math.round(geoManual * 100) / 100 : 1) : sat ? Math.round(ce90At(sat.res, sat.id) * 100) / 100 : 0;
   const set = <K extends keyof SuggestAsk>(k: K) => (v: SuggestAsk[K]) => setAsk({ ...ask, [k]: v });
   // Alternating rows or columns: two crops in strips, sized by the pixels across a strip.
   const strips = p.exp.pattern === 'row' || p.exp.pattern === 'col';
@@ -122,46 +156,63 @@ export function SuggestDesign(p: StepProps) {
       {checker ? (
         <div className="grid grid-cols-3 gap-2">
           <NumField label="Pixels / cell" value={p.wantPure} onChange={p.setWantPure} min={1} max={400} />
-          <NumField label="Purity" value={threshold} onChange={setThreshold} min={50} max={99} unit="%" />
+          <NumField label={purityLabel} value={threshold} onChange={setThreshold} min={50} max={99} unit="%" />
           <NumField label="Alley" value={ask.stripAlley ?? 0} onChange={set('stripAlley')} min={0} max={100} step={0.5} unit="m" />
         </div>
       ) : strips ? (
         <div className="grid grid-cols-3 gap-2">
           <NumField label="Pixels / strip" value={ask.perStrip ?? PER_STRIP_DEFAULT} onChange={set('perStrip')} min={1} max={2000} />
-          <NumField label="Purity" value={threshold} onChange={setThreshold} min={50} max={99} unit="%" />
+          <NumField label={purityLabel} value={threshold} onChange={setThreshold} min={50} max={99} unit="%" />
           <NumField label="Alley" value={ask.stripAlley ?? 0} onChange={set('stripAlley')} min={0} max={100} step={0.5} unit="m" />
         </div>
       ) : (<>
       <div className="grid grid-cols-3 gap-2">
         <NumField label="Species" value={ask.species} onChange={set('species')} min={2} max={8} />
-        <NumField label="Repetitions" value={ask.reps} onChange={set('reps')} min={1} max={20} />
+        {/* A count typed is a count asked for: it ends the search for the most that fit. */}
+        <NumField label={most ? 'Repetitions (most)' : 'Repetitions'} value={ask.reps} onChange={v => setAsk({ ...ask, reps: v, repsMax: false })} min={1} max={20} />
         <NumField label="Pixels / plot" value={p.wantPure} onChange={p.setWantPure} min={1} max={400} />
       </div>
       <div className="grid grid-cols-3 gap-2">
-        {/* The page's own threshold, the slider under "Noise & purity threshold": one figure, two places to set it. */}
-        <NumField label="Purity" value={threshold} onChange={setThreshold} min={50} max={99} unit="%" />
+        {/* The page's own threshold, also set in the Design section: one figure, two places to set it. */}
+        <NumField label={purityLabel} value={threshold} onChange={setThreshold} min={50} max={99} unit="%" />
         <NumField label="Plot alley" value={ask.plotAlley} onChange={set('plotAlley')} min={0} max={100} step={0.5} unit="m" />
         <NumField label="Block alley" value={ask.blockAlley} onChange={set('blockAlley')} min={0} max={100} step={0.5} unit="m" />
       </div>
       </>)}
       <div className="grid grid-cols-3 items-end gap-2">
-        <select className={`${SELECT} col-span-2`} value={sat?.id ?? ''} onChange={e => set('sat')(e.target.value)} aria-label="Satellite">
+        <select className={`${SELECT} col-span-2`} value={fit ? SUGGEST_FIT : sat?.id ?? ''} onChange={e => set('sat')(e.target.value)} aria-label="Satellite">
+          {p.exp.pattern === 'block' && <option value={SUGGEST_FIT}>Coarsest that fits the field</option>}
           {sats.map(g => <option key={g.id} value={g.id}>{g.name} · {g.res} m{g.id === sourceId ? (SHOW_GRID_STEP ? ' (step 2)' : ' (now)') : ''}</option>)}
         </select>
-        <NumField label="Angle" value={ask.angle ?? 0} onChange={set('angle')} min={-90} max={90} unit="°" />
+        <NumField label="Angle" value={Math.round((ask.angle ?? 0) * 10) / 10} onChange={set('angle')} min={-90} max={90} step={0.1} unit="°" />
       </div>
       {ce90 > 0 && (
         <label className="flex items-center gap-2 text-[14px] text-neutral-400">
           <input type="checkbox" checked={ask.hold} onChange={e => set('hold')(e.target.checked)} />
-          <span>Pixels must hold within the CE90 ({ce90} m)</span>
+          <span>Pixels must hold within the CE90{fit && !geoTyped ? '' : ` (${ce90} m)`}</span>
+        </label>
+      )}
+      {p.exp.pattern === 'block' && !fit && (
+        <label className="flex items-center gap-2 text-[14px] text-neutral-400">
+          <input type="checkbox" checked={!!ask.repsMax} onChange={e => set('repsMax')(e.target.checked)} />
+          <span>As many repetitions as fit the field</span>
         </label>
       )}
       {/* No area needed: the build makes one around the trial when there is none, or none large enough. */}
-      <button type="button" onClick={build} disabled={busy || !sat}
+      <button type="button" onClick={build} disabled={busy || !sat || noField}
         className="flex w-full items-center justify-center gap-2 rounded-md bg-sky-500 px-3 py-1.5 text-[15px] font-medium text-white transition-colors hover:bg-sky-400 disabled:opacity-50">
-        {busy && <Spinner className="h-3.5 w-3.5" />} {checker ? 'Build this checkerboard' : strips ? 'Build these strips' : 'Build this trial'}
+        {busy && <Spinner className="h-3.5 w-3.5" />} {noField ? 'Draw the field first' : checker ? 'Build this checkerboard' : strips ? 'Build these strips' : 'Build this trial'}
       </button>
-      {outcome && <Outcome o={outcome} />}
+      {/* How far Build has got: one step per satellite or count of repetitions tried, then the trial (2026-11-25). */}
+      {busy && progress && (
+        <div className="space-y-1" role="progressbar" aria-valuemin={0} aria-valuemax={progress.total} aria-valuenow={progress.done} aria-label="Build">
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
+            <div className="h-full rounded-full bg-sky-500 transition-[width] duration-200" style={{ width: `${Math.round((100 * (progress.done + 0.5)) / Math.max(1, progress.total))}%` }} />
+          </div>
+          <p className="text-[13px] text-neutral-500">{progress.what}</p>
+        </div>
+      )}
+      {!busy && outcome && <Outcome o={outcome} />}
     </>
   );
 }
@@ -172,6 +223,29 @@ function Outcome({ o }: { o: SuggestOutcome }) {
   if (o.error) return <p className={`${box} border-rose-500/40 bg-rose-500/5 text-rose-200`}>{o.error}</p>;
   if (o.strips) return <StripOutcome o={o} box={box} />;
   if (o.cells) return <CellOutcome o={o} box={box} />;
+  if (o.most && o.most.reps === 0) {
+    return (
+      <p className={`${box} border-amber-400/40 bg-amber-500/5 text-amber-200`}>
+        Not one repetition fits the field ({m(Math.round(o.field.u))} × {m(Math.round(o.field.v))} m) for {o.sat}. Ask for fewer species or pixels, a lower purity, or draw a larger field.
+      </p>
+    );
+  }
+  if (o.fit?.none) {
+    return (
+      <p className={`${box} border-amber-400/40 bg-amber-500/5 text-amber-200`}>
+        No satellite of the list fits this trial in the field ({m(Math.round(o.field.u))} × {m(Math.round(o.field.v))} m). Ask for fewer species, repetitions or pixels, a lower purity, or draw a larger field.
+      </p>
+    );
+  }
+  if (o.tooBig) {
+    const [tu, tv] = o.tooBig.footprint;
+    return (
+      <p className={`${box} border-amber-400/40 bg-amber-500/5 text-amber-200`}>
+        Nothing was built: the smallest trial for {o.sat} · {o.res} m, {m(Math.round(tu))} × {m(Math.round(tv))} m, does not fit the field ({m(Math.round(o.field.u))} × {m(Math.round(o.field.v))} m) with a pixel to spare all round.
+        {' '}Try <i>As many repetitions as fit the field</i>, or <i>Coarsest that fits the field</i>.
+      </p>
+    );
+  }
   const b = o.built;
   if (!b) {
     return (
@@ -185,14 +259,32 @@ function Outcome({ o }: { o: SuggestOutcome }) {
   const d = b.design;
   const rows = Math.ceil(d.nBlocks / d.blocksPerRow);
   const strong = 'font-semibold text-white';
-  // The table counts within the CE90 in force on the page, whatever the box above says.
-  const table = o.onField ? (o.onField.held ?? o.onField.pure) : null;
+  // The table's count of the same reading: within the CE90 when the build held to it, pure otherwise
+  // (comparing the table's held count with pure pixels asked for warned of an edge that was far away; Neon, 2026-11-25).
+  const table = o.onField ? (b.held !== null ? o.onField.held : o.onField.pure) : null;
   const asked = b.held ?? b.pure;
   return (
     <div className={`${box} border-white/10 bg-white/[0.02] text-neutral-300`}>
+      {o.fit && (
+        <p>
+          Coarsest that fits: <b className={strong}>{o.sat} · {o.res} m</b>.
+          {o.fit.coarser && <> {o.fit.coarser.name} · {o.fit.coarser.res} m {o.fit.coarser.footprint
+            ? <>needs a trial of {m(Math.round(o.fit.coarser.footprint[0]))} × {m(Math.round(o.fit.coarser.footprint[1]))} m, and a pixel to spare all round.</>
+            : <>has no plot up to 1000 m that keeps the pixels.</>}</>}
+        </p>
+      )}
+      {o.most && (
+        <p>
+          Most repetitions that fit: <b className={strong}>{o.most.reps}</b>.
+          {o.most.next && <> {o.most.next.reps} {o.most.next.footprint
+            ? <>would need a trial of {m(Math.round(o.most.next.footprint[0]))} × {m(Math.round(o.most.next.footprint[1]))} m, and a pixel to spare all round.</>
+            : <>have no trial up to 1000 m.</>}</>}
+          {!o.most.next && <> 20 is the most offered.</>}
+        </p>
+      )}
       <p>
         Plots <b className={strong}>{m(d.plotLength)} × {m(d.plotWidth)} m</b> ({b.pitchPx[0]} × {b.pitchPx[1]} px{d.plotAlley > 0 || d.blockAlley > 0 ? ' with alleys' : ', touching'}),
-        {' '}{rows === 1 ? '1 row' : `${rows} rows`} of blocks, trial {m(b.footprint[0])} × {m(b.footprint[1])} m{b.angle !== 0 && <>, turned {b.angle}°</>}.
+        {' '}{rows === 1 ? '1 row' : `${rows} rows`} of blocks, trial {m(b.footprint[0])} × {m(b.footprint[1])} m{b.angle !== 0 ? <>, turned {b.angle}°{o.alongField && ' along the field'}</> : o.alongField && ', along the field'}.
       </p>
       <p>
         {/* Turned, the plots do not all keep the same count: the figure is the worst plot's. */}
@@ -205,9 +297,7 @@ function Outcome({ o }: { o: SuggestOutcome }) {
       )}
       {o.area && (
         <p className="text-neutral-400">
-          {o.area.how === 'made'
-            ? <>Experiment area made around it: {m(Math.round(o.area.u))} × {m(Math.round(o.area.v))} m.</>
-            : <>The area ({m(Math.round(o.field.u))} × {m(Math.round(o.field.v))} m) was too small: replaced by one of {m(Math.round(o.area.u))} × {m(Math.round(o.area.v))} m around the trial.</>}
+          Experiment area made around it: {m(Math.round(o.area.u))} × {m(Math.round(o.area.v))} m.
         </p>
       )}
       {b.fits === false && (

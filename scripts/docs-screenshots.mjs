@@ -6,7 +6,14 @@
  * It builds the designer, opens it in a headless Chrome with every outside
  * request refused (so the map has no tiles under it: only what the designer
  * draws), seeds it with the trial of the documentation's first example, and
- * writes docs-img/NAME.png with docs-img/shots.json, the size of each.
+ * writes docs-img/NAME.svg with docs-img/shots.json, the size of each.
+ *
+ * SVG, not PNG (2026-11-25: "the screen shots look blurry when zooming can
+ * you make them svg"): what is pictured is copied out of the page, each
+ * element with the styles the browser computed for it, into an SVG
+ * foreignObject (toSvg below), so its text, borders and drawings are redrawn
+ * sharp at any zoom. A canvas, which is how the map draws its pixels, has no
+ * shapes to copy: it goes in as its own image, taken at twice the resolution.
  * scripts/docs-figures.mjs then puts them on the page. With names given, only
  * those pictures are taken again.
  *
@@ -70,6 +77,201 @@ const trialFile = () => {
   return { name: 'trial.geojson', mimeType: 'application/geo+json', buffer: Buffer.from(JSON.stringify({ type: 'FeatureCollection', features })) };
 };
 
+/**
+ * IN THE PAGE: an element, or the rectangle `clip` of the page, as an SVG
+ * document. The element is copied with the styles the browser computed for
+ * each of its parts written on it (only those that differ from a bare element
+ * of the same kind, or that an inherited one does not already give), inside a
+ * foreignObject the size of what is pictured, on the background behind it.
+ * A canvas becomes an image of itself; an image, an image held in the file.
+ */
+function toSvg(target, clip) {
+  const SVG = 'http://www.w3.org/2000/svg';
+  let root = target;
+  if (!root) {
+    // The smallest element that holds the rectangle.
+    root = document.elementFromPoint(clip.x + clip.width / 2, clip.y + clip.height / 2);
+    const holds = el => { const r = el.getBoundingClientRect(); return r.left <= clip.x + 0.5 && r.top <= clip.y + 0.5 && r.right >= clip.x + clip.width - 0.5 && r.bottom >= clip.y + clip.height - 0.5; };
+    // Not a canvas, an image or a drawing, which can be larger than the picture and still be only one of its layers.
+    const layer = el => /^(canvas|img|svg|video)$/.test(el.localName) || el.namespaceURI === 'http://www.w3.org/2000/svg';
+    while (root && root !== document.body && (layer(root) || !holds(root))) root = root.parentElement;
+    root = root ?? document.body;
+    // And everything that shows in the rectangle, which may not be the map's: a panel laid over it, one that
+    // lets the mouse through to the map, and so is found by where it is, not by what a click would reach.
+    for (const el of document.body.querySelectorAll('*')) {
+      if (root === document.body) break;
+      if (root.contains(el) || el.contains(root)) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1 || r.right <= clip.x || r.left >= clip.x + clip.width || r.bottom <= clip.y || r.top >= clip.y + clip.height) continue;
+      const cs = getComputedStyle(el);
+      if (cs.visibility === 'hidden' || cs.display === 'none' || +cs.opacity === 0) continue;
+      while (root !== document.body && !root.contains(el)) root = root.parentElement;
+    }
+  }
+  const rect = root.getBoundingClientRect();
+  const box = clip ?? { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+  const W = Math.round(box.width), H = Math.round(box.height);
+
+  // What a bare element of each kind has, to leave out what is no more than that.
+  const sandbox = document.createElement('iframe');
+  sandbox.style.cssText = 'position:fixed;left:-10000px;top:0;width:300px;height:300px;border:0;visibility:hidden';
+  document.body.appendChild(sandbox);
+  const sdoc = sandbox.contentDocument;
+  sdoc.open(); sdoc.write('<!doctype html><html><head></head><body><svg xmlns="http://www.w3.org/2000/svg"></svg></body></html>'); sdoc.close();
+  const bare = new Map();
+  // What the page's body gives a child that sets nothing: a property a bare element has otherwise is set by
+  // the browser's own sheet (a button's font, a heading's size), and has to be written even where the page inherits it.
+  const plain = (() => { const cs = sandbox.contentWindow.getComputedStyle(sdoc.body), out = {}; for (let i = 0; i < cs.length; i++) out[cs[i]] = cs.getPropertyValue(cs[i]); return out; })();
+  const bareOf = el => {
+    const key = `${el.namespaceURI}|${el.localName}|${el.getAttribute('type') ?? ''}`;
+    if (bare.has(key)) return bare.get(key);
+    const d = sdoc.createElementNS(el.namespaceURI, el.localName);
+    if (el.getAttribute('type')) d.setAttribute('type', el.getAttribute('type'));
+    (el.namespaceURI === SVG && el.localName !== 'svg' ? sdoc.querySelector('svg') : sdoc.body).appendChild(d);
+    const cs = sandbox.contentWindow.getComputedStyle(d), out = {};
+    for (let i = 0; i < cs.length; i++) out[cs[i]] = cs.getPropertyValue(cs[i]);
+    d.remove();
+    bare.set(key, out);
+    return out;
+  };
+  // Properties a child takes from its parent: written only where they change.
+  const INHERITED = new Set(['color', 'font-family', 'font-size', 'font-style', 'font-variant', 'font-weight', 'font-stretch', 'font-feature-settings',
+    'font-variation-settings', 'font-kerning', 'font-optical-sizing', 'font-synthesis', 'font-synthesis-weight', 'font-synthesis-style', 'font-synthesis-small-caps',
+    'font-variant-ligatures', 'font-variant-numeric', 'font-variant-caps', 'font-variant-east-asian', 'font-variant-alternates', 'font-variant-position',
+    'font-size-adjust', 'font-palette', 'line-height', 'letter-spacing', 'word-spacing', 'text-align', 'text-align-last', 'text-indent', 'text-transform',
+    'text-shadow', 'text-rendering', 'text-underline-position', 'text-decoration-skip-ink', 'text-size-adjust', '-webkit-text-size-adjust', 'white-space',
+    'white-space-collapse', 'text-wrap', 'text-wrap-mode', 'text-wrap-style', 'word-break', 'overflow-wrap', 'hyphens', 'tab-size', 'direction',
+    'writing-mode', 'visibility', 'list-style-type', 'list-style-position', 'list-style-image', 'quotes', 'fill', 'fill-opacity', 'fill-rule', 'stroke',
+    'stroke-width', 'stroke-opacity', 'stroke-linecap', 'stroke-linejoin', 'stroke-dasharray', 'stroke-dashoffset', 'stroke-miterlimit', 'paint-order',
+    'color-scheme', '-webkit-font-smoothing', 'border-collapse', 'border-spacing', 'caption-side', 'empty-cells', 'image-rendering', 'shape-rendering',
+    'text-anchor', 'dominant-baseline', 'clip-rule', 'color-interpolation', 'color-interpolation-filters', 'marker-start', 'marker-mid', 'marker-end',
+    '-webkit-text-fill-color', '-webkit-text-stroke-color', '-webkit-text-stroke-width', 'accent-color', 'line-break', 'orphans', 'widows',
+    'text-emphasis-color', 'text-emphasis-position', 'text-emphasis-style', 'text-orientation', 'hanging-punctuation', 'forced-color-adjust',
+    'print-color-adjust', 'math-depth', 'math-style', 'ruby-position', 'text-combine-upright', 'hyphenate-character', 'hyphenate-limit-chars']);
+  // What a still picture has no use for.
+  const NEVER = /^(transition|animation|will-change|cursor|pointer-events|user-select|-webkit-user-|caret-color|view-transition|scroll-|overscroll-|touch-action|content-visibility|contain-intrinsic|interpolate-size|anchor-|position-try|-webkit-tap|-webkit-locale|-webkit-rtl|-webkit-highlight)/;
+  // Logical properties: in a page written left to right, top to bottom, the physical ones say the same.
+  const LOGICAL = /^(margin|padding|border|inset|scroll-margin|scroll-padding|overflow|contain-intrinsic)-(block|inline)|^(min-|max-)?(block|inline)-size$|^border-(start|end)-(start|end)-radius$/;
+  // Elements the browser's own sheet gives a colour or a font of their own (a button's text, a link's blue),
+  // even where that happens to equal the page's default: what they inherit on the page is always written.
+  const OWN = new Set(['button', 'input', 'select', 'textarea', 'option', 'optgroup', 'legend', 'fieldset', 'meter', 'progress', 'a', 'mark', 'abbr',
+    'th', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'b', 'strong', 'code', 'pre', 'kbd', 'samp', 'small', 'sub', 'sup', 'summary', 'dialog']);
+  const SIZES = new Set(['width', 'height', 'min-width', 'min-height', 'max-width', 'max-height', 'flex-basis']);
+  // An SVG shape's geometry is in its attributes: as styles, "auto" would undo them.
+  const GEOMETRY = new Set(['x', 'y', 'cx', 'cy', 'r', 'rx', 'ry', 'width', 'height', 'd']);
+  const KEEP_HTML = new Set(['type', 'value', 'checked', 'selected', 'colspan', 'rowspan', 'src', 'alt', 'width', 'height', 'disabled', 'dir', 'open', 'id']);
+
+  const styleOf = (el, cs, parentCs, pseudo) => {
+    const svgShape = el.namespaceURI === SVG && el.localName !== 'svg' && !pseudo;
+    const def = bareOf(el);
+    let css = '';
+    for (let i = 0; i < cs.length; i++) {
+      const p = cs[i];
+      // Variables are already resolved into the values that use them; logical sides repeat the physical ones.
+      if (p.startsWith('--') || LOGICAL.test(p) || NEVER.test(p) || (svgShape && GEOMETRY.has(p))) continue;
+      // A colour or style of a line that is not drawn.
+      const side = /^border-(top|right|bottom|left)-(color|style)$/.exec(p);
+      if (side && cs.getPropertyValue(`border-${side[1]}-width`) === '0px') continue;
+      if (p === 'outline-color' && cs.getPropertyValue('outline-style') === 'none') continue;
+      if (p === 'text-decoration-color' && cs.getPropertyValue('text-decoration-line') === 'none') continue;
+      if (p === 'column-rule-color' && cs.getPropertyValue('column-rule-style') === 'none') continue;
+      if (p === 'row-rule-color' && cs.getPropertyValue('row-rule-style') === 'none') continue;
+      // Where a turn or a perspective would pivot, with none.
+      if (p === 'transform-origin' && cs.getPropertyValue('transform') === 'none' && cs.getPropertyValue('rotate') === 'none' && cs.getPropertyValue('scale') === 'none') continue;
+      if (p === 'perspective-origin' && cs.getPropertyValue('perspective') === 'none') continue;
+      if ((p === '-webkit-text-fill-color' || p === '-webkit-text-stroke-color' || p === 'text-emphasis-color') && cs.getPropertyValue(p) === cs.getPropertyValue('color')) continue;
+      let v = cs.getPropertyValue(p);
+      // A size is given to the thousandth, and laid out to the 64th: rounded down, a box can come out a hair
+      // narrower than its own text, which then wraps. A thousandth more stays within the same 64th.
+      if (SIZES.has(p) && /^\d+\.\d+px$/.test(v)) v = `${(parseFloat(v) + 0.001).toFixed(3)}px`;
+      if (INHERITED.has(p) && parentCs) { if (v === parentCs.getPropertyValue(p) && !OWN.has(el.localName) && (svgShape || def[p] === plain[p])) continue; }
+      else if (v === def[p]) continue;
+      css += `${p}:${v};`;
+    }
+    return css;
+  };
+  const pseudoOf = (el, which, cs) => {
+    const ps = getComputedStyle(el, which), content = ps.getPropertyValue('content');
+    if (!content || content === 'none' || content === 'normal') return null;
+    const span = document.createElement('span');
+    span.setAttribute('style', styleOf(el, ps, cs, true));
+    span.textContent = content.replace(/^["']|["']$/g, '');
+    return span;
+  };
+  const copy = (node, parentCs) => {
+    if (node.nodeType === 3) return document.createTextNode(node.textContent);
+    if (node.nodeType !== 1) return null;
+    const el = node, cs = getComputedStyle(el);
+    if (cs.display === 'none') return null;
+    let out;
+    if (el.localName === 'canvas') {
+      out = document.createElement('img');
+      // Only the part inside the picture: the rest left clear, which costs next to nothing to keep.
+      try {
+        const r = el.getBoundingClientRect(), sx = el.width / (r.width || 1), sy = el.height / (r.height || 1);
+        const x0 = Math.max(0, Math.floor((box.x - r.left) * sx)), y0 = Math.max(0, Math.floor((box.y - r.top) * sy));
+        const x1 = Math.min(el.width, Math.ceil((box.x + box.width - r.left) * sx)), y1 = Math.min(el.height, Math.ceil((box.y + box.height - r.top) * sy));
+        const c = document.createElement('canvas');
+        c.width = el.width; c.height = el.height;
+        if (x1 > x0 && y1 > y0) c.getContext('2d').drawImage(el, x0, y0, x1 - x0, y1 - y0, x0, y0, x1 - x0, y1 - y0);
+        // WebP: a twentieth of the PNG for the map's coloured pixels, with no difference to see.
+        out.setAttribute('src', c.toDataURL('image/webp', 0.9));
+      } catch { /* a canvas tainted by another site: none here */ }
+    } else if (el.localName === 'img' && el.src && !el.src.startsWith('data:')) {
+      out = document.createElement('img');
+      try { const c = document.createElement('canvas'); c.width = el.naturalWidth; c.height = el.naturalHeight; c.getContext('2d').drawImage(el, 0, 0); out.setAttribute('src', c.toDataURL('image/png')); } catch { /* left empty */ }
+    } else {
+      out = el.cloneNode(false);
+      for (const a of [...out.attributes]) {
+        if (a.name === 'class' || a.name === 'style' || a.name.startsWith('data-') || a.name.startsWith('aria-') || a.name.startsWith('on')) out.removeAttribute(a.name);
+        else if (el.namespaceURI !== SVG && !KEEP_HTML.has(a.name)) out.removeAttribute(a.name);
+      }
+    }
+    // No scrollbar: a picture is not scrolled, and a scrollbar that takes room on some computers would move what is beside it.
+    out.setAttribute('style', styleOf(el, cs, parentCs, false) + (/auto|scroll/.test(cs.overflowX + cs.overflowY) ? 'scrollbar-width:none;' : ''));
+    // What a field holds is its value, not its attribute.
+    if (el.localName === 'input') {
+      if (el.type === 'checkbox' || el.type === 'radio') { if (el.checked) out.setAttribute('checked', 'checked'); else out.removeAttribute('checked'); }
+      else out.setAttribute('value', el.value);
+    }
+    if (el.localName === 'textarea') out.textContent = el.value;
+    // A part wholly outside the picture keeps its box, so that the rest lies where it did, and nothing in it.
+    const r = el.getBoundingClientRect();
+    if (el !== root && r.width >= 1 && r.height >= 1 && (r.right <= box.x || r.left >= box.x + box.width || r.bottom <= box.y || r.top >= box.y + box.height)) return out;
+    const before = el.namespaceURI === SVG ? null : pseudoOf(el, '::before', cs);
+    if (before) out.appendChild(before);
+    if (el.localName !== 'canvas' && el.localName !== 'textarea') for (const ch of el.childNodes) { const c = copy(ch, cs); if (c) out.appendChild(c); }
+    const after = el.namespaceURI === SVG ? null : pseudoOf(el, '::after', cs);
+    if (after) out.appendChild(after);
+    if (el.localName === 'select') [...out.querySelectorAll('option')].forEach((o, i) => { if (i === el.selectedIndex) o.setAttribute('selected', 'selected'); else o.removeAttribute('selected'); });
+    // A part scrolled inside is shown as it is scrolled.
+    if ((el.scrollTop || el.scrollLeft) && out.firstElementChild) {
+      const inner = out.firstElementChild;
+      inner.setAttribute('style', `${inner.getAttribute('style')}translate:${-el.scrollLeft}px ${-el.scrollTop}px;`);
+    }
+    return out;
+  };
+
+  const body = copy(root, null);
+  sandbox.remove();
+  // Where it sits in the picture: the element's own place, less the corner of the rectangle.
+  body.setAttribute('style', `${body.getAttribute('style')}position:absolute;left:${rect.left - box.x}px;top:${rect.top - box.y}px;margin:0;`);
+  // The background behind it, as the page shows it.
+  let under = root.parentElement, bg = 'rgba(0, 0, 0, 0)';
+  while (under && /rgba\(.*,\s*0\)$|transparent/.test(bg)) { bg = getComputedStyle(under).backgroundColor; under = under.parentElement; }
+  if (/rgba\(.*,\s*0\)$|transparent/.test(bg)) bg = getComputedStyle(document.body).backgroundColor;
+  const wrap = document.createElement('div');
+  wrap.setAttribute('style', `position:relative;width:${W}px;height:${H}px;overflow:hidden;background:${bg};`);
+  wrap.appendChild(body);
+  const svg = document.createElementNS(SVG, 'svg');
+  svg.setAttribute('width', String(W)); svg.setAttribute('height', String(H)); svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  const fo = document.createElementNS(SVG, 'foreignObject');
+  fo.setAttribute('x', '0'); fo.setAttribute('y', '0'); fo.setAttribute('width', String(W)); fo.setAttribute('height', String(H));
+  fo.appendChild(wrap);
+  svg.appendChild(fo);
+  return { w: W, h: H, svg: new XMLSerializer().serializeToString(svg), from: `${root.localName}${root.id ? '#' + root.id : ''}` };
+}
+
 fs.mkdirSync(OUT, { recursive: true });
 const sizes = fs.existsSync(path.join(OUT, 'shots.json')) ? JSON.parse(fs.readFileSync(path.join(OUT, 'shots.json'), 'utf8')) : {};
 let browser;
@@ -79,8 +281,10 @@ const errors = [];
 /** A page of the designer seeded with `seed`, in a window `width` by `height`. */
 const open = async (seed, width, height, ready = 'text=Pixel Grid Designer') => {
   // English figures in the number fields, whatever the computer taking the pictures writes them like.
-  const ctx = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: 1, locale: 'en-US' });
+  // Twice the pixels: only a canvas keeps them (the map's), and it is the one part of a picture that is not redrawn sharp.
+  const ctx = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: 2, locale: 'en-US' });
   await ctx.route(u => !u.href.startsWith(origin), r => r.abort());
+  await ctx.addInitScript(`window.__toSvg = ${toSvg.toString()};`);
   await ctx.addInitScript(values => { if (localStorage.getItem('pgrid.v1.pattern')) return; for (const [k, v] of Object.entries(values)) localStorage.setItem('pgrid.v1.' + k, JSON.stringify(v)); }, { ...SEED, ...seed });
   const page = await ctx.newPage();
   page.on('pageerror', err => errors.push(String(err)));
@@ -92,20 +296,24 @@ const open = async (seed, width, height, ready = 'text=Pixel Grid Designer') => 
 /** Write one picture: an element, or a rectangle of the page. */
 const save = async (name, target, page) => {
   if (!want(name)) return;
-  const file = path.join(OUT, `${name}.png`);
+  const file = path.join(OUT, `${name}.svg`);
   // A number field is written in the browser's own language, which on a Mac is the computer's: a French one
   // showed 0,595 beside 7.15 m, and neither the page's language nor the browser's switches change that. For
   // the time of the picture the fields are plain text, which shows the value as the page holds it, 0.595.
   const pg = page ?? target.page();
   await pg.evaluate(() => document.querySelectorAll('input[type=number]').forEach(el => { el.setAttribute('data-number', ''); el.type = 'text'; }));
+  let shot;
   try {
-    if (target.screenshot) await target.screenshot({ path: file }); else await pg.screenshot({ path: file, clip: target });
+    if (target.screenshot) { await target.scrollIntoViewIfNeeded(); shot = await target.evaluate(el => window.__toSvg(el, null)); }
+    else shot = await pg.evaluate(clip => window.__toSvg(null, clip), target);
   } finally {
     await pg.evaluate(() => document.querySelectorAll('input[data-number]').forEach(el => { el.type = 'number'; el.removeAttribute('data-number'); }));
   }
-  const buf = fs.readFileSync(file);
-  sizes[name] = { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) };
-  console.log(`  ${name}.png  ${sizes[name].w} x ${sizes[name].h}  ${Math.round(buf.length / 1024)} kB`);
+  fs.writeFileSync(file, shot.svg);
+  // The picture it replaces, from before the pictures were SVG.
+  fs.rmSync(path.join(OUT, `${name}.png`), { force: true });
+  sizes[name] = { w: shot.w, h: shot.h };
+  console.log(`  ${name}.svg  ${sizes[name].w} x ${sizes[name].h}  ${Math.round(shot.svg.length / 1024)} kB${target.screenshot ? '' : `, from ${shot.from}`}`);
 };
 /** A fold of step 2 by the start of its title: its row and what it holds. */
 const fold = (aside, title) => aside.locator('button[aria-expanded]', { hasText: title }).first().locator('xpath=..');
@@ -141,7 +349,6 @@ try {
     await save('fold-suggest', suggest);
     await save('fold-plot-size', await openFold(aside, 'Plot size required', 1500));
     await save('fold-curves', await openFold(aside, 'Growth curves', 2500));
-    await save('fold-noise', await openFold(aside, 'Noise'));
     await aside.locator('section > button', { hasText: 'Experiment area' }).click();
     await page.waitForTimeout(700);
     await save('step-area', aside.locator('section').first());
@@ -217,5 +424,5 @@ try {
   server.close();
 }
 fs.writeFileSync(path.join(OUT, 'shots.json'), JSON.stringify(Object.fromEntries(Object.entries(sizes).sort(([a], [b]) => a.localeCompare(b))), null, 1) + '\n');
-const total = fs.readdirSync(OUT).filter(f => f.endsWith('.png')).reduce((a, f) => a + fs.statSync(path.join(OUT, f)).size, 0);
+const total = fs.readdirSync(OUT).filter(f => f.endsWith('.svg')).reduce((a, f) => a + fs.statSync(path.join(OUT, f)).size, 0);
 console.log(`${Object.keys(sizes).length} pictures in docs-img, ${Math.round(total / 1024)} kB in all${errors.length ? `; page errors: ${errors.slice(0, 3).join(' | ')}` : ''}`);

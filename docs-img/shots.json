@@ -21,27 +21,23 @@
  },
  "fold-budget": {
   "w": 397,
-  "h": 844
+  "h": 332
  },
  "fold-curves": {
   "w": 397,
-  "h": 352
+  "h": 443
  },
  "fold-design": {
   "w": 397,
-  "h": 360
+  "h": 430
  },
  "fold-design-rows": {
   "w": 397,
-  "h": 174
+  "h": 244
  },
  "fold-import": {
   "w": 397,
-  "h": 674
- },
- "fold-noise": {
-  "w": 397,
-  "h": 160
+  "h": 744
  },
  "fold-plot-size": {
   "w": 397,
@@ -49,11 +45,11 @@
  },
  "fold-satellite": {
   "w": 397,
-  "h": 283
+  "h": 231
  },
  "fold-suggest": {
   "w": 397,
-  "h": 395
+  "h": 424
  },
  "layer-pure": {
   "w": 560,
@@ -93,10 +89,10 @@
  },
  "table-charts": {
   "w": 397,
-  "h": 782
+  "h": 737
  },
  "table-compare": {
   "w": 397,
-  "h": 525
+  "h": 506
  }
 }

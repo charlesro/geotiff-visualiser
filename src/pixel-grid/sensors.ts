@@ -78,11 +78,15 @@ export function geolocRes(sourceId: string, res: number): number {
 }
 
 /**
- * How the page's geolocation error is set. One of three things:
+ * How a geolocation error is set. The page knows two ways:
  *  `provider`: every satellite takes the figure its own provider states for an
- *    image as delivered (`geo`), the note's default where it states none;
- *  `auto`: the note's default, a third of a pixel, for every satellite;
- *  neither: `manualM`, a figure typed, for every satellite alike.
+ *    image as delivered (`geo`), and a sensor of one's own none at all;
+ *  neither flag: `manualM`, a figure typed, for every satellite alike.
+ * `auto` is the PHENET note's own rule, a third of a pixel for every sensor.
+ * The page does not offer it any more ("since we have delivered values for
+ * ce 90 for all sattelite i think we can remove all mentions of the default
+ * one", 2026-11-22); it is kept for whoever calls the engine with the note's
+ * assumption, as the note's own figures and the regression suite do.
  */
 export interface GeoSetting { auto: boolean; manualM: number; provider?: boolean }
 
@@ -96,11 +100,11 @@ export interface GeoSetting { auto: boolean; manualM: number; provider?: boolean
  * (found by an outside review, 2026-11-22).
  */
 export function sourceCe90(sourceId: string, res: number, geo: GeoSetting): number {
-  if (geo.provider) {
-    const stated = SOURCES.find(s => s.id === sourceId)?.geo?.ce90M;
-    if (stated != null) return stated;
-  }
-  return ce90For(geo.provider ? true : geo.auto, geo.manualM, geolocRes(sourceId, res));
+  // As delivered: the provider's own figure. A sensor of one's own has no provider and no figure: none is held
+  // against it until one is typed. (It used to fall back on a third of the pixel, the note's rule for a sensor
+  // nothing is known of. The page no longer offers that rule: every satellite of the list has a figure.)
+  if (geo.provider) return SOURCES.find(s => s.id === sourceId)?.geo?.ce90M ?? 0;
+  return ce90For(geo.auto, geo.manualM, geolocRes(sourceId, res));
 }
 
 /** Sensor pixels the PCA samples when the full field is too fine to render. */
@@ -136,6 +140,13 @@ interface Source {
    * pixel box on top counts the detector twice.
    */
   psfMeasured?: boolean;
+  /**
+   * True when no published MTF value was found for the sensor (checked
+   * 2026-11-23: the eoPortal pages of SkySat and SPOT 6/7 describe the
+   * instruments and give no MTF). `psf` is then an ASSUMED MTF at Nyquist,
+   * 0.15 to 0.17, and the page says "assumed", not "published MTF".
+   */
+  psfAssumed?: boolean;
   /**
    * What the PROVIDER states about where an image lands AS DELIVERED, with no
    * ground control of the user's, as a CE90 in metres. `says` is the provider's
@@ -203,10 +214,17 @@ const GEO_PLANET = { ce90M: rmseToCe90(10), says: 'ortho products: less than 10 
   label: 'Planet product specification (2018)', url: 'https://assets.planet.com/docs/Combined-Imagery-Product-Spec-Dec-2018.pdf' };
 
 /**
- * Fitted on the PHENET images themselves, NIR band: the FWHM column of the
- * note's tables (14, 9.7, 5, 3, 1.9 and 1.1 m). No url: the note is not
- * published, and inventing a link for a number this load-bearing would be
- * worse than saying plainly where it was measured.
+ * Fitted on the PHENET images themselves, NIR band: the FWHM the note's model
+ * uses (14, 11.8, 5, 3, 2.0 and 1.1 m). No url: the note is not published, and
+ * inventing a link for a number this load-bearing would be worse than saying
+ * plainly where it was measured.
+ *
+ * Aligned with the note's newer version on 2026-11-24 ("align the designer with
+ * the new note"): WorldView-2 native 1.9 -> 2.0 m and PlanetScope 9.7 -> 11.8 m.
+ * Each is the FWHM fitted with the image allowed to move (1.67 and 11.4 m), with
+ * the blur of the sharp reference it was fitted against added back in quadrature
+ * (1.06 m for the WorldView-2 panchromatic band, 3.0 m for pansharpened Pleiades):
+ * sqrt(1.67^2 + 1.06^2) = 2.0, sqrt(11.4^2 + 3.0^2) = 11.8.
  *
  * The note is not of one mind about Pleiades' native bands: its tables carry
  * 5 m, and its Appendix C, which fits each band on its own, gives 5.7 to
@@ -245,20 +263,20 @@ const SOURCES: Source[] = [
     note: 'Native Landsat 8/9 grid, offset half a pixel from Sentinel-2.',
     cfg: { collection: 'landsat-c2-l2', asset: null, res: 30, gridLabel: lsLabel,
       alt: { collection: 'landsat-c2-l2', asset: null, res: 30, gridLabel: lsLabel, url: EARTH_SEARCH_URL } } },
-  { id: 'wv', short: 'WV-2 MS', provider: 'WorldView-2 · native MS', resLabel: '1.6 m', res: 1.6, kind: 'custom', group: TASK, psf: measured(1.9, 1.6), psfSrc: SRC_PHENET, psfMeasured: true, geo: GEO_WV,
-    note: 'Native multispectral. Measured FWHM 1.9 m.' },
+  { id: 'wv', short: 'WV-2 MS', provider: 'WorldView-2 · native MS', resLabel: '1.6 m', res: 1.6, kind: 'custom', group: TASK, psf: measured(2.0, 1.6), psfSrc: SRC_PHENET, psfMeasured: true, geo: GEO_WV,
+    note: 'Native multispectral. Measured FWHM 2.0 m.' },
   { id: 'wv-ps', short: 'WV-2 pan', provider: 'WorldView-2 · pansharpened', resLabel: '0.4 m', res: 0.4, kind: 'custom', group: TASK, psf: measured(1.1, 0.4), psfSrc: SRC_PHENET, psfMeasured: true, geo: GEO_WV,
     note: 'Pansharpened. Measured FWHM 1.1 m.' },
   { id: 'pleiades', short: 'Pléiades MS', provider: 'Pléiades · native MS', resLabel: '2 m', res: 2, kind: 'custom', group: TASK, psf: measured(5, 2), psfSrc: SRC_PHENET, psfMeasured: true, geo: GEO_PLEIADES,
     note: 'Native multispectral. Measured FWHM 5 m.' },
   { id: 'pleiades-ps', short: 'Pléiades pan', provider: 'Pléiades · pansharpened', resLabel: '0.5 m', res: 0.5, kind: 'custom', group: TASK, psf: measured(3, 0.5), psfSrc: SRC_PHENET, psfMeasured: true, geo: GEO_PLEIADES,
     note: 'Pansharpened. Measured FWHM 3 m.' },
-  { id: 'skysat', short: 'SkySat pan', provider: 'SkySat · pansharpened', resLabel: '0.5 m', res: 0.5, kind: 'custom', group: TASK, psf: 0.62, psfSrc: eo('skysat'), geo: GEO_PLANET,
-    note: 'Pansharpened ortho product. Blur from the published MTF.' },
-  { id: 'spot', short: 'SPOT pan', provider: 'SPOT 6/7 · pansharpened', resLabel: '1.5 m', res: 1.5, kind: 'custom', group: TASK, psf: 0.60, psfSrc: eo('spot-6-7'), geo: GEO_SPOT,
-    note: 'Panchromatic and pansharpened products. Blur from the published MTF.' },
-  { id: 'planet', short: 'PlanetScope', provider: 'PlanetScope', resLabel: '3 m', res: 3, kind: 'custom', group: TASK, psf: measured(9.7, 3), psfSrc: SRC_PHENET, psfMeasured: true, geo: GEO_PLANET,
-    note: 'Measured FWHM 9.7 m.' },
+  { id: 'skysat', short: 'SkySat pan', provider: 'SkySat · pansharpened', resLabel: '0.5 m', res: 0.5, kind: 'custom', group: TASK, psf: 0.62, psfSrc: eo('skysat'), psfAssumed: true, geo: GEO_PLANET,
+    note: 'Pansharpened ortho product. Blur from an assumed MTF.' },
+  { id: 'spot', short: 'SPOT pan', provider: 'SPOT 6/7 · pansharpened', resLabel: '1.5 m', res: 1.5, kind: 'custom', group: TASK, psf: 0.60, psfSrc: eo('spot-6-7'), psfAssumed: true, geo: GEO_SPOT,
+    note: 'Panchromatic and pansharpened products. Blur from an assumed MTF.' },
+  { id: 'planet', short: 'PlanetScope', provider: 'PlanetScope', resLabel: '3 m', res: 3, kind: 'custom', group: TASK, psf: measured(11.8, 3), psfSrc: SRC_PHENET, psfMeasured: true, geo: GEO_PLANET,
+    note: 'Measured FWHM 11.8 m.' },
   { id: 'custom', short: 'Custom', provider: 'Custom', resLabel: '', res: 1, kind: 'custom', group: TASK, psf: 0.55,
     note: 'Any sensor: pick the pixel size and where the grid starts.' },
 ];

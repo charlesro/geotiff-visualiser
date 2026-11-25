@@ -71,7 +71,7 @@ export async function docsParts(load) {
   const sim = await load('src/pixel-grid/simulate.ts');
   const { SOURCES, ladderRungs, sourceCe90 } = await load('src/pixel-grid/sensors.ts');
   const { normCdf, ownShare, imageCases, pureScales } = await load('src/pixel-grid/plot-size.ts');
-  const { ce90Shifts, ce90For } = await load('src/pixel-grid/resolving.ts');
+  const { ce90Shifts, CE90_TO_SIGMA } = await load('src/pixel-grid/resolving.ts');
   const { suggestBlockDesign } = await load('src/pixel-grid/suggest-design.ts');
   const { ladderStep } = await load('src/pixel-grid/ladder-step.ts');
   const { pixelVerdicts } = await load('src/pixel-grid/pixel-verdicts.ts');
@@ -83,8 +83,10 @@ export async function docsParts(load) {
   // Sentinel-2's 10 m bands: the satellite every figure of the model is drawn for.
   const S2 = SOURCES.find(q => q.id === 's2-10');
   const GSD = S2.res, SIG = S2.psf * GSD, FWHM = SIG * 2.3548, THR = 0.9;
-  // The CE90 as the page holds it, to the centimetre (use-grid.ts geoErrM), and the sigma it comes from, exact.
-  const CE = Math.round(ce90For(true, 0, GSD) * 100) / 100, SIG_GEO = GSD / 3, SIG_EFF = Math.hypot(SIG, SIG_GEO);
+  // The CE90 of a satellite as the page holds it: its provider's figure for an image as delivered (sensors.ts sourceCe90).
+  const DELIVERED = { auto: false, manualM: 0, provider: true };
+  const ceFor = id => { const q = SOURCES.find(z => z.id === id); return Math.round(sourceCe90(id, q.res, DELIVERED) * 100) / 100; };
+  const CE = ceFor(S2.id), SIG_GEO = CE / CE90_TO_SIGMA, SIG_EFF = Math.hypot(SIG, SIG_GEO);
   const parts = {};
 
   // ---- How a pixel is read: the spot of a pixel that lies inside its plot, 5 m from the border.
@@ -112,7 +114,7 @@ export async function docsParts(load) {
     g += text(px(cx) - 34, base - 22, `${Math.round(own * 100)} %`, 't-strong', 'middle') + text(px(9), base - 22, `${Math.round((1 - own) * 100)} %`, 't-strong');
     g += text(px(-40), base + 16, 'weight of the ground in the pixel’s signal, across the border');
     parts.spot = figure(440, base + 24, 'A pixel inside its plot, and its blur spot reaching the neighbouring plot',
-      g, `Sentinel-2. The pixel outlined lies wholly inside its plot, its edge on the border. Its blur spot does not: the dashed circle is the FWHM (${m(FWHM)} m), the dotted one holds 90 % of the signal. ${Math.round((1 - own) * 100)} % of what the pixel records comes from the neighbouring plot.`);
+      g, `Sentinel-2. The outlined pixel is inside its plot, with one edge on the border. The dashed circle is the FWHM (${m(FWHM)} m) and the dotted one contains 90 % of the signal. ${Math.round((1 - own) * 100)} % of the pixel's signal comes from the neighbouring plot.`);
   }
 
   // ---- A 40 m plot among others, on Sentinel-2 pixels.
@@ -159,7 +161,7 @@ export async function docsParts(load) {
     const shares = [...new Set(inside.map(q => (q.share * 100).toFixed(1)))].sort((a, b) => b - a);
     need(inside.length === 16 && p.pure === 4 && shares.length === 3, 'a 40 m plot holds 16 Sentinel-2 pixels, 4 of them pure, at three purities');
     parts.plot = figure(340, 340, 'The purity of each Sentinel-2 pixel of a 40 m plot',
-      p.svg, `A 40 m plot among other plots, its edges on the pixel edges. It holds ${inside.length} Sentinel-2 pixels; the number in each is its purity, in percent. Only the ${p.pure} central ones reach 90 % (outlined): a pixel on an edge keeps ${shares[1]} %, a pixel in a corner ${shares[2]} %.`);
+      p.svg, `A 40 m plot among other plots, with its edges on pixel edges. It contains ${inside.length} Sentinel-2 pixels, each labelled with its purity in percent. Only the ${p.pure} central ones reach 90 % (outlined). An edge pixel has ${shares[1]} % and a corner pixel ${shares[2]} %.`);
   }
 
   // ---- The same plot, the grid at its best and at its worst position (no geolocation error).
@@ -175,7 +177,7 @@ export async function docsParts(load) {
     need(best.pure === most && worst.pure === fewest && most > fewest, 'a grid centred on the plot keeps the most pure pixels and a grid on its edges the fewest');
     parts.position = figure(530, 280, 'The same plot with the pixel grid at two positions',
       text(130, 20, `Pixel centred on the plot: ${best.pure} pure`, 't-strong', 'middle') + text(400, 20, `Pixel edges on its edges: ${worst.pure} pure`, 't-strong', 'middle') + best.svg + worst.svg,
-      `The same 40 m plot and the same 10 m pixels at two positions of the grid. With no geolocation error they are the best position (${best.pure} pure pixels) and the worst (${worst.pure}): a fixed grid is counted at the first, since the trial can be planted on it, and a tasked grid at the second. With a geolocation error the order turns over: see the figure under <a href="#hold">Pixels that hold</a>.`);
+      `The same 40 m plot and 10 m pixels at two grid positions: the best (${best.pure} pure pixels) and the worst (${worst.pure}) when there is no geolocation error. A fixed grid is counted at the first and a tasked grid at the second. With a geolocation error the order is reversed (see the figure under <a href="#hold">Pixels that hold</a>).`);
   }
 
   // ---- With the geolocation error: pure, and holding.
@@ -184,7 +186,7 @@ export async function docsParts(load) {
     need(a.pure > b.pure && a.held < b.held && b.held === b.pure, 'the position with the most pure pixels is not the one where the most hold');
     parts.hold = figure(530, 280, 'Pure pixels and pixels that hold, at two positions of the grid',
       text(130, 20, `${a.pure} pure, ${a.held} ${a.held === 1 ? 'holds' : 'hold'}`, 't-strong', 'middle') + text(400, 20, `${b.pure} pure, ${b.held} hold`, 't-strong', 'middle') + a.svg + b.svg,
-      `The same plot with Sentinel-2's default CE90 of ${m(CE)} m. The circle is where the image can land; a pixel is tried at its eight points. A solid outline holds, a broken one is pure only with the image exactly in place. Left, the position with the most pure pixels: ${a.pure}, of which ${a.held} ${a.held === 1 ? 'holds' : 'hold'}. Right, the position where the most hold: ${b.held} of ${b.pure}.`);
+      `The same plot with Sentinel-2's CE90 as delivered, ${m(CE)} m. The circle shows where the image can land. Solid outline: holds. Dashed: pure only with the image exactly in place. Left: the position with the most pure pixels (${a.pure}, of which ${a.held} ${a.held === 1 ? 'holds' : 'hold'}). Right: the position where the most hold (${b.held} of ${b.pure}).`);
   }
 
   // ---- The three sigmas, to scale.
@@ -197,9 +199,9 @@ export async function docsParts(load) {
     g += line(lx, 60, lx + 26, 60, 'ink') + text(lx + 34, 64, `σ<tspan class="sub" dy="3">PSF</tspan><tspan dy="-3"> = ${m(SIG)} m, the blur</tspan>`);
     g += line(lx, 90, lx + 26, 90, 'ink dash') + text(lx + 34, 94, `σ<tspan class="sub" dy="3">geo</tspan><tspan dy="-3"> = ${m(SIG_GEO)} m, the geolocation error</tspan>`);
     g += line(lx, 120, lx + 26, 120, 'accent w2') + text(lx + 34, 124, `σ<tspan class="sub" dy="3">eff</tspan><tspan dy="-3"> = ${m(SIG_EFF)} m, the two combined</tspan>`);
-    need(SIG_EFF / SIG < 1.25, 'the default geolocation error adds less than a quarter to the blur');
+    need(SIG_EFF / SIG < 1.25, "Sentinel-2's geolocation error adds less than a quarter to its blur");
     parts.sigmas = figure(570, 270, 'The blur, the geolocation error and the effective blur as rings of one sigma',
-      g, `Sentinel-2 on its 10 m pixels, to scale, each ring one σ from the pixel's centre. The default geolocation error (CE90 ${m(CE)} m) adds little to the blur: the effective blur is ${Math.round((SIG_EFF / SIG - 1) * 100)} % wider than the PSF.`);
+      g, `Sentinel-2 on its 10 m pixels, to scale. Each ring is one σ from the pixel's centre. With the CE90 as delivered (${m(CE)} m), σ<sub>eff</sub> is ${Math.round((SIG_EFF / SIG - 1) * 100)} % wider than σ<sub>PSF</sub>.`);
   }
 
   // ---- Every satellite: its blur spot against its pixel.
@@ -215,7 +217,7 @@ export async function docsParts(load) {
     });
     need(widest.id === 'pleiades-ps' && Math.round(widest.psf * 2.3548) === 6, 'Pléiades pansharpened has the widest spot for its pixel, six pixels');
     parts.sats = figure(6 + perRow * cw + 6, 6 + Math.ceil(sats.length / perRow) * ch, 'The blur spot of each satellite against its pixel',
-      g, `The blur spot (circle: the FWHM) against the pixel (square), each satellite drawn with its own pixel at the same size. Blue: a fixed grid. Orange: tasked. ${widest.provider.replace(' · ', ' ')} has ${widest.resLabel} pixels under a spot ${Math.round(widest.psf * 2.3548)} pixels wide.`);
+      g, `The blur spot (circle, the FWHM) and the pixel (square) of each satellite, with all pixels drawn at the same size. Blue: fixed grid. Orange: tasked. ${widest.provider.replace(' · ', ' ')} has ${widest.resLabel} pixels and a spot ${Math.round(widest.psf * 2.3548)} pixels wide.`);
   }
 
   // ---- The four layouts the designer lays out itself.
@@ -234,18 +236,25 @@ export async function docsParts(load) {
     need(sim.blockPlots(plan).length === 16, 'four species in four blocks make sixteen plots');
     parts.designs = figure(4 * tw + 3 * gap + 8, th + 30, 'The four layouts: rows, columns, checkerboard and randomised blocks',
       frame(0, rows, 'Alternating rows') + frame(1, cols, 'Alternating columns') + frame(2, chk, 'Checkerboard') + frame(3, blk, 'Randomised blocks'),
-      'The four layouts the designer lays out itself. The randomised blocks are drawn as the designer draws them: four species in four blocks, two blocks per row, with a plot alley and a block alley in brown.');
+      'The four built-in layouts. Randomised blocks are shown with 4 species, 4 blocks, 2 blocks per row and alleys in brown.');
   }
 
   // ---- The worked example: four varieties, four repetitions, Sentinel-2.
   {
     const E0 = 619203.7, N0 = 5600764.3, epsg = 32631;
+    // What each "Open this example" link opens (src/pixel-grid/examples.ts) is held against what its example is computed with.
+    const EX = await load('src/pixel-grid/examples.ts');
+    const seedOf = id => EX.DOC_EXAMPLES.find(q => q.id === id).seed;
+    const sorted = v => (Array.isArray(v) ? v.map(sorted) : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map(k => [k, sorted(v[k])])) : v);
+    const same = (a, b) => JSON.stringify(sorted(a)) === JSON.stringify(sorted(b));
+    need(EX.EXAMPLE_E0 === E0 && EX.EXAMPLE_N0 === N0 && EX.EXAMPLE_EPSG === epsg && EX.DOC_EXAMPLES.map(q => q.id).join() === 'file,fit,varieties,reps', 'the designer opens the four examples, on the field they are computed on');
+    const opensOn = (id, sat, thr) => { const q = seedOf(id), src = SOURCES.find(z => z.id === sat); return q.sourceId === sat && q.sigmaX === src.psf && q.sigmaY === src.psf && q.threshold === thr && q.geoTyped === false && q.placeFor === 'held' && q.rotation === 0; };
     const toLL = proj4('+proj=utm +zone=31 +datum=WGS84 +units=m +no_defs', 'EPSG:4326');
     const world = (design, side, rot, geo = {}) => {
       const [w, so] = toLL.forward([E0, N0]), [e, n] = toLL.forward([E0 + side, N0 + side]);
       const aoi = [w, so, e, n], origin = aoiUtmOrigin(aoi, epsg), env = sim.utmEnvelope(aoi, epsg);
       const layout = { pattern: 'block', width: 2, spacing: 0, rotationDeg: rot, block: sim.buildBlockPlan(design, sim.blockPlacement(env, origin, rot, GSD, true)) };
-      return { aoi, origin, env, ctx: { aoi, fieldRing: null, epsg, layout, threshold: THR * 100, blockDesign: design, importedAngle: 0, importedFileAngle: 0, importedBasePlan: undefined, geoAuto: true, geoManual: 0, placeFor: 'held', ...geo } };
+      return { aoi, origin, env, ctx: { aoi, fieldRing: null, epsg, layout, threshold: THR * 100, blockDesign: design, importedAngle: 0, importedFileAngle: 0, importedBasePlan: undefined, geoAuto: false, geoManual: 0, geoProvider: true, placeFor: 'held', ...geo } };
     };
     const rungs = ladderRungs({ id: S2.id, res: GSD, sigmaX: S2.psf, sigmaY: S2.psf });
     const rowsOf = (wd, rot) => rungs.map(rung => ({ rung, step: ladderStep(wd.ctx, rot, rung, true) }));
@@ -261,9 +270,9 @@ export async function docsParts(load) {
     need(microRows.filter(q => !isPan(q)).every(q => q.step.pureCount === 0), 'no satellite but the pansharpened ones keeps a pure pixel of a micro-plot of 8 x 2 m');
     const microPan = microRows.filter(q => isPan(q) && q.step.pureCount > 0);
     need(microPan.length >= 1 && microPan.every(q => tally(q.step) && tally(q.step).none > 0), 'a pansharpened product counts pure pixels in a micro-plot, and none holds a pixel in every plot');
-    const microPure = microPan.map(q => {
+    const microPure = microPan.map((q, k) => {
       const t = tally(q.step), kept = t.plots - t.none;
-      return `${nameOf(q)} has ${Math.round(q.step.resolvingPct)} % of the crop in pure pixels and holds ${kept === 0 ? 'none of them' : `a pixel in ${kept} of the ${t.plots} plots`}`;
+      return `${nameOf(q)} ${Math.round(q.step.resolvingPct)} %${k ? '' : ' of the planted crop'}${kept === 0 ? '' : `, with a pixel that holds in ${kept} of the ${t.plots} plots`}`;
     });
 
     // 2. What Sentinel-2 asks of a square plot, in the three readings.
@@ -273,6 +282,10 @@ export async function docsParts(load) {
     const sizes = cases.map(q => pureScales({ a: GSD, b: GSD }, { gsd: GSD, sigma: q.sigma, shift: q.shift, threshold: THR, angleDeg: 0 }, wanted).map(sc => GSD * sc));
     need(cases.length === 3 && sizes.every(col => col.every((v, k) => v > 0 && (k === 0 || v > col[k - 1]))) && wanted.every((_, k) => sizes[0][k] < sizes[1][k] && sizes[1][k] < sizes[2][k]),
       'the three readings ask for more and more, and more pixels for a larger plot');
+    // As the card gives them for Sentinel-2, whose grid is fixed and known: a plot at its best place on it (PlotSize.tsx).
+    const best = cases.map(q => pureScales({ a: GSD, b: GSD }, { gsd: GSD, sigma: q.sigma, shift: q.shift, threshold: THR, angleDeg: 0 }, wanted, 'best').map(sc => GSD * sc));
+    need(best.every(col => col.every((v, k) => v > 0 && (k === 0 || v > col[k - 1]))) && wanted.every((_, k) => best[0][k] < best[1][k] && best[1][k] < best[2][k])
+      && best.every((col, j) => col.every((v, k) => v < sizes[j][k])), 'at its best place on the grid a plot asks less in every reading, and still more for more pixels');
 
     // 3. The trial built for it.
     const ask = { nSpecies: 4, nBlocks: 4, pixels: 4, res: GSD, sigmaX: S2.psf, sigmaY: S2.psf, threshold: THR, anyPosition: false,
@@ -281,7 +294,10 @@ export async function docsParts(load) {
     need(built && built.held === 4 && built.design.plotLength === built.design.plotWidth && built.design.plotAlley === 0 && Math.ceil(built.design.nBlocks / built.design.blocksPerRow) === 1,
       'the suggestion for four pixels that hold is a square plot, plots touching, in one row of blocks');
     const d = built.design, side = d.plotLength;
+    need(opensOn('varieties', S2.id, THR * 100) && same(seedOf('varieties').blockDesign, d) && seedOf('varieties').wantPure === ask.pixels && seedOf('varieties').pattern === 'block',
+      'the link of the Sentinel-2 example opens the trial it describes: the same plots, satellite, threshold and CE90');
     need(side < sizes[2][1] && side % GSD === 0, 'a plot laid on the fixed grid is smaller than the size asked of a grid that falls anywhere, and a whole number of pixels');
+    need(side >= best[2][1] && side - best[2][1] < GSD, 'the plot built is the card size for four pixels that hold, rounded up to whole pixels');
     const ha = (built.footprint[0] * built.footprint[1]) / 10000;
     need(side === L, 'the plot built is the 40 m plot of the figures');
     const atWorst = Math.min(...ce90Shifts(CE, 0).map(([dx, dy]) => ownShare(GSD / 2 + dx, GSD / 2 + dy, plot, SIG)));
@@ -290,16 +306,17 @@ export async function docsParts(load) {
 
     // 4. The same trial, by every satellite; 5. turned; 6. with the images as delivered.
     const flat = world(d, built.footprint[0] + 120, 0), flatRows = rowsOf(flat, 0);
+    need(same(seedOf('varieties').aoi, world(d, built.footprint[0] + 120, 0).aoi), 'and on the same field');
     const TURN = 20, turned = world(d, built.footprint[0] + 160, TURN), turnedRows = rowsOf(turned, TURN);
-    const asDelivered = rowsOf(world(d, built.footprint[0] + 120, 0, { geoProvider: true }), 0);
-    const s2 = rowOf(flatRows, 's2-10'), s2t = rowOf(turnedRows, 's2-10'), s2d = rowOf(asDelivered, 's2-10'), pld = rowOf(asDelivered, 'planet'), pl = rowOf(flatRows, 'planet');
+    // 6. A figure typed: the images registered to each other within a few metres, for every satellite alike.
+    const TYPED = 2, typedRows = rowsOf(world(d, built.footprint[0] + 120, 0, { geoProvider: false, geoManual: TYPED }), 0);
+    const s2 = rowOf(flatRows, 's2-10'), s2t = rowOf(turnedRows, 's2-10'), s2r = rowOf(typedRows, 's2-10'), pl = rowOf(flatRows, 'planet'), plr = rowOf(typedRows, 'planet');
     need(s2.geoRobustPure === s2.pureCount && tally(s2).min === 4 && tally(s2).none === 0, 'every plot of the trial keeps four Sentinel-2 pixels, and all its pure pixels hold');
     need(['s2-20', 's2-60', 'hls-30', 'ls-30'].every(id => rowOf(flatRows, id).pureCount === 0), 'the 20 m and coarser pixels keep nothing of a 40 m plot');
-    need(['planet', 'pleiades', 'wv'].every(id => rowOf(flatRows, id).resolvingPct > s2.resolvingPct && tally(rowOf(flatRows, id)).min > tally(s2).min), 'the finer native satellites keep more of it');
+    const finer = ['wv', 'pleiades', 'planet'].map(id => ({ id, st: rowOf(flatRows, id) }));
+    need(finer.every(q => q.st.resolvingPct > s2.resolvingPct) && pl.geoRobustPure === 0 && pl.pureCount > 0, 'the finer native satellites count more pure pixels, and PlanetScope as delivered holds none');
     need(s2t.pureCount > s2.pureCount && s2t.geoRobustPure < s2.geoRobustPure && tally(s2t).min < tally(s2).min, 'turned, the trial keeps more pure pixels and fewer that hold');
-    need(s2d.geoRobustPure === s2.geoRobustPure && pld.geoRobustPure === 0 && pld.pureCount > 0 && pl.geoRobustPure > 0, 'as delivered Sentinel-2 holds the same and PlanetScope holds nothing');
-    const s2Delivered = sourceCe90('s2-10', GSD, { auto: true, manualM: 0, provider: true });
-    need(Math.abs(s2Delivered - CE) < 1 && pl.resolvingPct > pl.geoRobust, 'the provider\'s figure for Sentinel-2 is within a metre of the default');
+    need(plr.geoRobustPure > 0 && tally(plr).none === 0 && s2r.geoRobustPure >= s2.geoRobustPure, 'registered to 2 m, PlanetScope holds pixels in every plot and Sentinel-2 loses none');
 
     /** The trial of a row, pixel by pixel: the plan the row was counted on, redone here and held against the row's own counts. */
     const drawn = (wd, rot, row) => {
@@ -353,41 +370,36 @@ export async function docsParts(load) {
     const trialFig = figure(640, 330, 'The trial on Sentinel-2 pixels, along the pixel rows and turned by 20 degrees',
       text(155, 20, `Along the pixel rows: ${tFlat.pure} pure, ${tFlat.held} hold`, 't-strong', 'middle') + text(485, 20, `Turned ${TURN}°: ${tTurn.pure} pure, ${tTurn.held} hold`, 't-strong', 'middle')
       + trialPanel(10, 30, 290, tFlat, span) + trialPanel(340, 30, 290, tTurn, span),
-      `The sixteen plots on Sentinel-2's 10 m pixels, each plot in its variety's colour, the two panels at one scale. A solid outline is a pixel that holds within the CE90, a broken one a pixel pure only with the image exactly in place.`);
+      `The sixteen plots on Sentinel-2's 10 m pixels, coloured by variety, both panels at the same scale. Solid outline: holds. Dashed: pure only with the image exactly in place.`);
 
     const pct = v => (v == null ? 'n/a' : `${Math.round(v)} %`);
-    const perPlot = st => { const t = st.partial ? null : tally(st); return !t ? '' : t.none > 0 ? `${t.none}/${t.plots} empty` : `min ${t.min}`; };
-    const tableOf = rows => `<div class="scroll"><table class="narrow"><thead><tr><th>Satellite</th><th class="n">Pixel</th><th class="n">pure</th><th class="n">CE90</th><th class="n">per plot</th></tr></thead><tbody>${rows.map(({ rung, step }) =>
-      `<tr><td>${rung.name}</td><td class="n">${rung.res} m${step.partial ? ' ◦' : ''}</td><td class="n">${pct(step.resolvingPct)}</td><td class="n">${step.geoRobust == null ? '' : pct(step.geoRobust)}</td><td class="n">${perPlot(step)}</td></tr>`).join('')}</tbody></table></div>`;
+    // The designer's table, column for column (the fewest pixels a plot keeps was removed from it on 2026-11-24).
+    const tableOf = rows => `<div class="scroll"><table class="narrow"><thead><tr><th>Satellite</th><th class="n">Pixel</th><th class="n">pure</th><th class="n">CE90</th></tr></thead><tbody>${rows.map(({ rung, step }) =>
+      `<tr><td>${rung.name}</td><td class="n">${rung.res} m${step.partial ? ' ◦' : ''}</td><td class="n">${pct(step.resolvingPct)}</td><td class="n">${step.geoRobust == null ? '' : pct(step.geoRobust)}</td></tr>`).join('')}</tbody></table></div>`;
     const card = `<div class="scroll"><table class="narrow"><thead><tr><th>Pure pixels in the plot</th><th class="n">shift corrected</th><th class="n">average image</th><th class="n">9 images in 10</th></tr></thead><tbody>${wanted.map((n, k) =>
-      `<tr><td>${n}</td>${sizes.map(col => `<td class="n">${col[k].toFixed(1)} m</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+      `<tr><td>${n}</td>${best.map(col => `<td class="n">${col[k].toFixed(1)} m</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
 
     parts.example = [
-      `<p>Four varieties, four repetitions, in randomised blocks. The trial is to be followed through the season with Sentinel-2's 10 m bands, whose images are free and frequent. How large must the plots be, and what would the other satellites make of the same trial?</p>`,
-      `<h4>1. The usual micro-plots</h4>`,
-      `<p>Start from the design the page opens with: micro-plots of ${micro.plotLength} × ${micro.plotWidth} m, ${micro.nSpecies} species in ${micro.nBlocks} blocks. Under <b>Across satellites</b>, no satellite keeps a single pure pixel of the ${micro.nSpecies * micro.nBlocks} plots, the pansharpened products apart: ${microPure.join('; ')}. A pansharpened row <a href="#pansharpened">flatters a trial read through an index</a>, and no other satellite sees these plots at all.</p>`,
-      `<h4>2. What Sentinel-2 asks of a plot</h4>`,
-      `<p><b>Plot size required</b>, for a square plot, gives the side that keeps a number of pure pixels wherever the pixel grid falls, in <a href="#plot-size">three readings</a> of the geolocation error (CE90 ${m(CE)} m).</p>`,
+      `<p>Four varieties in four repetitions, in randomised blocks, to be followed over the season with Sentinel-2's 10 m bands.</p>`,
+      `<h4>1. Micro-plots</h4>`,
+      `<p>The page opens with micro-plots of ${micro.plotLength} × ${micro.plotWidth} m, ${micro.nSpecies} species in ${micro.nBlocks} blocks. Under <b>Across satellites</b>, only pansharpened products have pure pixels in the ${micro.nSpecies * micro.nBlocks} plots (${microPure.join('; ')})${microPan.every(q => tally(q.step).none === tally(q.step).plots) ? ', and none of them holds' : ''}. Pansharpened values <a href="#pansharpened">overestimate purity for an index</a>.</p>`,
+      `<h4>2. Plot size for Sentinel-2</h4>`,
+      `<p><a href="#plot-size">Plot size required</a> for a square plot (CE90 ${m(CE)} m):</p>`,
       card,
-      `<p>One pure pixel already asks for a plot of ${sizes[0][0].toFixed(1)} m, three pixels wide, and a pixel that can be named by its coordinates for one of ${sizes[2][0].toFixed(1)} m.</p>`,
-      `<h4>3. A trial built for it</h4>`,
-      `<p>In <b>Suggest a design</b>: ${ask.nSpecies} species, ${ask.nBlocks} repetitions, ${ask.pixels} pixels per plot, Sentinel-2, with <i>Pixels must hold within the CE90</i> ticked. Build gives plots of <b>${m(d.plotLength)} × ${m(d.plotWidth)} m</b> (${built.pitchPx[0]} × ${built.pitchPx[1]} pixels, touching), one row of blocks, and a trial of ${m(built.footprint[0])} × ${m(built.footprint[1])} m, ${ha.toFixed(2)} ha. Each plot keeps ${built.held} pixels within the CE90.</p>`,
-      `<p>That is less than the ${sizes[2][1].toFixed(1)} m of the table's last column for ${wanted[1]} pixels. The table is for a grid that falls anywhere. Sentinel-2's grid is fixed, so the plots are laid on it, their edges on pixel edges, where a ${m(side)} m plot holds the most pixels (the figure under <a href="#hold">Pixels that hold</a>).</p>`,
-      `<p>It is the smallest plot of whole pixels that does, with little to spare: at the worst landing of the image its pixels keep ${(atWorst * 100).toFixed(1)} % of their signal, for 90 % asked. Staked ${OFF} m off along one side, a plot keeps ${offHeld} of its ${built.held} pixels. A larger plot, or images registered to each other, give the margin a field needs.</p>`,
-      `<h4>4. The same trial, by every satellite</h4>`,
+      `<p>One pure pixel requires a plot of ${best[0][0].toFixed(1)} m, and ${best[2][0].toFixed(1)} m if the pixel is selected by its coordinates. Sentinel-2's grid is fixed and known, so these are the sizes of a plot at its best place on the grid. On a grid that can fall anywhere, the same pixel would need ${sizes[0][0].toFixed(1)} m.</p>`,
+      `<h4>3. Building the trial</h4>`,
+      `<p>In <b>Suggest a design</b>: ${ask.nSpecies} species, ${ask.nBlocks} repetitions, ${ask.pixels} pixels per plot, Sentinel-2, with <i>Pixels must hold within the CE90</i> ticked. Build gives plots of <b>${m(d.plotLength)} × ${m(d.plotWidth)} m</b> (${built.pitchPx[0]} × ${built.pitchPx[1]} pixels, no alleys) in one row of blocks, for a trial of ${m(built.footprint[0])} × ${m(built.footprint[1])} m (${ha.toFixed(2)} ha). Each plot keeps ${built.held} pixels that hold.</p>`,
+      `<p>The table's last column asks ${best[2][1].toFixed(1)} m for ${wanted[1]} pixels. Build rounds it up to whole pixels, so that every plot of the trial lies on the grid as the first one does, its edges on pixel edges (see the figure under <a href="#hold">Pixels that hold</a>).</p>`,
+      `<p>It is the smallest whole-pixel plot that keeps ${built.held} pixels that hold, with little margin: purity falls to ${(atWorst * 100).toFixed(1)} % at the worst shift of the image (threshold 90 %), and a staking error of ${OFF} m along one side leaves ${offHeld} of the ${built.held} pixels.</p>`,
+      `<h4>4. The same trial for every satellite</h4>`,
       tableOf(flatRows),
-      `<p class="dim">◦: counted over the central part of the trial, which has too many pixels of that size to count them all, so with no count per plot.</p>`,
-      `<p>Sentinel-2's 10 m bands keep ${int(s2.pureCount)} pure pixels, ${pct(s2.resolvingPct)} of the crop planted, ${tally(s2).min} in every plot, and all of them hold. Its 20 m and 60 m bands and Landsat keep none: a ${m(side)} m plot is too small for them. The finer satellites keep more, each counted at the worst position on its own grid: PlanetScope has ${pct(pl.resolvingPct)} of the crop in pure pixels and ${pct(pl.geoRobust)} in pixels that hold.</p>`,
-      `<h4>5. Turned by ${TURN}°</h4>`,
-      `<p>A field's rows rarely run along the pixel rows. Turned by ${TURN}°, the plots' edges can no longer lie on pixel edges, and the trial is counted where it sits. It keeps more pure Sentinel-2 pixels, ${int(s2t.pureCount)} against ${int(s2.pureCount)}, but only ${int(s2t.geoRobustPure)} of them hold: ${tally(s2t).min} in the worst plot, against ${tally(s2).min}.</p>`,
+      `<p class="dim">pure, CE90: the share of the planted crop in pure pixels, and in pixels that hold within the CE90. ◦: counted over the central part of the trial.</p>`,
+      `<p>Sentinel-2's 10 m bands have ${int(s2.pureCount)} pure pixels (${pct(s2.resolvingPct)} of the planted crop, ${tally(s2).min} per plot), and all hold. Its 20 m and 60 m bands and Landsat have none. The finer sensors have more pure pixels, even at the worst grid position, but their CE90 as delivered is several pixels, so fewer hold (pure, then holding): ${finer.map(q => `${SOURCES.find(z => z.id === q.id).provider.replace(' · ', ' ')} ${pct(q.st.resolvingPct)}, ${pct(q.st.geoRobust)}`).join('; ')}.</p>`,
+      `<h4>5. Rotated by ${TURN}°</h4>`,
+      `<p>At ${TURN}° the plot edges cannot lie on pixel edges, and the trial is counted where it is. It has more pure Sentinel-2 pixels (${int(s2t.pureCount)} against ${int(s2.pureCount)}) but only ${int(s2t.geoRobustPure)} of them hold, with ${tally(s2t).min} in the worst plot against ${tally(s2).min}.</p>`,
       trialFig,
-      `<h4>6. Images as delivered</h4>`,
-      `<p>With every satellite held against its own provider's figure (<b>Use</b>, in the Satellite fold), Sentinel-2 is held against ${m(s2Delivered)} m, close to the default, and the same ${int(s2d.geoRobustPure)} pixels hold. PlanetScope, at ${m(sourceCe90('planet', 3, { auto: true, manualM: 0, provider: true }))} m, keeps none that holds. Its ${int(pld.pureCount)} pure pixels cannot be named by their coordinates from one image to the next, unless the images are first registered to each other.</p>`,
-      `<h4>What the example shows</h4>`,
-      `<ul><li>A plot must be several pixels wide before one pixel of it is pure: ${m(side)} m for ${built.held} Sentinel-2 pixels that hold, and that with no margin.</li>`
-      + `<li>On a fixed grid, make the plots a whole number of pixels, along the pixel rows, and let the designer place them on the grid.</li>`
-      + `<li>A pure pixel is not always one that holds: read the CE90 column, not only the pure one.</li>`
-      + `<li>A finer satellite is not a safer one by itself: its grid falls anywhere, and its images land metres away as delivered.</li></ul>`,
+      `<h4>6. Registered images</h4>`,
+      `<p>With a typed CE90 of ${TYPED} m (images registered to each other), PlanetScope has ${int(plr.geoRobustPure)} pixels that hold, ${tally(plr).min} in its worst plot, instead of none. Sentinel-2 has ${int(s2r.geoRobustPure)}.</p>`,
     ].join('\n          ');
 
     // ================================================================
@@ -396,70 +408,14 @@ export async function docsParts(load) {
     // and a drawing of it; every figure is the engine's, and every sentence
     // is held by a need.
     // ================================================================
-    const { suggestStrips, suggestChecker } = await load('src/pixel-grid/suggest-design.ts');
     const { resolveImportedPlan } = await load('src/pixel-grid/imported-plan.ts');
     const { varietiesOf } = await load('src/pixel-grid/design-import.ts');
     const { trialAngle, bestPlacement } = await load('src/pixel-grid/imported-rotate.ts');
     const { importedTrialExtent } = await load('src/pixel-grid/ladder.ts');
     const srcOf = id => SOURCES.find(z => z.id === id);
-    const ceOf = id => Math.round(sourceCe90(id, srcOf(id).res, { auto: true, manualM: 0 }) * 100) / 100;
+    const ceOf = ceFor;
     const askFor = id => { const q = srcOf(id); return { res: q.res, sigmaX: q.psf, sigmaY: q.psf, threshold: THR, anyPosition: q.kind !== 'catalog', placeHeldM: ceOf(id), ce90M: ceOf(id) }; };
     const fullName = id => srcOf(id).provider.replace(' · ', ' ');
-
-    // ---- Two crops in strips.
-    {
-      const WANT = 10, s2s = suggestStrips({ ...askFor('s2-10'), pattern: 'row', pixels: WANT, spacing: 0 }), pls = suggestStrips({ ...askFor('planet'), pattern: 'row', pixels: WANT, spacing: 0 });
-      need(s2s && pls && s2s.width === 3 * GSD && s2s.held === 1 && pls.width < s2s.width, 'ten pixels per strip ask for 30 m strips under Sentinel-2, and thinner ones under PlanetScope');
-      const W = s2s.width, strip = { a: W, b: Infinity };
-      /** The pixel rows across a few strips, the grid shifted by `off`: pure for their strip, and holding. */
-      const rowsAt = off => { const out = []; for (let y = off + GSD / 2; y < 4 * W; y += GSD) { const mid = (Math.floor(y / W) + 0.5) * W, dd = y - mid, share = ownShare(dd, 0, strip, SIG), pure = share >= THR; out.push({ y, share, pure, held: pure && [-CE, CE].every(dy => ownShare(dd + dy, 0, strip, SIG) >= THR) }); } return out; };
-      const stripPanel = (X, off) => {
-        const s = 1.75, hM = 4 * W, wM = 150, rws = rowsAt(off);
-        let g = `<svg x="${c(X)}" y="30" width="${c(wM * s)}" height="${c(hM * s)}" viewBox="${c(X)} 30 ${c(wM * s)} ${c(hM * s)}">`;
-        for (let k = 0; k < 4; k++) g += rect(X, 30 + k * W * s, wM * s, W * s, `fill="${k % 2 ? CB : CA}" opacity="0.5"`);
-        for (let y = off; y <= hM; y += GSD) g += line(X, 30 + y * s, X + wM * s, 30 + y * s, 'grid');
-        for (let x = 0; x <= wM; x += GSD) g += line(X + x * s, 30, X + x * s, 30 + hM * s, 'grid');
-        for (const q of rws) if (q.pure) for (let x = 0; x < wM; x += GSD) g += rect(X + x * s + 1.2, 30 + (q.y - GSD / 2) * s + 1.2, GSD * s - 2.4, GSD * s - 2.4, `class="pure${q.held ? '' : ' dash'}"`);
-        const per = k => rws.filter(q => q.y > W && q.y < 2 * W && q[k]).length;
-        return { svg: g + '</svg>', pure: per('pure'), held: per('held'), w: wM * s, h: hM * s };
-      };
-      const a = stripPanel(10, 0), b = stripPanel(10 + a.w + 26, GSD / 2);
-      need(a.pure === 1 && a.held === 1 && b.pure === 2 && b.held === 0, 'on its edges a 30 m strip keeps one row that holds; half a pixel off, two pure rows and none that holds');
-      // How far from a two-pixel strip's middle a pixel can sit and still be pure: by halving.
-      const narrow = { a: 2 * GSD, b: Infinity }, two = ownShare(0, 0, narrow, SIG);
-      let lo = 0, hi = GSD / 2; while (hi - lo > 1e-4) { const mid = (lo + hi) / 2; if (ownShare(mid, 0, narrow, SIG) >= THR) lo = mid; else hi = mid; }
-      need(two >= THR && two < THR + 0.02 && lo > 0.2 && lo < 2.5 && ownShare(CE, 0, narrow, SIG) < THR,
-        'a strip two Sentinel-2 pixels wide has a pure row only with a pixel within a metre or two of its middle, and that row does not hold');
-      need(pls.held >= 1 && pls.lengthM < s2s.lengthM, 'PlanetScope holds a pixel across its thinner strips, over a shorter length');
-      const fig = figure(2 * a.w + 46, 30 + a.h + 6, 'Strips of two crops on Sentinel-2 pixels, at two positions of the grid',
-        text(10 + a.w / 2, 20, `Edges on edges: ${a.pure} pure across, ${a.held} holds`, 't-strong', 'middle') + text(36 + a.w + a.w / 2, 20, `Half a pixel off: ${b.pure} pure, ${b.held} hold`, 't-strong', 'middle') + a.svg + b.svg,
-        `Rows of ${m(W)} m of two crops under Sentinel-2, with its default CE90 of ${m(CE)} m. Left, where the designer places them when it places for the pixels that hold: one row of pixels per strip, and it holds. Right, where it places them for pure pixels: two rows per strip, neither of which holds.`);
-      parts.exStrips = [
-        `<p>Two crops in alternating rows, to be told apart by Sentinel-2. In the Design fold the layout is <b>Alternating rows</b>; in <b>Suggest a design</b>, ask for ${WANT} pixels per strip that hold within the CE90.</p>`,
-        `<p>Build gives strips of <b>${m(s2s.width)} m</b>, ${s2s.pitchPx} pixels wide. A strip keeps ${s2s.held} pixel across that holds, so it needs ${m(s2s.lengthM)} m of length for its ${WANT} pixels: ${WANT} pixels, and the ends of a strip, which lose pixels as its sides do. The same request for PlanetScope gives strips of ${m(pls.width)} m, ${pls.pitchPx} pixels wide, over ${m(pls.lengthM)} m.</p>`,
-        fig,
-        `<p>Which of the two positions the designer takes is the choice of <a href="#place-for">Place the trial for</a>. Three pixels wide is the least that holds for Sentinel-2: a strip two pixels wide keeps a pure row only with a pixel within ${lo.toFixed(1)} m of its middle (${(two * 100).toFixed(1)} % at best), and that row does not hold.</p>`,
-      ].join('\n          ');
-    }
-
-    // ---- Which satellite for which plot.
-    {
-      const ids = ['wv', 'pleiades', 'planet', 's2-10', 's2-20', 'hls-30'], wants = [1, 4, 9];
-      const cell = (id, px) => suggestBlockDesign({ nSpecies: 4, nBlocks: 4, pixels: px, ...askFor(id), plotAlley: 0, blockAlley: 0, field: null });
-      const grid = ids.map(id => wants.map(px => cell(id, px)));
-      const area = b => b.footprint[0] * b.footprint[1];
-      need(grid.every(row => row.every(Boolean)) && wants.every((_, col) => grid.every((row, k) => !k || area(row[col]) > area(grid[k - 1][col]))) && grid.every(row => area(row[0]) <= area(row[1]) && area(row[1]) <= area(row[2])),
-        'a coarser satellite asks for a larger trial at every count, and more pixels for a larger one');
-      const ha = b => (b.footprint[0] * b.footprint[1]) / 10000;
-      const table = `<div class="scroll"><table class="narrow"><thead><tr><th>Satellite</th>${wants.map(px => `<th class="n">${px} px per plot</th>`).join('')}<th class="n">trial, 4 px</th></tr></thead><tbody>${ids.map((id, r) =>
-        `<tr><td>${fullName(id)} ${srcOf(id).resLabel}</td>${grid[r].map(b => `<td class="n">${m(b.design.plotLength)} × ${m(b.design.plotWidth)} m</td>`).join('')}<td class="n">${ha(grid[r][1]) < 10 ? ha(grid[r][1]).toFixed(2) : ha(grid[r][1]).toFixed(1)} ha</td></tr>`).join('')}</tbody></table></div>`;
-      const s2 = grid[ids.indexOf('s2-10')][1], hls = grid[ids.indexOf('hls-30')][1], wv = grid[ids.indexOf('wv')][1];
-      parts.exSats = [
-        `<p>The same trial, 4 species in 4 blocks, asked of six satellites in <b>Suggest a design</b>: the smallest plots that keep 1, 4 or 9 pixels that hold within each satellite's default CE90.</p>`,
-        table,
-        `<p>The plot grows with the pixel and with the blur. Four pixels per plot cost ${ha(wv).toFixed(2)} ha with ${fullName('wv')}, ${ha(s2).toFixed(2)} ha with Sentinel-2's 10 m bands and ${ha(hls).toFixed(1)} ha with Landsat (HLS). The figure under <a href="#suggest">Suggest a design</a> draws four of these trials at one scale.</p>`,
-      ].join('\n          ');
-    }
 
     // ---- A trial that already exists, read from a file.
     {
@@ -472,18 +428,20 @@ export async function docsParts(load) {
         const ring = [[b * A, k * Bw], [b * A + A, k * Bw], [b * A + A, k * Bw + Bw], [b * A, k * Bw + Bw]].map(([u, v]) => toUtm.inverse([F0[0] + u * cos - v * sin, F0[1] + u * sin + v * cos]));
         design.plots.push({ rings: [ring], props: { Plot: String(b * nV + k + 1), Variety: names[order[b][k]] } });
       }
+      need(opensOn('file', 's2-10', THR * 100) && same(seedOf('file').importedDesign, design) && seedOf('file').pattern === 'imported' && seedOf('file').compareAligned === true && seedOf('file').importedTurn === 0,
+        'the link of the file example opens the made-up trial it describes, compared with its best placement');
       const plan = resolveImportedPlan(design, varietiesOf(design), epsg), ang = trialAngle(plan);
       need(plan.plots.length === nB * nV && plan.plotIds && Math.abs(ang - ANG) < 0.01, 'the trial read is the one written: 24 plots at 17 degrees');
       const [w, so] = toUtm.inverse([plan.bbox[0] - 30, plan.bbox[1] - 30]), [e, n] = toUtm.inverse([plan.bbox[2] + 30, plan.bbox[3] + 30]);
       const ctx = { aoi: [w, so, e, n], fieldRing: null, epsg, layout: { pattern: 'imported', width: 2, spacing: 0, rotationDeg: ang, imported: plan }, threshold: THR * 100, blockDesign: d,
-        importedAngle: ang, importedFileAngle: ang, importedBasePlan: plan, geoAuto: true, geoManual: 0, placeFor: 'held' };
+        importedAngle: ang, importedFileAngle: ang, importedBasePlan: plan, geoAuto: false, geoManual: 0, geoProvider: true, placeFor: 'held' };
       const shown = ['wv', 'pleiades', 'planet', 's2-10', 's2-20'].map(id => rungs.find(q => q.id === id));
       const rows = shown.map(rung => ({ rung, drawn: ladderStep(ctx, ang, rung, true), best: ladderStep(ctx, 0, rung, false) }));
       const s2r = rows.find(q => q.rung.id === 's2-10'), plr = rows.find(q => q.rung.id === 'planet');
       const full = st => { const t = tally(st); return t ? t.plots - t.none : null; };
       need(s2r.best.geoRobustPure >= 1.5 * s2r.drawn.geoRobustPure && tally(s2r.best).min > tally(s2r.drawn).min && full(s2r.best) === nB * nV,
         'for Sentinel-2 the best placement holds half as many pixels again as the trial as drawn, and more in its worst plot');
-      need(Math.abs(plr.best.geoRobustPure - plr.drawn.geoRobustPure) < 0.05 * plr.drawn.geoRobustPure && tally(plr.drawn).none === 0, 'for PlanetScope the placement changes little, and every plot keeps pixels');
+      need(plr.drawn.pureCount > 1000 && plr.drawn.geoRobustPure === 0 && plr.best.geoRobustPure === 0 && 2 * ceOf('planet') < Bw, 'for PlanetScope as delivered no pixel holds, as drawn or at any placement');
       // The two placements for Sentinel-2, pixel by pixel, each held against its row.
       const sensor = { sigmaX: S2.psf, sigmaY: S2.psf, mixThreshold: THR, anyPosition: false, placeHeldM: CE };
       const UNCLIPPED = [-Infinity, -Infinity, Infinity, Infinity];
@@ -509,60 +467,77 @@ export async function docsParts(load) {
       const fig = figure(640, 330, 'A trial read from a file on Sentinel-2 pixels, as drawn and at its best placement',
         text(155, 20, `As the file draws it, ${m(+ang.toFixed(1))}°: ${tA.pure} pure, ${tA.held} hold`, 't-strong', 'middle') + text(485, 20, `Best placement, ${m(+placed.angle.toFixed(1))}°: ${tB.pure} pure, ${tB.held} hold`, 't-strong', 'middle')
         + filePanel(10, 30, 290, tA) + filePanel(340, 30, 290, tB),
-        `The ${nB * nV} plots on Sentinel-2's 10 m pixels, in their varieties' colours. A solid outline is a pixel that holds within the CE90, a broken one a pixel pure only with the image exactly in place.`);
+        `The ${nB * nV} plots on Sentinel-2's 10 m pixels, coloured by variety. Solid outline: holds. Dashed: pure only with the image exactly in place.`);
       const cellOf = st => `${int(st.pureCount)} · ${st.geoRobustPure == null ? '' : int(st.geoRobustPure)}`;
       const sampled = rows.some(q => q.drawn.partial || q.best.partial);
-      const table = `<div class="scroll"><table class="narrow"><thead><tr><th>Satellite</th><th class="n">Pixel</th><th class="n">as drawn</th><th class="n">plots</th><th class="n">best</th><th class="n">plots</th><th class="n">angle</th></tr></thead><tbody>${rows.map(({ rung, drawn: a, best: b }) =>
-        `<tr><td>${rung.name}</td><td class="n">${rung.res} m${a.partial || b.partial ? ' ◦' : ''}</td><td class="n">${cellOf(a)}</td><td class="n">${full(a) ?? ''}${full(a) == null ? '' : ` of ${nB * nV}`}</td><td class="n">${cellOf(b)}</td><td class="n">${full(b) ?? ''}${full(b) == null ? '' : ` of ${nB * nV}`}</td><td class="n">${b.placement ? `${m(+b.placement.angle.toFixed(1))}°` : ''}</td></tr>`).join('')}</tbody></table></div>`;
+      // No column of plots: the count per plot left the designer's table on 2026-11-24.
+      const table = `<div class="scroll"><table class="narrow"><thead><tr><th>Satellite</th><th class="n">Pixel</th><th class="n">as drawn</th><th class="n">best</th><th class="n">angle</th></tr></thead><tbody>${rows.map(({ rung, drawn: a, best: b }) =>
+        `<tr><td>${rung.name}</td><td class="n">${rung.res} m${a.partial || b.partial ? ' ◦' : ''}</td><td class="n">${cellOf(a)}</td><td class="n">${cellOf(b)}</td><td class="n">${b.placement ? `${m(+b.placement.angle.toFixed(1))}°` : ''}</td></tr>`).join('')}</tbody></table></div>`;
       parts.exFile = [
-        `<p>A trial that is already in the ground: ${nB * nV} plots of ${A} × ${Bw} m, ${nV} varieties in ${nB} repetitions, drawn at ${ANG}° to the pixel rows. Its plots are imported as a file (a made-up one here), with the <b>Variety</b> column as the variety, and <span class="f">vs best</span> compares the trial as drawn with its <a href="#imported">best placement</a> for each satellite.</p>`,
+        `<p>An existing trial: ${nB * nV} plots of ${A} × ${Bw} m, ${nV} varieties in ${nB} repetitions, at ${ANG}° to the pixel rows. The plots are imported from a file (made up for this example), with the <b>Variety</b> column as the variety. The table is the <span class="f">vs best</span> comparison (see <a href="#imported">Best placement</a>).</p>`,
         table,
-        `<p class="dim">as drawn, best: the pure pixels, then those that hold (the designer's own table gives them as shares). plots: the plots that keep a pixel that holds. angle: that of the best placement.${sampled ? ' ◦: counted over the central part of the trial, with no count per plot.' : ''}</p>`,
-        `<p>For Sentinel-2 the placement matters most: as drawn ${int(s2r.drawn.geoRobustPure)} pixels hold, ${tally(s2r.drawn).min} in the worst plot; turned to ${m(+s2r.best.placement.angle.toFixed(1))}° and moved onto the grid, ${int(s2r.best.geoRobustPure)} hold, ${tally(s2r.best).min} in every plot. For PlanetScope the placement changes little, and every plot keeps at least ${tally(plr.drawn).min} pixels that hold.</p>`,
+        `<p class="dim">as drawn, best: pure pixels, then those that hold (the designer's table gives shares). angle: angle of the best placement.${sampled ? ' ◦: counted over the central part of the trial.' : ''}</p>`,
+        `<p>The placement has the largest effect for Sentinel-2: the pixels that hold go from ${int(s2r.drawn.geoRobustPure)} as drawn (${tally(s2r.drawn).min} in the worst plot) to ${int(s2r.best.geoRobustPure)} at ${m(+s2r.best.placement.angle.toFixed(1))}° on the grid (${tally(s2r.best).min} per plot). For PlanetScope, none of the ${int(plr.drawn.pureCount)} pure pixels holds at any placement, with a CE90 of ${m(ceOf('planet'))} m as delivered.</p>`,
         fig,
-        `<p>A trial that exists cannot be turned. The comparison says what its layout cost, and which satellites can still follow it as it is. The best placement is the best the search found: see <a href="#imported">Imported trial</a>.</p>`,
       ].join('\n          ');
     }
 
-    // ---- How strict, and how sure: the threshold and the geolocation setting.
+    // ---- The two examples that start from a field (2026-11-25), computed as Build computes them
+    // (PixelGridApp.tsx buildSuggested): suggestBlockDesign on the field, held by the field's own
+    // seat, on each satellite's own lattice, with its CE90 as delivered.
+    const { fieldSeat } = await load('src/pixel-grid/trial-seat.ts');
+    const { latticePhase } = await load('src/pixel-grid/sensors.ts');
+    const suggestOn = (fieldUV, rung, reps) => {
+      const ground = EX.exampleField(...fieldUV), [e0, n0, e1, n1] = sim.utmEnvelope(ground, epsg), F = { u: e1 - e0, v: n1 - n0 };
+      const fitsField = (u, v) => { const seat = fieldSeat(null, ground, epsg, u, v, 0); return seat ? seat.clearance > rung.res : u + 2 * rung.res <= F.u + 1e-6 && v + 2 * rung.res <= F.v + 1e-6; };
+      const r = rung.res, [pE, pN] = latticePhase(rung.id, r, epsg);
+      const steps = sim.stakeMesh([Math.floor((e0 - pE) / r) * r + pE, Math.floor((n0 - pN) / r) * r + pN, Math.ceil((e1 - pE) / r) * r + pE, Math.ceil((n1 - pN) / r) * r + pN], r)?.steps;
+      const ce = ceOf(rung.id);
+      return suggestBlockDesign({ nSpecies: 4, nBlocks: reps, pixels: 4, res: r, sigmaX: rung.sigmaX, sigmaY: rung.sigmaY, threshold: THR, anyPosition: rung.anyPosition,
+        placeHeldM: ce, ce90M: ce, plotAlley: 0, blockAlley: 0, field: F, fitsField, stakeSteps: steps, seed: 1, rotationDeg: 0 });
+    };
+    const fits = b => !!b && b.fits !== false;
+    const size = b => `${m(Math.round(b.footprint[0]))} × ${m(Math.round(b.footprint[1]))} m`;
+    const rowsOfBlocks = b => Math.ceil(b.design.nBlocks / b.design.blocksPerRow);
+
+    // ---- A field and no satellite: the coarsest satellite whose trial fits.
     {
-      const ths = [80, 90, 95], geos = [['no error', { geoAuto: false, geoManual: 0 }], ['default', {}], ['as delivered', { geoProvider: true }]];
-      const cellOf = (id, thr, geo) => { const wd = world(d, built.footprint[0] + 120, 0, { threshold: thr, ...geo }); const st = ladderStep(wd.ctx, 0, rungs.find(q => q.id === id), true); return { pure: st.pureCount, held: st.geoRobustPure }; };
-      const grid = id => ths.map(thr => geos.map(([, geo]) => cellOf(id, thr, geo)));
-      const s2g = grid('s2-10'), plg = grid('planet');
-      const tableOf2 = (name, g) => `<tr class="group"><td colspan="4">${name}</td></tr>` + ths.map((thr, r) => `<tr><td>purity ${thr} %</td>${g[r].map(q => `<td class="n">${int(q.pure)}${q.held == null ? '' : ` · ${int(q.held)}`}</td>`).join('')}</tr>`).join('');
-      need(s2g[1][1].held === 64 && s2g[2][1].held < s2g[1][1].held && plg[1][2].held === 0 && plg[1][1].held > 0 && s2g[0][0].held == null, 'the 40 m trial holds 64 Sentinel-2 pixels at 90 %, fewer at 95 %, and PlanetScope as delivered holds none');
-      const more = s2g[2][1].pure > s2g[1][1].pure;
-      need(more && s2g[2][1].held > 0, 'at 95 % Sentinel-2 counts more pure pixels than at 90 %, and still holds some');
-      parts.exStrict = [
-        `<p>The trial of the first example, ${m(d.plotLength)} × ${m(d.plotWidth)} m plots, under three purity thresholds and the three ways of setting the geolocation error. Each cell gives the pure pixels, then those that hold.</p>`,
-        `<div class="scroll"><table class="narrow"><thead><tr><th></th>${geos.map(([name]) => `<th class="n">${name}</th>`).join('')}</tr></thead><tbody>${tableOf2('Sentinel-2, 10 m', s2g)}${tableOf2('PlanetScope, 3 m', plg)}</tbody></table></div>`,
-        `<p>At 90 % and the default error Sentinel-2 holds ${int(s2g[1][1].held)} pixels; at 95 % it holds ${int(s2g[2][1].held)}. ${more ? `It counts more pure pixels at 95 % (${int(s2g[2][1].pure)}) than at 90 % (${int(s2g[1][1].pure)}): the trial is placed for the pixels that hold, and the position that holds the most at 95 % is another one. ` : ''}PlanetScope holds ${int(plg[1][1].held)} at the default error and ${int(plg[1][2].held)} as delivered; as delivered it holds next to nothing at any threshold.</p>`,
-        `<p>A count means nothing without the two settings it was made under: say both when a design is reported.</p>`,
+      const FF = EX.FIT_FIELD, q = seedOf('fit');
+      need(opensOn('fit', 's2-10', THR * 100) && q.suggestAsk.sat === 'fit' && q.suggestAsk.hold === true && q.suggestAsk.species === 4 && q.suggestAsk.reps === 4 && q.wantPure === 4
+        && q.pattern === 'block' && q.simFold === 'suggest' && same(q.aoi, EX.exampleField(...FF)), 'the link of the field example opens Suggest a design, set to find the coarsest satellite for that field');
+      // As Build orders them: native multispectral products, the coarsest first (PixelGridApp.tsx fitOrder).
+      const order = rungs.filter(g => g.id !== 'custom' && !/pansharpened/i.test(srcOf(g.id).provider)).sort((a, b) => b.res - a.res), tried = [];
+      for (const g of order) { const b = suggestOn(FF, g, 4); tried.push({ g, b }); if (fits(b)) break; }
+      const pick = tried[tried.length - 1], before = tried[tried.length - 2];
+      need(fits(pick.b) && pick.g.id === 's2-10' && before && before.g.id === 's2-20' && before.b && !fits(before.b), 'in a field of 250 m the coarsest satellite that fits is Sentinel-2 at 10 m, its 20 m bands asking for more');
+      const table = `<div class="scroll"><table class="narrow"><thead><tr><th>Satellite, coarsest first</th><th class="n">Pixel</th><th class="n">smallest trial</th><th class="n">fits</th></tr></thead><tbody>${tried.map(({ g, b }) =>
+        `<tr><td>${g.name}</td><td class="n">${g.res} m</td><td class="n">${b ? size(b) : 'none'}</td><td class="n">${fits(b) ? 'yes' : 'no'}</td></tr>`).join('')}</tbody></table></div>`;
+      const d4 = pick.b.design;
+      parts.exFit = [
+        `<p>A field of ${FF[0]} × ${FF[1]} m, four varieties in four repetitions, and every plot to keep ${4} pixels that hold. No satellite is chosen yet: in <b>Suggest a design</b> the satellite is <span class="f">Coarsest that fits the field</span>.</p>`,
+        `<p>Build tries the satellites from the largest pixel down, each with its own blur and CE90 as delivered, and stops at the first whose smallest trial fits the field:</p>`,
+        table,
+        `<p>Sentinel-2's 20 m bands need a trial of ${size(before.b)}, larger than the field. Its 10 m bands need ${size(pick.b)}: plots of <b>${m(d4.plotLength)} × ${m(d4.plotWidth)} m</b> in ${rowsOfBlocks(pick.b) === 1 ? 'one row' : `${rowsOfBlocks(pick.b)} rows`} of blocks, which Build lays in the field and selects Sentinel-2 at 10 m. Finer satellites fit too, with smaller plots: the drawing under <a href="#suggest">Suggest a design</a> shows the trials four of them ask for.</p>`,
       ].join('\n          ');
-      need(plg.every(row => row[2].held <= 4), 'as delivered PlanetScope holds next to nothing at any threshold');
     }
 
-    // ---- A checkerboard.
+    // ---- A satellite and a field: the most repetitions that fit.
     {
-      const s2c = suggestChecker({ ...askFor('s2-10'), pixels: 4, spacing: 0 }), plc = suggestChecker({ ...askFor('planet'), pixels: 4, spacing: 0 });
-      need(s2c && plc && s2c.width === 4 * GSD && s2c.held === 4 && plc.width < s2c.width, 'four pixels per cell ask for 40 m cells under Sentinel-2, and smaller ones under PlanetScope');
-      const Wc = s2c.width, N = 4, sensor = { sigmaX: S2.psf, sigmaY: S2.psf, mixThreshold: THR, anyPosition: false, placeHeldM: CE };
-      const v = pixelVerdicts({ res: GSD, utmBounds: [0, 0, N * Wc, N * Wc] }, [0, 0], { pattern: 'checker', width: Wc, spacing: 0, rotationDeg: 0 }, sensor, CE);
-      const nx = (N * Wc) / GSD, inner = (i, j) => i >= Wc / GSD && i < nx - Wc / GSD && j >= Wc / GSD && j < nx - Wc / GSD;
-      let held = 0, pure = 0; for (let j = 0; j < nx; j++) for (let i = 0; i < nx; i++) if (inner(i, j)) { pure += v.pure[j * nx + i]; held += v.robust[j * nx + i]; }
-      need(held === 4 * s2c.held && pure === 4 * s2c.pure, `the four inner cells drawn keep what the suggestion says a cell keeps (${pure}/${held})`);
-      const s = 1.9, X = 10, Y = 10, size = N * Wc * s;
-      let g = '';
-      for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) g += rect(X + i * Wc * s, Y + (N - 1 - j) * Wc * s, Wc * s, Wc * s, `fill="${(i + j) % 2 ? CB : CA}" opacity="0.55"`);
-      for (let k = 0; k <= nx; k++) g += line(X + k * GSD * s, Y, X + k * GSD * s, Y + size, 'grid') + line(X, Y + k * GSD * s, X + size, Y + k * GSD * s, 'grid');
-      for (let j = 0; j < nx; j++) for (let i = 0; i < nx; i++) if (v.pure[j * nx + i]) g += rect(X + i * GSD * s + 1.2, Y + (nx - 1 - j) * GSD * s + 1.2, GSD * s - 2.4, GSD * s - 2.4, `class="pure${v.robust[j * nx + i] ? '' : ' dash'}"`);
-      const fig = figure(size + 20, size + 20, 'A checkerboard of two crops on Sentinel-2 pixels, with the pixels that hold',
-        g, `A checkerboard of ${m(Wc)} m cells under Sentinel-2: every cell keeps ${s2c.held} pixels that hold, as a plot of a block trial of the same size does.`);
-      parts.exChecker = [
-        `<p>Two crops in a checkerboard, each cell a plot. With the layout <b>Checkerboard</b>, <b>Suggest a design</b> asked for 4 pixels per cell gives cells of <b>${m(s2c.width)} m</b> for Sentinel-2 and of ${m(plc.width)} m for PlanetScope.</p>`,
-        fig,
-        `<p>A cell touches cells of the other crop on its four sides, so it is read like a plot among other plots: each crop has as many repetitions as half the cells, and each cell must be as large as a plot.</p>`,
+      const RF = EX.REPS_FIELD, q = seedOf('reps'), s2rung = rungs.find(g => g.id === 's2-10');
+      need(opensOn('reps', 's2-10', THR * 100) && q.suggestAsk.sat === 's2-10' && q.suggestAsk.repsMax === true && q.suggestAsk.hold === true && q.wantPure === 4
+        && q.pattern === 'block' && q.simFold === 'suggest' && same(q.aoi, EX.exampleField(...RF)), 'the link of the repetitions example opens Suggest a design, set to find the most repetitions for Sentinel-2 in that field');
+      const byReps = Array.from({ length: 21 }, (_, n) => (n ? suggestOn(RF, s2rung, n) : null));
+      const most = [...Array(20).keys()].map(k => 20 - k).find(n => fits(byReps[n])) ?? 0, next = byReps[most + 1];
+      need(most >= 2 && most < 20 && next && !fits(next) && rowsOfBlocks(byReps[most]) === 1 && rowsOfBlocks(next) === 2, 'in a field of 300 x 200 m Sentinel-2 fits one row of blocks, and one more repetition needs a second row');
+      const shown = [most - 1, most, most + 1];
+      const table = `<div class="scroll"><table class="narrow"><thead><tr><th>Repetitions</th><th class="n">rows of blocks</th><th class="n">smallest trial</th><th class="n">fits</th></tr></thead><tbody>${shown.map(n =>
+        `<tr><td>${n}</td><td class="n">${rowsOfBlocks(byReps[n])}</td><td class="n">${size(byReps[n])}</td><td class="n">${fits(byReps[n]) ? 'yes' : 'no'}</td></tr>`).join('')}</tbody></table></div>`;
+      const b = byReps[most];
+      parts.exReps = [
+        `<p>A field of ${RF[0]} × ${RF[1]} m, to be followed with Sentinel-2's 10 m bands: four varieties, every plot to keep 4 pixels that hold. How many repetitions fit? In <b>Suggest a design</b>, the satellite is Sentinel-2 · 10 m and <i>As many repetitions as fit the field</i> is ticked.</p>`,
+        `<p>Build tries 1, 2, 3 and more repetitions, up to 20, and keeps the most whose smallest trial fits: <b>${most}</b>, in one row of blocks, a trial of ${size(b)} with plots of ${m(b.design.plotLength)} × ${m(b.design.plotWidth)} m. ${most + 1} repetitions need a second row of blocks, ${size(next)}, taller than the field.</p>`,
+        table,
+        `<p>The repetitions found are written in the Repetitions field. Typing another number there asks for that number again.</p>`,
       ].join('\n          ');
     }
   }
@@ -578,7 +553,7 @@ export async function docsParts(load) {
   const sats = SOURCES.filter(q => q.id !== 'custom');
   const fwhmOf = q => q.psf * K * q.res;
   const nameOf = q => q.provider.replace(' · ', ' ');
-  const ce90Of = id => Math.round(sourceCe90(id, SOURCES.find(q => q.id === id).res, { auto: true, manualM: 0 }) * 100) / 100;
+  const ce90Of = ceFor;
 
   // ---- The three steps, as a flow.
   {
@@ -588,7 +563,7 @@ export async function docsParts(load) {
       box(4, 176, '1 · Experiment area', ['find a place', 'draw a box', 'or trace the field'])
       + arrow(184, 212) + box(214, 232, '2 · Simulate experiment', ['Satellite', 'Design · Suggest a design', 'Plot size required', 'Growth curves · Noise'])
       + arrow(450, 478) + box(480, 176, '3 · Pixel purity', ['the pixels as a chart', 'the trial by every satellite']),
-      'The page reads from the top of its panel down: where the trial is, what it is and which satellite reads it, then what that satellite keeps of it.');
+      'The three steps of the panel.');
   }
 
   // ---- A blur spot in profile: sigma, the FWHM and the circle that holds 95 %.
@@ -603,20 +578,7 @@ export async function docsParts(load) {
     need(Math.abs(Math.exp(-(2.448 ** 2) / 2) - 0.05) < 1e-3, 'at the radius that holds 95 % of a round spot its profile is at 5 % of the peak');
     g += line(fr.px(-2.448), fr.py(0.05), fr.px(2.448), fr.py(0.05), 'ink dot') + text(fr.px(0), 14 + 150 + 36, 'dotted: the width of the circle that holds 95 % of the signal, 4.9 σ', '', 'middle');
     parts.fwhm = figure(480, 210, 'A blur spot in profile, with sigma, the FWHM and the 95 % width',
-      g, 'A blur spot in profile. σ is its standard deviation, the FWHM its width at half the peak. Satellites are given by their FWHM; the designer works in σ.');
-  }
-
-  // ---- The pixel's own footprint as a blur: the floor of any blur.
-  {
-    const s0 = sim.FOOTPRINT_SIGMA;
-    need(Math.abs(s0 - 1 / Math.sqrt(12)) < 1e-12, 'the footprint of a pixel is a blur of 1/sqrt(12) pixel');
-    const fr = frame({ X: 34, Y: 14, W: 430, H: 140, x: [-1.5, 1.5], y: [0, 1.5], xt: [-1, -0.5, 0, 0.5, 1], xf: v => `${v} px` });
-    const pts = []; for (let x = -1.5; x <= 1.5001; x += 0.02) pts.push([fr.px(x), fr.py(Math.exp(-x * x / (2 * s0 * s0)) / (s0 * Math.sqrt(2 * Math.PI)))]);
-    let g = fr.g + rect(fr.px(-0.5), fr.py(1), fr.px(0.5) - fr.px(-0.5), fr.py(0) - fr.py(1), `fill="${CA}" opacity="0.45"`);
-    g += path2([[fr.px(-1.5), fr.py(0)], [fr.px(-0.5), fr.py(0)], [fr.px(-0.5), fr.py(1)], [fr.px(0.5), fr.py(1)], [fr.px(0.5), fr.py(0)], [fr.px(1.5), fr.py(0)]], 'ink') + path2(pts, 'accent w2');
-    g += text(fr.px(0.56), fr.py(0.86), 'one pixel, read evenly') + text(fr.px(0.34), fr.py(1.32), `a blur of σ = ${s0.toFixed(2)} px, as wide`);
-    parts.footprint = figure(480, 190, 'A pixel read evenly over its square, and the Gaussian blur of the same width',
-      g, `A pixel that read its square evenly, with no optics at all, would already blur the ground by σ = GSD / √12 = ${s0.toFixed(2)} pixel. No satellite's blur is narrower, so a blur typed in below that is simulated at that width (a blur of exactly 0 gives the plain square).`);
+      g, 'Profile of the PSF, with σ and the FWHM.');
   }
 
   // ---- The threshold: the same plot at three purities.
@@ -625,7 +587,7 @@ export async function docsParts(load) {
     need(ps[0].pure > ps[1].pure && ps[1].pure > ps[2].pure, 'a stricter threshold leaves fewer pure pixels');
     parts.threshold = figure(566, 214, 'The pure pixels of one plot at three thresholds',
       ths.map((t, k) => text(98 + k * 190, 20, `${Math.round(t * 100)} %: ${ps[k].pure} pure`, 't-strong', 'middle')).join('') + ps.map(q => q.svg).join(''),
-      `The 40 m plot of the figure above at three thresholds. At ${Math.round(ths[0] * 100)} % its edge pixels count as pure (${ps[0].pure} pixels), at 90 % only the central ones (${ps[1].pure}), at ${Math.round(ths[2] * 100)} % none${ps[2].pure ? ` but ${ps[2].pure}` : ''}: the central pixels are at ${(ownShare(GSD / 2, GSD / 2, plot, SIG) * 100).toFixed(1)} %.`);
+      `The same 40 m plot at three thresholds. At ${Math.round(ths[0] * 100)} % the edge pixels are pure too (${ps[0].pure} pixels), at 90 % only the central ones (${ps[1].pure}), and at ${Math.round(ths[2] * 100)} % none${ps[2].pure ? ` but ${ps[2].pure}` : ''}: the central pixels are at ${(ownShare(GSD / 2, GSD / 2, plot, SIG) * 100).toFixed(1)} %.`);
   }
 
   // ---- A CE90, as where three hundred images would land.
@@ -646,24 +608,23 @@ export async function docsParts(load) {
     g += circle(lx + 13, 112, 3, 'class="accent-fill"') + text(lx + 34, 116, `${inside} landings inside`) + circle(lx + 13, 138, 3, 'class="warn-fill"') + text(lx + 34, 142, `${N - inside} outside`);
     need(Math.abs(inside / N - 0.9) < 0.04, 'about nine landings in ten fall within the CE90');
     parts.ce90 = figure(500, 2 * half * s + 28, 'Where three hundred images would land around a point, and the CE90 circle',
-      g, `Where ${N} images would land around the place their coordinates name, for Sentinel-2's default error, on its 10 m pixels. The CE90 is the circle that holds nine in ten: here ${inside} of ${N}.`);
+      g, `Where ${N} images would land around their nominal position, for Sentinel-2's CE90 as delivered, on its 10 m pixels. The CE90 circle contains 90 % of them on average (${inside} of ${N} in this draw).`);
   }
 
-  // ---- The CE90 of each satellite: the default against the provider's figure.
+  // ---- The CE90 of each satellite as delivered: in metres, and in its own pixels.
   {
-    const X = 150, W = 330, rowH = 22, top = 30, max = 24, px = v => X + (v / max) * W;
+    const X = 150, W = 300, rowH = 20, top = 30, max = 20, px = v => X + (v / max) * W;
     let g = '';
     for (const t of [0, 5, 10, 15, 20]) g += line(px(t), top - 4, px(t), top + sats.length * rowH, 'rule') + text(px(t), top - 9, `${t} m`, 't-tick', 'middle');
     sats.forEach((q, k) => {
-      const y = top + k * rowH, def = sourceCe90(q.id, q.res, { auto: true, manualM: 0 }), del = q.geo.ce90M;
-      g += text(X - 8, y + 14, `${q.short} ${q.resLabel}`, '', 'end') + rect(X, y + 3, px(def) - X, 7, 'class="accent-fill"') + rect(X, y + 11, px(del) - X, 7, 'class="solid"');
-      g += text(px(Math.max(def, del)) + 6, y + 14, `${m(+def.toPrecision(3))} · ${m(del)}`, 't-tick');
+      const y = top + k * rowH, ce = q.geo.ce90M, inPx = ce / q.res;
+      g += text(X - 8, y + 14, `${q.short} ${q.resLabel}`, '', 'end') + rect(X, y + 5, px(ce) - X, 10, `fill="${q.kind === 'catalog' ? CB : CA}"`);
+      g += text(px(ce) + 6, y + 14, `${m(ce)} m · ${inPx >= 10 ? Math.round(inPx) : +inPx.toFixed(1)} px`, 't-tick');
     });
-    g += key(X, top + sats.length * rowH + 18, [[rect(0, -4, 12, 7, 'class="accent-fill"'), 'default'], [rect(0, -4, 12, 7, 'class="solid"'), 'as delivered, by the provider']]);
-    const worst = sats.reduce((a, q) => (q.geo.ce90M / sourceCe90(q.id, q.res, { auto: true, manualM: 0 }) > a.geo.ce90M / sourceCe90(a.id, a.res, { auto: true, manualM: 0 }) ? q : a));
-    need(sats.filter(q => q.kind !== 'catalog').every(q => q.geo.ce90M > sourceCe90(q.id, q.res, { auto: true, manualM: 0 })), 'every tasked satellite is delivered further off than the default assumes');
-    parts.ce90bars = figure(560, top + sats.length * rowH + 34, 'The default CE90 and the CE90 as delivered, for each satellite',
-      g, `The geolocation error in force by default (a third of a pixel; a third of the 10 m pixel for every Sentinel-2 band), and the one each provider states for an image as delivered. For the fixed grids the two are close. For every tasked satellite the image as delivered lands much further than the default assumes: ${Math.round(worst.geo.ce90M / sourceCe90(worst.id, worst.res, { auto: true, manualM: 0 }))} times further for ${nameOf(worst)}.`);
+    const inPixels = q => q.geo.ce90M / q.res, worst = sats.reduce((a, q) => (inPixels(q) > inPixels(a) ? q : a));
+    need(sats.filter(q => q.kind === 'catalog').every(q => inPixels(q) < 1) && sats.filter(q => q.kind !== 'catalog').every(q => inPixels(q) > 2), 'as delivered a fixed grid lands within a pixel and every tasked satellite more than two pixels away');
+    parts.ce90bars = figure(560, top + sats.length * rowH + 8, 'The CE90 of each satellite as delivered, in metres and in its own pixels',
+      g, `CE90 as delivered, in metres and in pixels: under 1 pixel for Sentinel-2 and Landsat, over 2 pixels for every tasked satellite (${Math.round(inPixels(worst))} for ${nameOf(worst)}).`);
   }
 
   // ---- How many pixels of a plot hold, as the CE90 grows.
@@ -687,7 +648,7 @@ export async function docsParts(load) {
     };
     const series = sides.map(side => ces.map(ce => best(side, ce)));
     const fr = frame({ X: 44, Y: 22, W: 420, H: 170, x: [0, 16], y: [0, Math.max(...series.flat()) + 1], xt: [0, 2, 4, 6, 8, 10, 12, 14, 16], yt: [0, 4, 9, 16, 25].filter(v => v <= Math.max(...series.flat())), xl: 'CE90, m', yl: 'pixels of the plot that hold' });
-    let g = fr.g + line(fr.px(CE), 22, fr.px(CE), 192, 'accent dash') + text(fr.px(CE) + 5, 34, `default, ${m(CE)} m`, 't-tick');
+    let g = fr.g + line(fr.px(CE), 22, fr.px(CE), 192, 'accent dash') + text(fr.px(CE) + 5, 34, `Sentinel-2, ${m(CE)} m`, 't-tick');
     series.forEach((ys, k) => {
       const pts = []; ys.forEach((y, i) => { if (i) pts.push([fr.px(ces[i]), fr.py(ys[i - 1])]); pts.push([fr.px(ces[i]), fr.py(y)]); });
       g += `<path d="${pts.map(([x, y], i) => `${i ? 'L' : 'M'}${c(x)} ${c(y)}`).join('')}" fill="none" stroke="${PALE[k]}" stroke-width="2"/>`;
@@ -702,7 +663,7 @@ export async function docsParts(load) {
     };
     need(at(40, 7) === 4 && last(40, 4) >= CE && last(40, 4) < 7.5 && last(50, 4) > last(40, 4) + 2, 'a 40 m plot holds four Sentinel-2 pixels up to a CE90 a little over 7 m, and a 50 m plot holds four well beyond');
     parts.holdcurve = figure(480, 248, 'The pixels of a plot that hold, against the CE90, for three plot sizes',
-      g, `The pixels of one plot that hold for Sentinel-2, at the best position of the grid, as the geolocation error grows. A 40 m plot keeps four pixels up to a CE90 of ${m(last(40, 4))} m and ${best(40, last(40, 4) + 0.05)} just after: the default sits at that edge. A 50 m plot keeps four up to ${m(last(50, 4))} m.`);
+      g, `Pixels of one plot that hold for Sentinel-2, at the best grid position, against the CE90. A 40 m plot keeps 4 up to ${m(last(40, 4))} m (Sentinel-2 as delivered: ${m(CE)} m) and ${best(40, last(40, 4) + 0.05)} beyond. A 50 m plot keeps 4 up to ${m(last(50, 4))} m.`);
   }
 
   // ---- Every satellite: its pixel and its blur, in metres.
@@ -716,7 +677,7 @@ export async function docsParts(load) {
     g += key(X, top + sats.length * rowH + 44, [[rect(0, -5, 9, 9, `fill="${CB}"`), 'pixel, fixed grid'], [rect(0, -5, 9, 9, `fill="${CA}"`), 'pixel, tasked'], [circle(5, 0, 4.5, 'class="ink"'), 'FWHM of the blur']]);
     need(sats.every(q => fwhmOf(q) > q.res), 'every satellite blurs wider than its pixel');
     parts.satbars = figure(560, top + sats.length * rowH + 60, 'The pixel size and the blur of each satellite, in metres',
-      g, 'The pixel (square) and the blur (circle) of each satellite, in metres, on a scale where each step is about three times the last. The blur is always wider than the pixel, and it is the blur that decides what a pixel sees.');
+      g, 'Pixel size (square) and FWHM (circle) of each satellite, in metres, on a logarithmic scale. The FWHM exceeds the pixel for every satellite.');
   }
 
   // ---- A pansharpened product beside its native bands.
@@ -733,7 +694,7 @@ export async function docsParts(load) {
       text(10 + W / 2, 12, 'Pansharpened', 't-strong', 'middle') + text(10 + W / 2, 26, `${pan.resLabel} pixels, FWHM ${m(fwhmOf(pan))} m`, 't-tick', 'middle')
       + text(40 + W + W / 2, 12, 'Native bands', 't-strong', 'middle') + text(40 + W + W / 2, 26, `${nat.resLabel} pixels, FWHM ${m(fwhmOf(nat))} m`, 't-tick', 'middle')
       + one(10, pan) + one(40 + W, nat),
-      `Pléiades over the same ${2 * half} m of ground. The pansharpened pixels are fine, but the circle, the blur at half its peak, is what a pixel really sees. An index is computed on the native bands: its blur is the circle on the right.`);
+      `Pléiades over ${2 * half} m of ground. Left: the pansharpened pixels and their FWHM. Right: the native bands, whose FWHM applies to an index.`);
   }
 
   // ---- Every position of the grid on one plot: what it keeps, pure and holding.
@@ -752,7 +713,7 @@ export async function docsParts(load) {
     need(a.top !== b.top && a.max > b.max, 'the position with the most pure pixels is not the one where the most hold');
     parts.offsets = figure(34 + 2 * n * cell + 70, 28 + n * cell + 38, 'Pure pixels and pixels that hold for every position of the grid on a plot',
       a.g + b.g + text(34 + n * cell + 28, 28 + n * cell + 32, 'shift of the grid east and north, m', '', 'middle'),
-      `The 40 m plot under Sentinel-2, for every shift of the grid by a metre east and north (0, 0: a pixel centred on the plot; 5, 5: pixel edges on its edges). Left, the pure pixels it keeps; right, those that hold within the CE90. The outlined cell is the best of each: they are not the same.`);
+      `The 40 m plot under Sentinel-2, for every shift of the grid in steps of 1 m east and north (0, 0: a pixel centred on the plot; 5, 5: pixel edges on its edges). Left: the pure pixels. Right: those that hold within the CE90. The outlined cell is the best shift of each panel.`);
   }
 
   // ---- A block trial, with the name of each of its dimensions.
@@ -772,7 +733,7 @@ export async function docsParts(load) {
     g += measure(px(plan.u0), py(last.v1) + 16, px(plan.u0 + plan.totalU), py(last.v1) + 16, `${d.blocksPerRow} blocks per row`, { side: -1 });
     need(plots.length === d.nSpecies * d.nBlocks && plan.cols === d.blocksPerRow, 'the plan drawn is the design asked for');
     parts.blockdims = figure(480, Y + plan.totalV * s + 46, 'A randomised block trial with its dimensions named',
-      g, `The fields of the Design fold on a trial of ${d.nSpecies} species in ${d.nBlocks} blocks: a plot is ${d.plotLength} m long and ${d.plotWidth} m wide, a block is one plot long and all its species wide, and the bare soil of the alleys is in brown.`);
+      g, `The dimensions of a design, for ${d.nSpecies} species in ${d.nBlocks} blocks (plots of ${d.plotLength} × ${d.plotWidth} m, alleys in brown).`);
   }
 
   // ---- The angle: counted from the pixel rows, anticlockwise from east.
@@ -789,7 +750,7 @@ export async function docsParts(load) {
     g += line(cx, cy, ex + 14, cy, 'ink') + line(cx, cy, ax + 14 * Math.cos(rad), ay - 14 * Math.sin(rad), 'accent w2') + `<path d="M${c(ex - 30)} ${c(cy)}A${r - 30} ${r - 30} 0 0 0 ${c(cx + (r - 30) * Math.cos(rad))} ${c(cy - (r - 30) * Math.sin(rad))}" class="accent"/>`;
     g += text(cx + r - 6, cy - 16, `${A}°`, 't-strong') + text(X + W + 14, 60, 'the pixel rows run east') + text(X + W + 14, 84, 'the angle turns the trial') + text(X + W + 14, 100, 'anticlockwise from them') + text(X + W + 14, 132, 'broken outline: 0°,') + text(X + W + 14, 148, 'along the pixel rows');
     parts.angle = figure(520, Y + H + 12, 'A trial turned by an angle from the pixel rows',
-      g, `The angle of a design is counted from the pixel rows, anticlockwise from east: 0 lays the trial along them, here it is turned by ${A}°.`);
+      g, `A trial at ${A}°.`);
   }
 
   // ---- The seed: three draws of the same design.
@@ -806,15 +767,15 @@ export async function docsParts(load) {
     const order = plan => Array.from(plan.plotSpecies).join('');
     need(new Set(drawn.map(order)).size === seeds.length && order(sim.buildBlockPlan({ ...base, seed: 1 }, { centerU: 0, centerV: 0 })) === order(drawn[0]), 'another seed draws another layout, and the same seed the same one');
     parts.seeds = figure(3 * W + 80, H + 44, 'Three draws of the same design, one per seed',
-      g, 'The same design under three seeds: four species in three blocks, in another order each time. The same seed always gives the same layout.');
+      g, 'Four species in three blocks, with three seeds.');
   }
 
   // ---- The trial each satellite asks for, at one scale.
   {
-    const ids = ['s2-10', 'planet', 'pleiades', 'wv'];
+    const ids = ['planet', 's2-10', 'pleiades', 'wv'];
     const built = ids.map(id => { const q = SOURCES.find(z => z.id === id); return { q, b: suggestBlockDesign({ nSpecies: 4, nBlocks: 4, pixels: 4, res: q.res, sigmaX: q.psf, sigmaY: q.psf, threshold: THR, anyPosition: q.kind !== 'catalog', placeHeldM: ce90Of(id), ce90M: ce90Of(id), plotAlley: 0, blockAlley: 0, field: null }) }; });
-    need(built.every(q => q.b && q.b.held >= 4) && built.every((q, k) => !k || q.b.footprint[0] * q.b.footprint[1] < built[k - 1].b.footprint[0] * built[k - 1].b.footprint[1]), 'a finer satellite asks for a smaller trial');
-    const s = 1.35, base = 250; let X = 10, g = '';
+    need(built.every(q => q.b && q.b.held >= 4) && built.every((q, k) => !k || q.b.footprint[0] * q.b.footprint[1] < built[k - 1].b.footprint[0] * built[k - 1].b.footprint[1]), 'the trial asked for shrinks from PlanetScope as delivered to Sentinel-2, Pléiades and WorldView-2');
+    const s = 1, base = 16 + Math.max(...built.map(q => q.b.footprint[1])) * s, haOf = id => { const b = built[ids.indexOf(id)].b; return ((b.footprint[0] * b.footprint[1]) / 10000).toFixed(2); }; let X = 10, g = '';
     for (const { q, b } of built) {
       const w = b.footprint[0] * s, h = b.footprint[1] * s, d = b.design, perRow = d.blocksPerRow, rows = Math.ceil(d.nBlocks / perRow);
       const lw = Math.max(w, 96), bx = X + (lw - w) / 2;
@@ -822,10 +783,10 @@ export async function docsParts(load) {
       for (let i = 1; i < perRow; i++) g += line(bx + (i * w) / perRow, base - h, bx + (i * w) / perRow, base, 'ink');
       for (let j = 1; j < rows * d.nSpecies; j++) g += line(bx, base - (j * h) / (rows * d.nSpecies), bx + w, base - (j * h) / (rows * d.nSpecies), j % d.nSpecies ? 'grid' : 'ink');
       g += text(X + lw / 2, base + 16, `${q.short} ${q.resLabel}`, 't-strong', 'middle') + text(X + lw / 2, base + 32, `plots ${m(d.plotLength)} × ${m(d.plotWidth)} m`, 't-tick', 'middle') + text(X + lw / 2, base + 46, `${((b.footprint[0] * b.footprint[1]) / 10000).toFixed(2)} ha`, 't-tick', 'middle');
-      X += lw + 22;
+      X += lw + 16;
     }
     parts.suggested = figure(X, base + 54, 'The trial built for four pixels per plot, for four satellites, at one scale',
-      g, `The smallest trial of 4 species in 4 blocks whose every plot keeps 4 pixels that hold, for four satellites, drawn at one scale. Sentinel-2 asks for ${((built[0].b.footprint[0] * built[0].b.footprint[1]) / 10000).toFixed(2)} ha, ${nameOf(built[3].q)} for ${((built[3].b.footprint[0] * built[3].b.footprint[1]) / 10000).toFixed(2)} ha.`);
+      g, `The smallest trials of 4 species in 4 blocks with 4 pixels that hold per plot (CE90 as delivered), at the same scale: ${built.map(({ q }) => `${nameOf(q)} ${haOf(q.id)} ha`).join(', ')}.`);
   }
 
   // ---- The three readings of a geolocation error.
@@ -842,7 +803,7 @@ export async function docsParts(load) {
       + one(1, 'Average image', `σ eff = ${m(SIG_EFF)} m`, (cx, cy) => circle(cx, cy, r90(SIG), 'class="ink dash"') + circle(cx, cy, r90(SIG_EFF), 'class="accent w2"'))
       + one(2, '9 images in 10', `σ PSF, anywhere within ${m(CE)} m`, (cx, cy) => circle(cx, cy, CE * s, 'class="accent"') + [[0, 0], [1, 0], [-0.5, 0.87], [-0.5, -0.87]].map(([a, b]) => circle(cx + a * CE * s, cy - b * CE * s, r90(SIG), `class="ink${a || b ? ' dash' : ' w2'}"`)).join(''));
     parts.readings = figure(3 * W + 60, W + 56, 'The three readings of a geolocation error: the blur alone, the blur widened, the blur moved',
-      g, 'One Sentinel-2 pixel and the circle that holds 90 % of its signal, read three ways. Shift corrected: the blur alone. Average image: the blur widened by the geolocation error. 9 images in 10: the blur alone, but landing anywhere within the CE90 (small circle), so the ground it may see is larger still.');
+      g, 'The circle containing 90 % of the signal of one Sentinel-2 pixel, for each of the three columns. The small circle is the CE90.');
   }
 
   // ---- The side a plot needs, by the number of pure pixels asked of it.
@@ -856,7 +817,7 @@ export async function docsParts(load) {
     g += key(60, 250, names.map((q, k) => [`<line x1="0" y1="0" x2="12" y2="0" stroke="${PALE[k]}" stroke-width="2"/>`, q]));
     need(cols.every(col => col.every((v, i) => !i || v >= col[i - 1])) && cols[2].every((v, i) => v > cols[1][i] && cols[1][i] > cols[0][i]), 'more pixels ask for a larger plot, and each reading for more than the last');
     parts.sizecurve = figure(480, 262, 'The plot side Sentinel-2 asks for, against the pure pixels wanted, in the three readings',
-      g, `Plot size required for Sentinel-2, for 1 to 12 pure pixels in a square plot, wherever the grid falls. The plot grows by steps: ${cols[0][3].toFixed(1)} m for 4 pixels with the shift corrected, ${cols[2][3].toFixed(1)} m for 4 that stay pure in 9 images out of 10.`);
+      g, `Plot size required for Sentinel-2, for 1 to 12 pure pixels in a square plot, wherever the grid falls. The size increases in steps: ${cols[0][3].toFixed(1)} m for 4 pixels with the shift corrected, and ${cols[2][3].toFixed(1)} m for 4 pixels that stay pure in 9 images out of 10.`);
   }
 
   // ---- The growth curves of the crops, and what a mixed pixel records.
@@ -871,7 +832,7 @@ export async function docsParts(load) {
     const peak = a => a.indexOf(Math.max(...a));
     need(peak(series[0]) < peak(series[3]) && mix.every((v, t) => v <= Math.max(series[0][t], series[3][t]) + 1e-12), 'winter wheat peaks before maize, and a mixed pixel lies between its two crops');
     parts.curves = figure(640, 256, 'The NDVI curves of five crops over the year, and that of a pixel that mixes two',
-      g, `The season of five of the crop presets. The broken line is what a pixel records when half its signal comes from wheat and half from maize: neither crop's curve. This is what a mixed pixel does to a time series, and why the trial is read through its pure pixels.`);
+      g, `NDVI curves of five crop presets. Dashed: a pixel with half its signal from wheat and half from maize.`);
   }
 
   // ---- The noise through the season, for three settings of alpha and beta.
@@ -884,21 +845,7 @@ export async function docsParts(load) {
     const tops = series.map(a => a.indexOf(Math.max(...a)));
     need(Math.abs(tops[0] - T / 2) < 4 && tops[1] < tops[0] && tops[2] > tops[0] && series.every(a => Math.abs(Math.max(...a) - Math.sqrt(mag)) < 1e-9), 'alpha and beta move the peak of the noise, and mag sets its height');
     parts.noise = figure(480, 204, 'The noise over the season for three settings of alpha and beta',
-      g, `The noise added to each pixel's series, at mag = ${mag}: its peak is √mag = ${Math.sqrt(mag).toFixed(2)} NDVI. α and β say when it peaks: mid-season at 2 and 2, early at 2 and 5, late at 5 and 2.`);
-  }
-
-  // ---- alpha, the contrast kept at the pixel grid's own limit, against r.
-  {
-    const fr = frame({ X: 54, Y: 22, W: 410, H: 170, x: [0.8, 3.6], y: [1e-5, 1], xt: [1, 1.5, 2, 2.5, 3, 3.5], yt: [1e-5, 1e-4, 1e-3, 1e-2, 0.1, 1], yf: v => (v >= 0.1 ? String(v) : `10${String(Math.round(Math.log10(v))).replace('-', '⁻').replace(/\d/g, d => '⁰¹²³⁴⁵⁶⁷⁸⁹'[+d])}`), ylog: true, xl: 'r = FWHM / GSD', yl: 'α, contrast kept at the Nyquist frequency' });
-    const alpha = r => Math.exp(-0.890 * r * r), pts = []; for (let r = 0.8; r <= 3.6001; r += 0.05) pts.push([fr.px(r), fr.py(alpha(r))]);
-    let g = fr.g + rect(fr.px(0.8), fr.py(0.30), fr.px(3.6) - fr.px(0.8), fr.py(0.15) - fr.py(0.30), 'class="accent-fill" opacity="0.18"') + text(fr.px(3.58), fr.py(0.30) - 6, "Sentinel-2's specification, 0.15 to 0.30", 't-tick', 'end') + path2(pts, 'ink w2');
-    const shown = ['wv', 'ls-30', 's2-10', 'pleiades', 'wv-ps', 'planet'].map(id => SOURCES.find(q => q.id === id));
-    const at = { wv: [-2, -9, 'end'], 'ls-30': [-7, 17, 'end'], 's2-10': [16, 24, 'start'], pleiades: [-8, 14, 'end'], 'wv-ps': [9, -5, 'start'], planet: [-8, 15, 'end'] };
-    shown.forEach(q => { const r = q.psf * K, [dx, dy, anchor] = at[q.id]; g += circle(fr.px(r), fr.py(alpha(r)), 3.5, `fill="${q.kind === 'catalog' ? CB : CA}"`) + text(fr.px(r) + dx, fr.py(alpha(r)) + dy, q.short, 't-tick', anchor); });
-    const s2a = alpha(S2.psf * K);
-    need(s2a > 0.15 && s2a < 0.30 && alpha(SOURCES.find(q => q.id === 'planet').psf * K) < 1e-3, "Sentinel-2's measured blur is within its specification, and PlanetScope keeps under a thousandth");
-    parts.alpha = figure(480, 234, 'Alpha against the ratio of the blur to the pixel, with six satellites',
-      g, `α = exp(−0.890 r²): the share of contrast a satellite keeps at the finest detail its pixel grid can carry. Sentinel-2's measured blur gives ${s2a.toFixed(2)}, inside its specification. A satellite far down the curve has pixels much finer than its optics resolve.`);
+      g, `Noise for mag = ${mag} (peak √mag = ${Math.sqrt(mag).toFixed(2)} NDVI): mid-season (α = 2, β = 2), early (2, 5), late (5, 2).`);
   }
 
   // ---- The buffer and the pure core of a plot.
@@ -911,7 +858,7 @@ export async function docsParts(load) {
     g += text(lx, 60, `k = ${k.toFixed(2)} at ε = ${Math.round((1 - THR) * 100)} %`) + text(lx, 82, `σ<tspan class="sub" dy="3">eff</tspan><tspan dy="-3"> = ${m(SIG_EFF)} m</tspan>`) + text(lx, 104, `b = k σ<tspan class="sub" dy="3">eff</tspan><tspan dy="-3"> = ${m(+b.toFixed(1))} m</tspan>`) + text(lx, 140, 'a pixel is pure only if its') + text(lx, 156, 'centre lies in the core');
     need(core > 0 && lMin > GSD && lMin < L, 'a 40 m plot has a pure core for Sentinel-2, and the closed form asks for less than 40 m');
     parts.buffer = figure(480, Y + W + 34, 'A plot with its buffer along each edge and its pure core',
-      g, `The note's buffer on the 40 m plot, for Sentinel-2: b = ${m(+b.toFixed(1))} m along each edge leaves a pure core ${m(+core.toFixed(1))} m wide. The closed form for one pure pixel wherever the grid falls asks for a plot of ${lMin.toFixed(1)} m.`);
+      g, `The buffer on the 40 m plot, for Sentinel-2: b = ${m(+b.toFixed(1))} m along each edge leaves a pure core ${m(+core.toFixed(1))} m wide. The closed form for one pure pixel wherever the grid falls gives a plot of ${lMin.toFixed(1)} m.`);
   }
 
   // ---- The note's placements of the grid on a plot.
@@ -929,25 +876,27 @@ export async function docsParts(load) {
     g += text(lx, 44, 'Three starting positions:', 't-strong') + names.map((q, k) => circle(lx + 5, 62 + k * 18, 4.5, `fill="${PALE[k]}"`) + text(lx + 18, 66 + k * 18, q)).join('');
     g += text(lx, 132, 'From each, the image is shifted by') + text(lx, 148, '⅓, ½, ¾ or 1 pixel, four ways.') + text(lx, 182, 'And the grid is turned by', 't-strong');
     ROTS.forEach((a, k) => { const cx = lx + 18 + k * 50, cy = 216, t = (a * Math.PI) / 180, h = 13; g += `<polygon points="${[[-h, -h], [h, -h], [h, h], [-h, h]].map(([x, y]) => `${c(cx + x * Math.cos(t) - y * Math.sin(t))},${c(cy + x * Math.sin(t) + y * Math.cos(t))}`).join(' ')}" class="ink"/>` + text(cx, cy + 32, `${a}°`, 't-tick', 'middle'); });
-    parts.placements = figure(560, Y + 3 * u + 14, 'The placements of the pixel grid on a plot that the note sweeps',
-      g, `Each dot is one position of the plot's centre on the pixel grid (the squares are pixels; the one outlined is the pixel the plot's coordinates name): ${count} of them, each at four rotations of the grid, ${nm.placementCount()} placements in all. A minimum plot of the note is the smallest that keeps its pixel pure in the worst of them.`);
+    parts.placements = figure(560, Y + 3 * u + 14, 'The 204 placements of the pixel grid on a plot',
+      g, `Each dot is one position of the plot's centre on the pixel grid. The squares are pixels, and the outlined one is the pixel at the plot's coordinates. There are ${count} positions, each at four rotations of the grid, so ${nm.placementCount()} placements.`);
   }
 
-  // ---- The note's minimum plots, for the six sensors it measured.
+  // ---- The minimum plots by the note's criteria, for the six sensors it measured, each with its CE90 as delivered (what the page shows).
   {
-    const ids = ['wv-ps', 'wv', 'pleiades-ps', 'pleiades', 'planet', 's2-10'], rows = ids.map(id => { const q = SOURCES.find(z => z.id === id); return { q, f: nm.noteFigures({ gsd: q.res, sigmaPsf: q.psf * q.res, sigmaGeo: q.res / 3, threshold: THR }) }; });
+    const ids = ['wv-ps', 'wv', 'pleiades-ps', 'pleiades', 'planet', 's2-10'], rows = ids.map(id => { const q = SOURCES.find(z => z.id === id); return { q, f: nm.noteFigures({ gsd: q.res, sigmaPsf: q.psf * q.res, sigmaGeo: ceFor(q.id) / CE90_TO_SIGMA, threshold: THR }) }; });
     const keys = [['central', 'central pixel'], ['centralRegistered', 'registered to ½ px'], ['anyPixel', 'any pixel'], ['common2m', 'on a 2 m grid']];
-    const X = 150, W = 330, top = 22, bar = 8, rowH = keys.length * bar + 12, px = v => X + (v / 56) * W;
+    const X = 150, W = 330, top = 22, bar = 8, rowH = keys.length * bar + 12, px = v => X + (v / 66) * W;
     let g = '';
-    for (const t of [0, 10, 20, 30, 40, 50]) g += line(px(t), top, px(t), top + rows.length * rowH, 'rule') + text(px(t), top + rows.length * rowH + 14, `${t} m`, 't-tick', 'middle');
+    for (const t of [0, 10, 20, 30, 40, 50, 60]) g += line(px(t), top, px(t), top + rows.length * rowH, 'rule') + text(px(t), top + rows.length * rowH + 14, `${t} m`, 't-tick', 'middle');
     rows.forEach(({ q, f }, r) => { const y = top + r * rowH + 4; g += text(X - 8, y + (keys.length * bar) / 2 + 4, `${q.short} ${q.resLabel}`, '', 'end'); keys.forEach(([id], k) => { g += rect(X, y + k * bar, px(f[id]) - X, bar - 1.5, `fill="${PALE[k]}"`); }); g += text(X + W + 60, y + 9, `${f.central} m`, 't-num', 'end'); });
     g += text(X + W + 60, top - 4, 'central pixel', 't-tick', 'end');
     g += key(X - 120, top + rows.length * rowH + 36, keys.map(([, label], k) => [rect(0, -5, 12, 8, `fill="${PALE[k]}"`), label]));
-    const want = { 'wv-ps': 2.75, wv: 8, 'pleiades-ps': 5.75, pleiades: 12.75, planet: 21.75, 's2-10': 51.75 };
-    need(rows.every(({ q, f }) => f.central === want[q.id]) && rows.every(({ f }) => f.central >= f.centralRegistered && f.centralRegistered >= f.anyPixel), "the central-pixel figures are the note's own: 2.75, 8, 5.75, 12.75, 21.75 and 51.75 m");
-    const s2 = rows.find(z => z.q.id === 's2-10').f;
-    parts.noteplots = figure(600, top + rows.length * rowH + 50, "The note's minimum plots for the six sensors it measured",
-      g, `The note's four minimum plots for the six sensors whose blur it measured; the figure written is the first, the central pixel. Sentinel-2 asks for ${s2.central} m by that criterion and ${s2.anyPixel} m if any pixel will do. On a common 2 m grid, where only the optics differ, the sensors come much closer together.`);
+    const fOf = id => rows.find(z => z.q.id === id).f, s2 = fOf('s2-10'), nameOfQ = q => q.provider.replace(' · ', ' ');
+    need(rows.every(({ f }) => Object.values(f).every(v => v == null || v <= 66)) && rows.every(({ f }) => f.central >= f.centralRegistered && f.centralRegistered >= f.anyPixel), 'every minimum plot fits the axis, and the central pixel asks for the most of the first three');
+    const g2 = rows.map(({ q, f }) => ({ q, v: f.common2m })).sort((a, b) => b.v - a.v);
+    need(g2[0].q.id === 'planet' && ['wv-ps', 'wv'].includes(g2[g2.length - 1].q.id) && rows.every(({ f }) => f.common2m <= f.central || f.common2m - f.central < 5),
+      'on the 2 m grid, with the blur and the error kept in metres, PlanetScope asks for the most and WorldView-2 for the least');
+    parts.minplots = figure(600, top + rows.length * rowH + 50, 'The four minimum plots for the six sensors with a measured blur',
+      g, `The four minimum plots for the six sensors with a measured blur, with their CE90 as delivered. The number on the right is the central-pixel value. Sentinel-2 needs ${s2.central} m by that criterion and ${s2.anyPixel} m if any pixel is accepted. On the 2 m grid, where only the pixel size is the same, PlanetScope needs the most (${g2[0].v} m) and ${nameOfQ(g2[g2.length - 1].q)} the least (${g2[g2.length - 1].v} m).`);
   }
 
   // ---- What is not simulated, as four small pictures.
@@ -961,7 +910,7 @@ export async function docsParts(load) {
       + cell(1, 'heavier tails', path2(bell(w / 2, 84, 62, 15), 'ink') + path2(bell(w / 2, 84, 62, 15, 0.3), 'accent dash'))
       + cell(2, 'replicates that differ', path2(season(0, 50), 'ink') + path2(season(4, 43), 'accent dash'))
       + cell(3, 'other grid rotations', sq(w / 2, 48, 30, 0) + sq(w / 2, 48, 30, 25)),
-      'Sketches, not computed: a blur that changes with the band, a real spot whose tails are heavier than a Gaussian\'s, two repetitions of a variety that do not grow alike, and the grid at another rotation than the one drawn. White: what is simulated. Blue: what is left out.');
+      'Sketches (not computed) of the four effects left out. White: simulated. Blue: left out.');
   }
 
   // ---- What stays in the browser and what goes out.
@@ -972,7 +921,7 @@ export async function docsParts(load) {
     out.forEach((q, k) => { const y = 14 + k * 42; g += rect(420, y, 190, 30, 'class="card" rx="5"') + text(432, y + 19, q) + line(256, 40 + k * 22, 412, y + 15, 'ink') + `<path d="M${c(420)} ${c(y + 15)}l-8 -4v8z" class="solid"/>`; });
     g += line(168, 147, 300, 147, 'warn') + line(292, 139, 308, 155, 'warn') + line(308, 139, 292, 155, 'warn') + text(318, 151, 'stays', 't-tick');
     parts.storage = figure(616, 182, 'What the designer keeps in the browser and what it asks of outside services',
-      g, 'The designer asks four things of the outside: the map\'s tiles, the place search, its fonts and, for a satellite with a fixed grid, the catalog the grid is read from. The field, the design, the settings and a trial file stay in the browser.');
+      g, 'What leaves the browser, and what stays in it.');
   }
 
   // ---- The designer's own menus, as pictures of the page itself (scripts/docs-screenshots.mjs writes them, and their sizes).
@@ -980,35 +929,35 @@ export async function docsParts(load) {
     const sizes = JSON.parse(fs.readFileSync(path.join(ROOT, 'docs-img/shots.json'), 'utf8'));
     const shot = (name, alt, caption) => {
       const q = sizes[name];
-      need(q && fs.existsSync(path.join(ROOT, 'docs-img', `${name}.png`)), `the picture ${name}.png is in docs-img, with its size`);
-      return `<figure class="shot" style="--w: ${q.w}px"><img src="./docs-img/${name}.png" alt="${alt}" width="${q.w}" height="${q.h}" loading="lazy" decoding="async"><figcaption>${caption}</figcaption></figure>`;
+      // SVG since 2026-11-25 ("the screen shots look blurry when zooming"): scripts/docs-screenshots.mjs.
+      need(q && fs.existsSync(path.join(ROOT, 'docs-img', `${name}.svg`)), `the picture ${name}.svg is in docs-img, with its size`);
+      return `<figure class="shot" style="--w: ${q.w}px"><img src="./docs-img/${name}.svg" alt="${alt}" width="${q.w}" height="${q.h}" loading="lazy" decoding="async"><figcaption>${caption}</figcaption></figure>`;
     };
     const row = (...items) => `<div class="shots">${items.join('')}</div>`;
     parts.shotsOverview = shot('app', 'The designer: a map with a trial on the left, the panel with its three steps on the right',
-      'The designer. Left, the map, with the trial of the first example and its pure pixels outlined. Right, the panel, step 2 open on its Satellite fold. The pictures of this page are taken with no background map under the trial.')
-      + shot('step-area', 'Step 1, Experiment area', 'Step 1, Experiment area: the place search, Box and Shape to draw the area, Clear, and the button that pins the field.');
-    parts.shotsMap = shot('layers-menu', 'The Layers menu', 'The Layers menu: the basemap, then the five switches. A switch that cannot be used is greyed.')
-      + row(shot('layer-simulation', 'The map with every switch off', 'With every switch off: each pixel in the blend of what it sees.'),
-        shot('layer-pure', 'The map with the Pure pixels layer', 'Pure pixels: those that hold outlined, the rest under a veil.'),
-        shot('layer-real-field', 'The map with the Real field layer', 'Real field: the planting pattern under the pixel grid.'),
-        shot('layer-sigmas', 'The map with the three sigma rings', 'σ PSF, geo, eff: the three rings and the two circles that hold 90 % of the signal, with their radii.'),
-        shot('layer-signal', 'The map with the signal of a pixel as dots', 'Signal of a pixel: its dots, and the card of shares. The first line is the purity; the mark on the bar is the threshold.'));
-    parts.shotsSatellite = shot('fold-satellite', 'The Satellite fold', 'The Satellite fold: the satellite, σ PSF along x and y in pixels, the CE90 with Default and Use, what the trial is placed for, and the FWHM with its ratio to the pixel.');
-    parts.shotsBudget = shot('fold-budget', 'The list Every source of blur', 'Every source of blur, for Sentinel-2 and the 40 m plots of the first example.');
-    parts.shotsDesigns = row(shot('fold-design', 'The Design fold for randomised blocks', 'The Design fold for randomised blocks, with the size of the trial under its fields.'),
-      shot('fold-design-rows', 'The Design fold for alternating rows', 'The same fold for alternating rows.'));
-    parts.shotsImported = row(shot('fold-import', 'The Design fold with a trial read from a file', 'A trial read from a file: its plots and varieties, the two columns, the attribute table open, and the angle.'),
-      shot('map-import', 'The imported trial on the map', 'That trial on the map, on Sentinel-2 pixels: a pixel that holds has a solid outline.'));
-    parts.shotsSuggest = shot('fold-suggest', 'Suggest a design, after Build', 'Suggest a design after Build, for the first example: what was asked, and the trial built.');
-    parts.shotsPlotSize = shot('fold-plot-size', 'The Plot size required card', 'Plot size required for Sentinel-2. The row with a field is the count asked for; under it, the most this field allows, and what the design holds now.');
-    parts.shotsCurves = row(shot('fold-curves', 'The Growth curves fold', 'Growth curves: a crop for each species, a button to edit its curve, and the season.'),
-      shot('fold-noise', 'The Noise and purity threshold fold', 'Noise & purity threshold.'));
+      'The designer, with the trial of example 3. The screenshots on this page have no background map.')
+      + shot('step-area', 'Step 1, Experiment area', 'Step 1, Experiment area.');
+    parts.shotsMap = shot('layers-menu', 'The Layers menu', 'The Layers menu.')
+      + row(shot('layer-simulation', 'The map with every switch off', 'All switches off.'),
+        shot('layer-pure', 'The map with the Pure pixels layer', 'Pure pixels.'),
+        shot('layer-real-field', 'The map with the Real field layer', 'Real field.'),
+        shot('layer-sigmas', 'The map with the three sigma rings', 'σ PSF, geo, eff.'),
+        shot('layer-signal', 'The map with the signal of a pixel as dots', 'Signal of a pixel.'));
+    parts.shotsSatellite = shot('fold-satellite', 'The Satellite section', 'The Satellite section.');
+    parts.shotsBudget = shot('fold-budget', 'The list Every source of blur', 'Every source of blur, for the trial of example 3.');
+    parts.shotsDesigns = row(shot('fold-design', 'The Design section for randomised blocks', 'Design, randomised blocks.'),
+      shot('fold-design-rows', 'The Design section for alternating rows', 'Design, alternating rows.'));
+    parts.shotsImported = row(shot('fold-import', 'The Design section with a trial read from a file', 'Design, an imported trial.'),
+      shot('map-import', 'The imported trial on the map', 'The imported trial on Sentinel-2 pixels.'));
+    parts.shotsSuggest = shot('fold-suggest', 'Suggest a design, after Build', 'Suggest a design after Build, for the trial of example 3.');
+    parts.shotsPlotSize = shot('fold-plot-size', 'The Plot size required card', 'Plot size required, for Sentinel-2.');
+    parts.shotsCurves = shot('fold-curves', 'The Growth curves section, with the noise', 'Growth curves and noise.');
     parts.shotsChart = row(shot('chart-scatter', 'The chart, Scatter tab', 'Scatter.'), shot('chart-variance', 'The chart, Variance tab', 'Variance.'),
       shot('chart-loadings', 'The chart, Loadings tab', 'Loadings.'), shot('chart-purity', 'The chart, Purity tab', 'Purity.'));
-    parts.shotsTable = row(shot('table', 'The table Across satellites', 'The table: one row per satellite, the one selected outlined.'),
-      shot('table-compare', 'The table in a comparison', 'A comparison: the trial turned by 20° against the same trial along the pixel rows.'),
-      shot('table-charts', 'The Charts view', 'The Charts view: one small PCA per satellite.'));
-    need(Object.keys(sizes).every(name => Object.values(parts).some(h => h.includes(`./docs-img/${name}.png`))), 'every picture taken is shown on the page');
+    parts.shotsTable = row(shot('table', 'The table Across satellites', 'The table.'),
+      shot('table-compare', 'The table in a comparison', 'A comparison: the trial at 20° against the same trial at 0°.'),
+      shot('table-charts', 'The Charts view', 'The Charts view.'));
+    need(Object.keys(sizes).every(name => Object.values(parts).some(h => h.includes(`./docs-img/${name}.svg`))), 'every picture taken is shown on the page');
   }
 
   return parts;

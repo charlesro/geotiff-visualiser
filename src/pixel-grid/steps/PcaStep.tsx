@@ -137,7 +137,9 @@ function PcaStepBody(p: StepProps) {
    * through and printed, rather than leaving two bare percentages to imply they
    * were taken over the same thing.
    */
-  const worstCase = geoErrM > 0;
+  // Judged within the CE90 when the satellites compared have one, whatever the one selected has
+  // (Custom, with none, turned the whole sentence to the nominal figures; Neon, 2026-11-25).
+  const worstCase = sweep ? sweep.some(s => (s.ce90M ?? 0) > 0) : geoErrM > 0;
   /** The right-hand ladder, as the verdict's subject and verb. */
   const other = imported ? 'best placement gives' : 'pixel rows give';
   const comparison = (() => {

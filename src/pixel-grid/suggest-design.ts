@@ -276,6 +276,16 @@ export function plotCount(
  */
 function smallestPlot(
   req: SuggestRequest, blockAlley: number,
+  /**
+   * Only plots for which this holds: some arrangement of the trial with that
+   * plot fits the field. Plots are then looked for length by length within the
+   * field, since the smallest of all may be the wrong shape for it.
+   */
+  fitsAt?: (pu: number, pv: number) => boolean,
+  /** With fitsAt: the blocks across and the rows of blocks, which bound a plot by the field's share of it. */
+  arrangement?: { cols: number; rows: number },
+  /** Counts already made at this alley, kept from one arrangement to the next (Neon, 2026-11-25). */
+  memo?: { seen: Map<number, number>; refused: Set<number> },
 ): { pu: number; pv: number; pure: number; held: number | null } | null {
   const { res, pixels, plotAlley, ce90M } = req;
   const steps = req.stakeSteps ?? 6;
@@ -288,9 +298,9 @@ function smallestPlot(
     nSpecies: 2, nBlocks: 1, blocksPerRow: 1, seed: 1,
     plotLength: cm(pu * res - blockAlley), plotWidth: cm(pv * res - plotAlley), plotAlley, blockAlley,
   });
-  const seen = new Map<number, number>();
+  const seen = memo?.seen ?? new Map<number, number>();
   /** Pitches the engine counted short of what the factorised count promised. */
-  const refused = new Set<number>();
+  const refused = memo?.refused ?? new Set<number>();
   const key = (pu: number, pv: number) => pu * 100_000 + pv;
   const got = (pu: number, pv: number): number => {
     if (refused.has(key(pu, pv))) return -1;
@@ -305,6 +315,46 @@ function smallestPlot(
     return c;
   };
   const enough = (pu: number, pv: number) => got(pu, pv) >= pixels;
+  /** At one length, the narrowest plot that keeps the pixels, between lo and hi, or null (see the halving below). */
+  const narrowest = (pu: number, lo: number, hi: number): number | null => {
+    for (let k = 0; k < 2 && hi > lo && !enough(pu, hi); k++) hi--;
+    if (hi < lo || !enough(pu, hi)) return null;
+    const floor = lo;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (enough(pu, mid)) hi = mid; else lo = mid + 1;
+    }
+    for (let pv = hi - 1; pv >= Math.max(floor, hi - 3); pv--) if (enough(pu, pv)) hi = pv;
+    return hi;
+  };
+
+  if (fitsAt) {
+    // A wider plot keeps more and fits less: at each length, the narrowest plot that is
+    // enough is the only one worth asking whether it fits.
+    // A block is one plot long and all its species wide: no plot is longer than its share of the
+    // field across the blocks of a row, or wider than its share along the rows of blocks.
+    const cols = Math.max(1, arrangement?.cols ?? 1), nRows = Math.max(1, arrangement?.rows ?? 1);
+    const maxU = Math.min(cap, req.field ? Math.ceil(req.field.u / (cols * res)) + 1 : cap);
+    const maxV = Math.min(cap, req.field ? Math.ceil(req.field.v / (Math.max(1, req.nSpecies) * nRows * res)) + 1 : cap);
+    for (let attempt = 0; attempt < 12; attempt++) {
+      let best: { pu: number; pv: number } | null = null;
+      for (let pu = lowU; pu <= maxU; pu++) {
+        const lo = Math.max(lowV, Math.ceil(pu / MAX_ASPECT));
+        // The narrowest plot this length allows does not fit: no longer one will, its narrowest being no narrower.
+        if (!fitsAt(pu, lo)) break;
+        const hi = Math.min(maxV, pu * MAX_ASPECT, best ? Math.floor((best.pu * best.pv) / pu) : cap);
+        if (hi < lo) continue;
+        const pv = narrowest(pu, lo, hi);
+        if (pv === null || !fitsAt(pu, pv)) continue;
+        if (!best || pu * pv < best.pu * best.pv || (pu * pv === best.pu * best.pv && Math.abs(pu - pv) < Math.abs(best.pu - best.pv))) best = { pu, pv };
+      }
+      if (!best) return null;
+      const counted = plotPixels(mini(best.pu, best.pv), res, sensor, ce90M, steps);
+      if ((counted.held ?? counted.pure) >= pixels) return { ...best, ...counted };
+      refused.add(key(best.pu, best.pv));
+    }
+    return null;
+  }
 
   for (let attempt = 0; attempt < 12; attempt++) {
     // A square pitch first: it is at or near the smallest, and it bounds the search.
@@ -535,6 +585,8 @@ export function suggestBlockDesign(req: SuggestRequest): Suggestion | null {
   const ask: SuggestRequest = {
     ...req, nSpecies, nBlocks, pixels, plotAlley, blockAlley: asked,
     sigmaX: sideways ? req.sigmaY : req.sigmaX, sigmaY: sideways ? req.sigmaX : req.sigmaY,
+    // The field in the trial's own frame too: turned a quarter, its length runs north (Neon, 2026-11-25).
+    field: sideways && req.field ? { u: req.field.v, v: req.field.u } : req.field,
   };
   if (!alongPixels) return suggestTurned(ask, nSpecies, nBlocks, pixels, deg);
 
@@ -565,6 +617,43 @@ export function suggestBlockDesign(req: SuggestRequest): Suggestion | null {
       alleyWidened: blockAlley > asked + 1e-9, angle: deg,
       side: Math.max(plan.totalU, plan.totalV), ground: plan.totalU * plan.totalV,
     });
+  }
+  /**
+   * NONE OF THEM FITS THE FIELD: the smallest plot may be the wrong shape for it
+   * (2026-11-25: on a field turned to the pixels, Pleiades' smallest trial, plots
+   * of 8 x 12 m, fitted in no arrangement, while square 9.8 m plots fitted and
+   * kept a pure pixel each, and the coarsest satellite that fits came out finer
+   * than it is). Each arrangement then asks for the smallest plot with which it
+   * fits, and the least ground of those is built.
+   */
+  if ((req.fitsField || req.field) && !found.some(c => c.fits)) {
+    const fitted: typeof found = [];
+    const memos = new Map<number, { seen: Map<number, number>; refused: Set<number> }>();
+    for (const perRow of rowsOf(nBlocks)) {
+      const rows = Math.ceil(nBlocks / perRow);
+      const blockAlley = rows > 1 ? stacked : asked;
+      const designOf = (pu: number, pv: number): BlockDesign => ({
+        nSpecies, nBlocks, blocksPerRow: perRow, seed: req.seed ?? 1,
+        plotLength: cm(pu * res - blockAlley), plotWidth: cm(pv * res - plotAlley), plotAlley, blockAlley,
+      });
+      const fitsAt = (pu: number, pv: number) => { const plan = buildBlockPlan(designOf(pu, pv), { centerU: 0, centerV: 0 }); return fitsGiven(req, plan.totalU, plan.totalV, deg) === true; };
+      if (!memos.has(blockAlley)) memos.set(blockAlley, { seen: new Map(), refused: new Set() });
+      const plot = smallestPlot(ask, blockAlley, fitsAt, { cols: perRow, rows }, memos.get(blockAlley));
+      if (!plot) continue;
+      const design = designOf(plot.pu, plot.pv), plan = buildBlockPlan(design, { centerU: 0, centerV: 0 });
+      fitted.push({
+        design, pitchPx: [plot.pu, plot.pv], pure: plot.pure, held: plot.held,
+        footprint: [cm(plan.totalU), cm(plan.totalV)], fits: true,
+        alleyWidened: blockAlley > asked + 1e-9, angle: deg,
+        side: Math.max(plan.totalU, plan.totalV), ground: plan.totalU * plan.totalV,
+      });
+    }
+    // The least ground of them (the plots differ from one arrangement to the next, and the most
+    // compact could take twice the ground to shorten a side; Neon, 2026-11-25), then the most compact.
+    if (fitted.length) {
+      const least = Math.min(...fitted.map(c => c.ground));
+      found.splice(0, found.length, ...fitted.filter(c => c.ground <= least * (1 + 1e-9)));
+    }
   }
   if (!found.length) return null;
   const best = mostCompact(found);

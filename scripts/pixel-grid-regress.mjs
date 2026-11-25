@@ -44,7 +44,7 @@ const REVEAL = {
 };
 
 fs.rmSync(BUILD, { recursive: true, force: true });
-for (const rel of ['src/lib/geo.ts', 'src/lib/projections.ts', 'src/pixel-grid/s2-grid.ts', 'src/pixel-grid/geometry.ts', 'src/pixel-grid/simulate.ts', 'src/pixel-grid/resolving.ts', 'src/pixel-grid/shapefile.ts', 'src/pixel-grid/util.ts', 'src/pixel-grid/pca-field.ts', 'src/pixel-grid/ladder.ts', 'src/pixel-grid/ladder-rung.ts', 'src/pixel-grid/ladder-step.ts', 'src/pixel-grid/suggest-design.ts', 'src/pixel-grid/trial-seat.ts', 'src/pixel-grid/sensors.ts', 'src/pixel-grid/design-import.ts', 'src/pixel-grid/imported-plan.ts', 'src/pixel-grid/imported-rotate.ts', 'src/pixel-grid/field-membership.ts', 'src/pixel-grid/pixel-verdicts.ts', 'src/pixel-grid/plot-size.ts', 'src/pixel-grid/note-model.ts']) {
+for (const rel of ['src/pixel-grid/examples.ts', 'src/lib/geo.ts', 'src/lib/projections.ts', 'src/pixel-grid/s2-grid.ts', 'src/pixel-grid/geometry.ts', 'src/pixel-grid/simulate.ts', 'src/pixel-grid/resolving.ts', 'src/pixel-grid/shapefile.ts', 'src/pixel-grid/util.ts', 'src/pixel-grid/pca-field.ts', 'src/pixel-grid/ladder.ts', 'src/pixel-grid/ladder-rung.ts', 'src/pixel-grid/ladder-step.ts', 'src/pixel-grid/suggest-design.ts', 'src/pixel-grid/trial-seat.ts', 'src/pixel-grid/sensors.ts', 'src/pixel-grid/design-import.ts', 'src/pixel-grid/imported-plan.ts', 'src/pixel-grid/imported-rotate.ts', 'src/pixel-grid/field-membership.ts', 'src/pixel-grid/pixel-verdicts.ts', 'src/pixel-grid/plot-size.ts', 'src/pixel-grid/note-model.ts']) {
   let ts = fs.readFileSync(path.join(ROOT, rel), 'utf8');
   for (const decl of REVEAL[rel] ?? []) ts = reveal(ts, decl);
   // esbuild only strips types; relative specifiers still need an extension to
@@ -3852,7 +3852,7 @@ console.log('\nH22. the PHENET note: its closed forms, its table, and what survi
 
 console.log('\nH23. the plot size a trial needs: any shape, any count, three readings of the geolocation error');
 {
-  const { normCdf, ownShare, heldShare, pureScales, requiredScale, fewestPure, purestShare, imageCases, importedPlotBoxes } =
+  const { normCdf, ownShare, heldShare, pureScales, requiredScale, fewestPure, purestShare, imageCases, importedPlotBoxes, seatedTrial } =
     await import(path.join(BUILD, 'src/pixel-grid/plot-size.mjs'));
   const K = 2.3548, near = (a, b, tol) => Math.abs(a - b) <= tol;
   const SENSORS = [['WorldView-2', 1.6, 1.9], ['Pleiades', 2, 5], ['PlanetScope', 3, 9.7], ['Sentinel-2', 10, 14]];
@@ -3925,6 +3925,26 @@ console.log('\nH23. the plot size a trial needs: any shape, any count, three rea
     ok('a strip given along either axis is the same strip', pureScales({ a: Infinity, b: 1 }, view(3, c), [2])[0] === pureScales({ a: 1, b: Infinity }, view(3, c), [2])[0]);
     ok('the strip the design has holds what it should',
       fewestPure({ a: wide, b: Infinity }, view(3, r)).count === 3 && fewestPure({ a: wide - 0.05, b: Infinity }, view(3, r)).count === 2);
+  }
+
+  // A TRIAL ON A KNOWN GRID (2026-11-24, "16 doesn't seem correct for shift corrected"): each plot counted
+  // where it falls, the trial put where its weakest plot keeps the most. Pinned against an exact recount
+  // of every plot at the place found (the held share over 181 landings): 64.9 m plots with no alleys keep
+  // 25 / 24 / 16 in every plot (the worst grid position says 16 / 16 / 9), 60 m plots 25 / 22 / 16. A count
+  // with the trial moved by 0.5 m steps found 24 and 15: the places that give one pixel more are narrow.
+  {
+    const sp = 0.5946 * 10, ce = 6.9, se = Math.hypot(sp, ce / CE90_TO_SIGMA);
+    const reads = [{ sigma: sp, shift: 0 }, { sigma: se, shift: 0 }, { sigma: sp, shift: ce }].map(r => ({ gsd: 10, ...r, threshold: 0.9, angleDeg: 0 }));
+    const blocks = (L, alley = 0) => { const out = []; for (let c = 0; c < 4; c++) for (let k = 0; k < 4; k++) out.push([c * (L + alley) + L / 2, k * (L + alley) + L / 2]); return out; };
+    const counts = L => reads.map(v => seatedTrial(blocks(L), { a: L, b: L }, v).count);
+    ok('on a known grid each plot is counted where it falls: 64.9 m plots keep 25, 24 and 16 in every plot, 60 m plots 25, 22 and 16',
+      counts(64.9).join() === '25,24,16' && counts(60).join() === '25,22,16', `${counts(64.9)} and ${counts(60)}`);
+    // Plots a whole number of pixels apart all sit at the same place: the trial keeps what one plot keeps at its best place.
+    const best = reads.map(v => pureScales({ a: 1, b: 1 }, v, [1, 4, 9], 'best')), worst = reads.map(v => pureScales({ a: 1, b: 1 }, v, [1, 4, 9]));
+    const held = reads.every((v, r) => [1, 4, 9].every((n, k) => { const side = best[r][k]; return seatedTrial([[side / 2, side / 2]], { a: side, b: side }, v).count >= n; }));
+    ok('a plot at its best place needs no more than at its worst, and a plot of the size given keeps what it was asked for',
+      held && best.every((row, r) => row.every((x, k) => x <= worst[r][k] + 1e-9)) && best[0].map(x => x.toFixed(2)).join() === '23.31,29.64,39.65',
+      `shift corrected, best ${best[0].map(x => x.toFixed(2))} against worst ${worst[0].map(x => x.toFixed(2))}`);
   }
 
   // Against a count that knows nothing of the search: every placement of a fine
@@ -4334,33 +4354,35 @@ console.log('\nH30. the ladder\'s rows are satellites');
   ok('each at its own pixel size and blur, both axes',
     rows.every(g => { const q = SOURCES.find(x => x.id === g.id); return g.res === q.res && g.sigmaX === q.psf && g.sigmaY === q.psf && g.name === q.short; }));
   // The measured blurs are the note's FWHM itself, not a sigma kept to two decimals (0.59 px was 13.9 m for Sentinel-2).
-  ok('the six measured blurs are the note\'s FWHM to the last digit: 14, 1.9, 1.1, 5, 3 and 9.7 m',
-    [['s2-10', 14], ['wv', 1.9], ['wv-ps', 1.1], ['pleiades', 5], ['pleiades-ps', 3], ['planet', 9.7]]
+  // The note's newer version (aligned 2026-11-24): WorldView-2 native 2.0 m (was 1.9), PlanetScope 11.8 m (was 9.7).
+  ok('the six measured blurs are the note\'s FWHM to the last digit: 14, 2.0, 1.1, 5, 3 and 11.8 m',
+    [['s2-10', 14], ['wv', 2.0], ['wv-ps', 1.1], ['pleiades', 5], ['pleiades-ps', 3], ['planet', 11.8]]
       .every(([id, fwhm]) => { const q = SOURCES.find(x => x.id === id); return q.psfMeasured && Math.abs(q.psf * q.res * 2.3548 - fwhm) < 1e-12; }));
   // Nothing in the panel: the documentation page says what a pansharpened row flatters, and names each of them.
   {
     const docs = fs.readFileSync(path.resolve(ROOT, 'pixel-grid-docs.html'), 'utf8');
-    const pan = docs.slice(docs.indexOf('<section id="pansharpened">'), docs.indexOf('<section id="grid-position">'));
+    const panAt = docs.indexOf('<h3 id="pansharpened">'), pan = panAt < 0 ? '' : docs.slice(panAt, docs.indexOf('<h3', panAt + 4));
     ok('every pansharpened product is one the documentation warns about, the two the note measured to size on the native row',
       SOURCES.filter(q => /pansharpened/.test(q.provider)).map(q => q.id).join() === 'wv-ps,pleiades-ps,skysat,spot' && SOURCES.every(q => q.warn === undefined)
-      && /WorldView-2 and Pléiades pansharpened\.<\/b> Size a trial on the native row/.test(pan) && /SkySat and SPOT 6\/7 pansharpened\.<\/b> No blur was measured for their native bands/.test(pan)
-      && /sharp only in the panchromatic band/.test(pan) && ['wv', 'pleiades'].every(id => SOURCES.some(q => q.id === id && /native MS/.test(q.provider))));
+      // In the guide's words since 2026-11-25: the two with a native row are sized on it, the two without overstate purity.
+      && /<b>WorldView-2 and Pléiades\.<\/b> To size a trial followed with an index, use the native row of the same satellite/.test(pan)
+      && /<b>SkySat and SPOT 6\/7\.<\/b> The list has no native row for them[^<]*: their pansharpened values overstate purity/.test(pan)
+      && /but only its panchromatic band is/.test(pan) && ['wv', 'pleiades'].every(id => SOURCES.some(q => q.id === id && /native MS/.test(q.provider))));
   }
   {
     // The documentation's table of satellites is written by hand: every figure of it is held against the list itself.
     const docs = fs.readFileSync(path.resolve(ROOT, 'pixel-grid-docs.html'), 'utf8');
-    const { geolocRes: resFor } = await import(path.join(BUILD, 'src/pixel-grid/sensors.mjs'));
     const three = v => String(+v.toPrecision(3));
     const cells = id => { const m = docs.match(new RegExp(`<tr data-sat="${id}">([\\s\\S]*?)</tr>`)); return m ? [...m[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map(c => c[1].replace(/<[^>]+>/g, '').trim()) : null; };
     const wrong = SOURCES.filter(q => q.id !== 'custom').filter(q => {
       const c = cells(q.id);
-      if (!c || c.length !== 8) return true;
+      if (!c || c.length !== 7) return true;
       const fwhm = q.psf * 2.3548 * q.res;
       return c[1] !== `${q.res} m` || c[2] !== `${three(fwhm)} m` || c[3] !== (fwhm / q.res).toFixed(2)
-        || (c[4] === 'measured') !== !!q.psfMeasured || (q.psfMeasured ? false : c[4] !== 'published MTF')
-        || c[5] !== `${three((2.146 * resFor(q.id, q.res)) / 3)} m` || c[6] !== `${q.geo.ce90M} m`;
+        || c[4] !== (q.psfMeasured ? 'measured' : q.psfAssumed ? 'assumed' : 'published MTF')
+        || c[5] !== `${q.geo.ce90M} m`;
     }).map(q => q.id);
-    ok(`the documentation's table gives every satellite its own pixel, FWHM, ratio, blur source and both CE90s${wrong.length ? `: wrong for ${wrong.join(', ')}` : ''}`,
+    ok(`the documentation's table gives every satellite its own pixel, FWHM, ratio, blur source and CE90 as delivered${wrong.length ? `: wrong for ${wrong.join(', ')}` : ''}`,
       wrong.length === 0 && (docs.match(/<tr data-sat="/g) || []).length === SOURCES.length - 1);
     ok('and the links of that table are the list\'s own',
       SOURCES.filter(q => q.psfSrc?.url).every(q => docs.includes(`href="${q.psfSrc.url}"`)) && SOURCES.filter(q => q.geo?.url).every(q => docs.includes(`href="${q.geo.url}"`)));
@@ -4381,16 +4403,37 @@ console.log('\nH30. the ladder\'s rows are satellites');
     ok('and each of them is a drawing with its caption, with no script in it',
       !!built && Object.entries(built).filter(([k]) => !/^(ex|shots)/.test(k)).every(([, h]) => /^<figure class="fig"/.test(h) && /<svg viewBox=/.test(h) && /<figcaption>[^<]/.test(h)) && Object.values(built).every(h => !/<script|\u2014/.test(h)));
     // "every menu every concept should be illustrated [...] illustrate a lot" (2026-11-22): the drawings of the ideas, the worked examples, and the pictures of the menus.
-    ok('there is a drawing for each idea, six worked examples, and a picture of each menu',
-      !!built && Object.keys(built).filter(k => !/^(ex|shots)/.test(k)).length >= 30 && Object.keys(built).filter(k => /^ex/.test(k)).length === 6
+    {
+      // The examples the designer opens from the documentation's links (examples.ts).
+      const { DOC_EXAMPLES, exampleFromSearch, exampleTrialFile, exampleBox } = await import(path.join(BUILD, 'src/pixel-grid/examples.mjs'));
+      const box = exampleBox(280), file = exampleTrialFile();
+      ok('an address names an example by its id, and anything else names none',
+        exampleFromSearch('?example=file')?.id === 'file' && exampleFromSearch('?x=1&example=reps')?.id === 'reps'
+        && exampleFromSearch('?example=nope') === null && exampleFromSearch('') === null && exampleFromSearch('?example=') === null);
+      ok('each example is a satellite of the list at its own blur, a threshold, a field and a design the page can restore',
+        // Four since 2026-11-25: an imported trial, a field (coarsest satellite), a satellite (Sentinel-2), both (most repetitions).
+        DOC_EXAMPLES.map(e => e.id).join() === 'file,fit,varieties,reps' && DOC_EXAMPLES.every(({ seed: q }) => {
+          const src = SOURCES.find(z => z.id === q.sourceId);
+          return !!src && q.sigmaX === src.psf && q.sigmaY === src.psf && q.gsd === src.res && q.threshold >= 50 && q.threshold <= 99 && q.geoTyped === false
+            && Array.isArray(q.aoi) && q.aoi.length === 4 && q.aoi[0] < q.aoi[2] && q.aoi[1] < q.aoi[3] && ['block', 'row', 'imported'].includes(q.pattern)
+            && (q.pattern !== 'block' || (q.blockDesign.nSpecies === 4 && q.blockDesign.nBlocks === 4 && q.blockDesign.plotLength === q.blockDesign.plotWidth));
+        }));
+      ok('the examples\' field is a 280 m square in Belgium, and the made-up trial is 24 plots of 6 varieties',
+        Math.abs(box[0] - 4.68) < 0.05 && Math.abs(box[1] - 50.55) < 0.05 && box[2] - box[0] > 0.003 && box[2] - box[0] < 0.005
+        && file.plots.length === 24 && new Set(file.plots.map(p => p.props.Variety)).size === 6 && file.plots.every(p => p.rings.length === 1 && p.rings[0].length === 4));
+    }
+    // 29 since the pixel footprint's drawing was removed with every mention of it (2026-11-24).
+    ok('there is a drawing for each idea, four worked examples, and a picture of each menu',
+      !!built && Object.keys(built).filter(k => !/^(ex|shots)/.test(k)).length >= 29 && Object.keys(built).filter(k => /^ex/.test(k)).length === 4
       && Object.entries(built).filter(([k]) => /^shots/.test(k)).reduce((a, [, h]) => a + (h.match(/<figure class="shot"/g) || []).length, 0) >= 24);
     {
       const sizes = JSON.parse(fs.readFileSync(path.resolve(ROOT, 'docs-img/shots.json'), 'utf8'));
-      const png = name => fs.readFileSync(path.resolve(ROOT, 'docs-img', `${name}.png`));
-      const off = Object.entries(sizes).filter(([name, q]) => { try { const b = png(name); return b.readUInt32BE(16) !== q.w || b.readUInt32BE(20) !== q.h; } catch { return true; } }).map(([name]) => name);
-      const stray = fs.readdirSync(path.resolve(ROOT, 'docs-img')).filter(f => f.endsWith('.png') && !sizes[f.slice(0, -4)]);
+      // SVG since 2026-11-25, its size on its own root element, and no picture left as PNG.
+      const svg = name => fs.readFileSync(path.resolve(ROOT, 'docs-img', `${name}.svg`), 'utf8');
+      const off = Object.entries(sizes).filter(([name, q]) => { try { const m = /^<svg [^>]*width="(\d+)" height="(\d+)" viewBox="0 0 (\d+) (\d+)"/.exec(svg(name)); return !m || +m[1] !== q.w || +m[2] !== q.h || +m[3] !== q.w || +m[4] !== q.h; } catch { return true; } }).map(([name]) => name);
+      const stray = fs.readdirSync(path.resolve(ROOT, 'docs-img')).filter(f => f.endsWith('.png') || (f.endsWith('.svg') && !sizes[f.slice(0, -4)]));
       ok(`every picture the page shows is there, at the size written, and none is left over${off.length ? `: ${off.join(', ')}` : ''}${stray.length ? `: stray ${stray.join(', ')}` : ''}`,
-        off.length === 0 && stray.length === 0 && Object.keys(sizes).length >= 24 && Object.keys(sizes).every(name => docs.includes(`./docs-img/${name}.png`)));
+        off.length === 0 && stray.length === 0 && Object.keys(sizes).length >= 24 && Object.keys(sizes).every(name => docs.includes(`./docs-img/${name}.svg`)));
     }
   }
   ok('a fixed grid is counted where the trial is best placed on it, a tasked one where it is worst: the rung says which',
@@ -5617,7 +5660,8 @@ console.log('\nH40. the second look at those fixes (2026-11-22): what they left 
     ok('as delivered, each takes its own provider\'s figure', sourceCe90('pleiades', 2, asDelivered) === 8.5 && sourceCe90('wv', 1.6, asDelivered) === 3.5
       && sourceCe90('spot', 1.5, asDelivered) === 15 && sourceCe90('planet', 3, asDelivered) === 15.2 && sourceCe90('s2-20', 20, asDelivered) === 6.9
       && sourceCe90('ls-30', 30, asDelivered) === 18.2);
-    ok('and a sensor of one\'s own, with no provider to state one, keeps the default', near(sourceCe90('custom', 5, asDelivered), (CE90_TO_SIGMA * 5) / 3, 1e-9));
+    // It kept the note's third of a pixel, which the page no longer offers: no figure is held against it until one is typed.
+    ok('and a sensor of one\'s own, with no provider to state one, has none', sourceCe90('custom', 5, asDelivered) === 0 && sourceCe90('custom', 5, typed) === 3);
     const epsg = 32631, toLL = proj4(`+proj=utm +zone=31 +datum=WGS84 +units=m +no_defs`, 'EPSG:4326');
     const [w, so] = toLL.forward([619200, 5600400]), [e, n] = toLL.forward([619200 + 300, 5600400 + 300]);
     const ctx = { aoi: [w, so, e, n], fieldRing: null, epsg, layout: { pattern: 'row', width: 60, spacing: 0, rotationDeg: 0 }, threshold: 90,
@@ -5734,17 +5778,26 @@ console.log('\nH41. the note\'s model in the engine: a spot on the ground and no
   }
   // (5) The note's tables, row by row: note-model.ts is the note's page worked again.
   {
-    const rows = { 'WorldView-2 pansharpened': [0.4, 1.1, [2.75, 2.5, 2.25, 9, 1180.4, 1]], 'WorldView-2': [1.6, 1.9, [8, 6.5, 5, 9.75, 60.7, 1]],
+    // The newer version's figures (2026-11-24): WorldView-2 and PlanetScope moved with their blur.
+    const rows = { 'WorldView-2 pansharpened': [0.4, 1.1, [2.75, 2.5, 2.25, 9, 1180.4, 1]], 'WorldView-2': [1.6, 2.0, [8.25, 6.5, 5, 9.75, 59.8, 1]],
       'Pleiades pansharpened': [0.5, 3, [5.75, 5.5, 5.25, 10.75, 538.2, 1]], 'Pleiades': [2, 5, [12.75, 11, 9.75, 12.75, 19.7, 1]],
-      'PlanetScope': [3, 9.7, [21.75, 19.5, 17.75, 19, 0, 0]], 'Sentinel-2': [10, 14, [51.75, 42, 33, 25.25, 0, 0]] };
+      'PlanetScope': [3, 11.8, [24.5, 22.5, 21, 22, 0, 0]], 'Sentinel-2': [10, 14, [51.75, 42, 33, 25.25, 0, 0]] };
     const off = [];
     for (const [name, [gsd, fwhm, want]] of Object.entries(rows)) {
-      const f = noteFigures({ gsd, sigmaPsf: fwhm / FWHM_PER_SIGMA, sigmaGeo: gsd / 3, threshold: 0.9 }, 15);
+      const f = noteFigures({ gsd, sigmaPsf: fwhm / FWHM_PER_SIGMA, sigmaGeo: gsd / 3, threshold: 0.9, geoPerPixel: true }, 15);
       if (f.central !== want[0] || f.centralRegistered !== want[1] || f.anyPixel !== want[2] || f.common2m !== want[3]) off.push(`${name}: ${[f.central, f.centralRegistered, f.anyPixel, f.common2m].join(' / ')}`);
-      // Random placements, seeded: the note prints 1180.4, 60.7, 538.2, 19.7, 0 and 0 pure pixels on a 15 m plot.
+      // Random placements, seeded: the note prints about 1180, 59, 540, 20, 0 and 0 pure pixels on a 15 m plot.
       if (!near(f.draws.mean, want[4], Math.max(0.5, 0.01 * want[4])) || f.draws.atLeastOne !== want[5]) off.push(`${name}: ${f.draws.mean.toFixed(1)} pure pixels on average, ${f.draws.atLeastOne}`);
     }
     ok('the minimum plot of each of the note\'s six sensors: central pixel, registered within half a pixel, any pixel, and on a common 2 m grid', off.length === 0, off.join(' ;; ') || '2.75 to 51.75 m, as the note prints them');
+    // Its newer version also prints the central pixel and any pixel with its MEASURED geolocation error, in metres.
+    const measured = { 'WorldView-2': [1.6, 2.0, 1.0, 9, 6], 'Pleiades': [2, 5, 1.54, 14, 11], 'PlanetScope': [3, 11.8, 4.3, 29.5, 26.5], 'Sentinel-2': [10, 14, 1.4, 50, 30.75] };
+    const offM = Object.entries(measured).filter(([, [gsd, fwhm, sg, c, a]]) => {
+      const f = noteFigures({ gsd, sigmaPsf: fwhm / FWHM_PER_SIGMA, sigmaGeo: sg, threshold: 0.9 });
+      return f.central !== c || f.anyPixel !== a;
+    }).map(([n]) => n);
+    ok('and with its measured geolocation errors (1.0, 1.54, 4.3 and 1.4 m) the minimum plots it prints: 9, 14, 29.5 and 50 m, any pixel 6, 11, 26.5 and 30.75 m',
+      offM.length === 0, offM.join(', '));
     const c = r => Math.hypot(r / FWHM_PER_SIGMA, 1 / 3);
     ok('its 204 placements, 108 of them within half a pixel, and its hard ceiling for a 15 m plot: 7.1 m, 6.2 m at 5 %, 5.6 m for a spot 1.4 pixels wide',
       placementCount() === 204 && placementCount(0.5) === 108 && near(hardCeilingGsd(15, c(1), 0.9), 7.13, 0.01) && near(hardCeilingGsd(15, c(1), 0.95), 6.21, 0.01) && near(hardCeilingGsd(15, c(1.4), 0.9), 5.65, 0.01));
@@ -6011,12 +6064,16 @@ console.log('\nH42. what the second look against the note found, and the choice 
   // (5) Loose ends of the same review.
   {
     // The note's tables from the page's own sensor list, not from figures typed again here.
-    const want = { 'wv-ps': 2.75, wv: 8, 'pleiades-ps': 5.75, pleiades: 12.75, planet: 21.75, 's2-10': 51.75 };
+    const want = { 'wv-ps': 2.75, wv: 8.25, 'pleiades-ps': 5.75, pleiades: 12.75, planet: 24.5, 's2-10': 51.75 };
     const got = Object.keys(want).map(id => { const q = SOURCES.find(x => x.id === id); return noteFigures({ gsd: q.res, sigmaPsf: q.psf * q.res, sigmaGeo: q.res / 3, threshold: 0.9 }).central; });
     ok('each measured sensor of the page\'s own list gives the note\'s minimum plot for its central pixel', String(got) === String(Object.values(want)), got.join(', '));
     const wv = SOURCES.find(x => x.id === 'wv-ps'), base = { gsd: wv.res, sigmaPsf: wv.psf * wv.res, threshold: 0.9 };
-    ok('on a common 2 m grid the geolocation error is the same share of a pixel as the sensor\'s own: 9 m for WorldView-2 pansharpened with the default, less with none',
-      noteFigures({ ...base, sigmaGeo: wv.res / 3 }).common2m === 9 && noteFigures({ ...base, sigmaGeo: 0 }).common2m < 9, `${noteFigures({ ...base, sigmaGeo: 0 }).common2m} m with none`);
+    // The note's convention (its newer version): an error in metres stays in metres on the 2 m grid, a share of a pixel stays a share.
+    const ce = 3.5 / CE90_TO_SIGMA, in2m = noteFigures({ ...base, sigmaGeo: ce }).common2m, scaled = noteFigures({ ...base, sigmaGeo: ce, geoPerPixel: true }).common2m;
+    ok('on a common 2 m grid an error in metres stays in metres, and only a share of a pixel is scaled: 9 m for WorldView-2 pansharpened at a third of a pixel',
+      noteFigures({ ...base, sigmaGeo: wv.res / 3, geoPerPixel: true }).common2m === 9 && noteFigures({ ...base, sigmaGeo: 0 }).common2m < 9
+      && in2m < 15 && scaled > 30 && in2m === noteFigures({ gsd: 2, sigmaPsf: base.sigmaPsf, sigmaGeo: ce, threshold: 0.9 }).central,
+      `${in2m} m with its 3.5 m CE90 in metres, against ${scaled} m scaled with the pixel`);
     // The geolocation sigma is the note's third of a pixel exactly, not what a CE90 rounded to the centimetre gives back.
     const cases = imageCases(1.1 / 2.3548, 0.29, 0.4 / 3);
     ok('the plot-size card takes the geolocation sigma itself, not a CE90 rounded for display', near(cases[1].sigma, Math.hypot(1.1 / 2.3548, 0.4 / 3), 1e-12) && cases[2].shift === 0.29
@@ -6186,6 +6243,93 @@ console.log('\nH44. the best placement of an imported trial is not missed on a f
     const st = stakeOnGrid(flat, 3, tasked, importedTrialExtent(flat, 3, tasked, ALL));
     const onMesh = v => [2, 3, 4, 5, 6, 7, 8, 9, 10].some(n => Math.abs((v * n) / 3 - Math.round((v * n) / 3)) < 1e-9);
     ok('on a tasked satellite the staking keeps to its mesh', st.staked && st.shift.every(onMesh), `shift ${st.shift.map(v => v.toFixed(3)).join(', ')}`);
+  }
+}
+
+console.log('\nH45. what the second outside review found (2026-11-25): the card counts the map\'s trial, and the searches it drives');
+{
+  const { pureScales, seatedTrial, purestOfPlots, imageCases } = await import(path.join(BUILD, 'src/pixel-grid/plot-size.mjs'));
+  const { blockPlotCounts, ladderStep } = await import(path.join(BUILD, 'src/pixel-grid/ladder-step.mjs'));
+  const { suggestBlockDesign } = await import(path.join(BUILD, 'src/pixel-grid/suggest-design.mjs'));
+  const { trialFitsField, fieldAngle } = await import(path.join(BUILD, 'src/pixel-grid/trial-seat.mjs'));
+  const { latticePhase } = await import(path.join(BUILD, 'src/pixel-grid/sensors.mjs'));
+  const s2 = SOURCES.find(q => q.id === 's2-10'), sig = s2.psf * 10, CE = 6.9;
+  const toLL = proj4('+proj=utm +zone=31 +datum=WGS84 +units=m +no_defs', 'EPSG:4326');
+  const E0 = 619203.7, N0 = 5600764.3, [w, so] = toLL.forward([E0, N0]), [e, n] = toLL.forward([E0 + 340, N0 + 340]);
+  const rung = ladderRungs({ id: 's2-10', res: 10, sigmaX: s2.psf, sigmaY: s2.psf }).find(q => q.id === 's2-10');
+
+  // 1. The held sizes: the bilinear table read 0.1 to 0.2 m over across the ridge where the worst landing turns.
+  {
+    const F = (L, x) => normCdfOf((L / 2 - x) / sig) + normCdfOf((L / 2 + x) / sig) - 1;
+    /** The side at which pixels at (x, y) from the centre stay 90 % pure wherever the image lands within the CE90, by halving, 1440 landings. */
+    const exactSide = (x, y) => {
+      const worst = L => { let m = 1; for (let k = 0; k < 1440; k++) { const t = (k * Math.PI) / 720; m = Math.min(m, F(L, x + CE * Math.cos(t)) * F(L, y + CE * Math.sin(t))); } return m; };
+      let lo = 2 * Math.max(x, y), hi = lo + 80;
+      for (let k = 0; k < 60; k++) { const mid = (lo + hi) / 2; if (worst(mid) >= 0.9) hi = mid; else lo = mid; }
+      return hi * 1.006;
+    };
+    const v = { gsd: 10, sigma: sig, shift: CE, threshold: 0.9, angleDeg: 0 };
+    // A plot of 1 m scaled: the factor is the side in metres.
+    const [s1, s4, s9] = pureScales({ a: 1, b: 1 }, v, [1, 4, 9], 'best');
+    const x1 = exactSide(0, 0), x4 = exactSide(5, 5), x9 = exactSide(10, 10);
+    ok('the sizes for pixels that hold in 9 images in 10 are solved, not read off the table', Math.abs(s1 - x1) < 0.03 && Math.abs(s4 - x4) < 0.03 && Math.abs(s9 - x9) < 0.03,
+      `${s1.toFixed(2)} / ${s4.toFixed(2)} / ${s9.toFixed(2)} m against ${x1.toFixed(2)} / ${x4.toFixed(2)} / ${x9.toFixed(2)}`);
+  }
+
+  // 2. The card's Now is the engine's own count, at the place the map has the trial, in every reading.
+  for (const placeFor of ['held', 'pure']) {
+    const got = [];
+    let same = true, edgeOk = true, purest = true;
+    for (const L of [64.9, 40, 45, 20]) {
+      const d = { nSpecies: 4, nBlocks: 4, plotLength: L, plotWidth: L, plotAlley: 0, blockAlley: 0, blocksPerRow: 4, seed: 1 };
+      const ctx = { aoi: [w, so, e, n], fieldRing: null, epsg: 32631, blockDesign: d, threshold: 90, layout: { pattern: 'block', width: 2, spacing: 0, rotationDeg: 0 },
+        importedAngle: 0, importedFileAngle: 0, importedBasePlan: undefined, geoAuto: false, geoManual: 0, geoProvider: true, placeFor };
+      const row = ladderStep(ctx, 0, rung, true), c = blockPlotCounts(ctx, 0, rung, { mean: true, centres: true });
+      got.push(`${L} m ${c.pure}/${c.mean}/${c.held}`);
+      same &&= c.pure === row.plots.min && c.held === row.plotsRobust.min && c.centres.length === 16;
+      const [pE, pN] = latticePhase('s2-10', 10, 32631);
+      edgeOk &&= c.edge[0] === pE && c.edge[1] === pN;
+      // The purest pixel of the weakest plot, at those centres, is pure exactly when the weakest plot keeps one.
+      const keeps = purestOfPlots(c.centres, { a: L, b: L }, { gsd: 10, sigma: sig, shift: 0, threshold: 0.9, angleDeg: 0 }, c.edge);
+      purest &&= (keeps >= 0.9) === (c.pure > 0);
+    }
+    ok(`placed for ${placeFor === 'held' ? 'pixels that hold' : 'pure pixels'}, the card's Now is the table's count, plot by plot`, same && edgeOk && purest, got.join(', '));
+  }
+
+  // 3. The known-grid search keeps to a budget: 80 plots of 200.5 m used to run for minutes.
+  {
+    const centres = [];
+    for (let k = 0; k < 10; k++) for (let q = 0; q < 8; q++) centres.push([k * 200.5 + 100.25, q * 200.5 + 100.25]);
+    const t0 = performance.now(), r = seatedTrial(centres, { a: 200.5, b: 200.5 }, { gsd: 10, sigma: sig, shift: CE, threshold: 0.9, angleDeg: 0 });
+    const ms = performance.now() - t0;
+    ok('the known-grid search of a large trial ends in reasonable time', ms < 8000 && r.count > 100, `${r.count} px in ${ms.toFixed(0)} ms`);
+  }
+
+  // 4. A block trial turned a quarter: its plots run north, and the field is read that way too.
+  {
+    const pl = SOURCES.find(q => q.id === 'pleiades');
+    const ask = { nSpecies: 4, nBlocks: 1, pixels: 16, res: 2, sigmaX: pl.psf, sigmaY: pl.psf, threshold: 0.9, anyPosition: true, placeHeldM: 0, ce90M: 0,
+      plotAlley: 0, blockAlley: 0, seed: 1 };
+    // 10 m north to south: plots no longer than that, turned a quarter, are wider than a quarter of 10 m allows them along the rows.
+    const at90 = suggestBlockDesign({ ...ask, field: { u: 250, v: 10 }, rotationDeg: 90 }), at0 = suggestBlockDesign({ ...ask, field: { u: 10, v: 250 }, rotationDeg: 0 });
+    ok('turned a quarter in a field 250 m east to west and 10 m north to south, the trial is the one along the rows of the field turned the same way',
+      !!at90 && at90.fits === true && !!at0 && at0.fits === true && at90.design.plotLength === at0.design.plotLength && at90.design.plotWidth === at0.design.plotWidth,
+      `90: plots ${at90 && `${at90.design.plotLength} x ${at90.design.plotWidth}`}, 0 on the field turned: ${at0 && `${at0.design.plotLength} x ${at0.design.plotWidth}`}`);
+  }
+
+  // 5. A traced outline with no room in it holds no trial, whatever its box; a field along the rows has 0 and 90 for directions.
+  {
+    const aoi = [w, so, e, n];
+    const flat = [[w, so], [(w + e) / 2, (so + n) / 2], [e, n], [w, so]];
+    ok('a traced outline of no area holds no trial, though its box would', !trialFitsField(flat, aoi, 32631, 20, 20, 0, 10) && trialFitsField(null, aoi, 32631, 20, 20, 0, 10));
+    const fromUtm = pts => pts.map(q => toLL.forward(q));
+    const t = (30 * Math.PI) / 180, rect = [[0, 0], [200, 0], [200, 80], [0, 80]].map(([u, v]) => [E0 + 100 + u * Math.cos(t) - v * Math.sin(t), N0 + 50 + u * Math.sin(t) + v * Math.cos(t)]);
+    // A notch cut in its long side: the smallest rectangle still lies along the hull, at 30 degrees.
+    const notched = [rect[0], [rect[0][0] + 100 * Math.cos(t) - 0 * Math.sin(t), rect[0][1] + 100 * Math.sin(t)], [E0 + 100 + 110 * Math.cos(t) - 40 * Math.sin(t), N0 + 50 + 110 * Math.sin(t) + 40 * Math.cos(t)], [rect[0][0] + 120 * Math.cos(t), rect[0][1] + 120 * Math.sin(t)], rect[1], rect[2], rect[3]];
+    const ring = fromUtm(rect), nring = fromUtm(notched);
+    const box = r => [Math.min(...r.map(q => q[0])), Math.min(...r.map(q => q[1])), Math.max(...r.map(q => q[0])), Math.max(...r.map(q => q[1]))];
+    const a1 = fieldAngle(ring, box(ring), 32631), a2 = fieldAngle(nring, box(nring), 32631), a0 = fieldAngle(null, aoi, 32631);
+    ok('a field turned 30 degrees reads 30 degrees, notched or not, and a box reads 0', Math.abs(a1 - 30) < 0.6 && Math.abs(a2 - 30) < 0.6 && a0 === 0, `${a1}, ${a2}, ${a0}`);
   }
 }
 

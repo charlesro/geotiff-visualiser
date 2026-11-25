@@ -233,10 +233,15 @@ export interface NoteSensor {
   gsd: number;
   /** Standard deviation of the measured PSF, m. */
   sigmaPsf: number;
-  /** Standard deviation of the geolocation error per axis, m (the note's default is GSD / 3). */
+  /** Standard deviation of the geolocation error per axis, m. */
   sigmaGeo: number;
   /** Share of a pixel's signal that must come from its own plot (0.9 for epsilon = 10 %). */
   threshold: number;
+  /**
+   * True when `sigmaGeo` stands for a share of the pixel (the note's GSD / 3), so that on the common 2 m grid it
+   * becomes the same share of a 2 m pixel. The page never sets it: its error is a CE90 in metres.
+   */
+  geoPerPixel?: boolean;
 }
 
 /** Every figure the note gives for a sensor and a square plot of side L (or no plot: the plot-free ones only). */
@@ -247,7 +252,7 @@ export interface NoteFigures {
   centralRegistered: number | null;
   /** Minimum plot, any pixel, by the exact sweep. */
   anyPixel: number | null;
-  /** The same sensor resampled onto 2 m pixels (its geolocation error the same share of a pixel: 2/3 m by default), central pixel: only the optics differ between sensors. */
+  /** The same sensor resampled onto 2 m pixels, central pixel: its blur and its geolocation error unchanged in metres, so that only the pixel size changes. */
   common2m: number | null;
   /** For the plot given: the largest pixel a sensor of this shape could have, the centred pixel's contamination, and the draws. */
   ceilingGsd: number | null;
@@ -264,8 +269,11 @@ export function noteFigures(s: NoteSensor, plotSide?: number | null): NoteFigure
     central: centralPixelMinPlot(s.gsd, sigmaEff, s.threshold, null),
     centralRegistered: centralPixelMinPlot(s.gsd, sigmaEff, s.threshold, 0.5),
     anyPixel: anyPixelMinPlot(s.gsd, sigmaEff, s.threshold),
-    // The geolocation error as the same share of a pixel as the sensor's own: 2/3 m with the note's default, none with none.
-    common2m: centralPixelMinPlot(2, Math.hypot(s.sigmaPsf, s.gsd > 0 ? (s.sigmaGeo * 2) / s.gsd : 0), s.threshold, null),
+    // The note's convention since its newer version: a geolocation error given in metres (measured, or a CE90 as
+    // delivered or typed, as everywhere on this page) stays in metres on the 2 m grid; only a rule stated as a share
+    // of a pixel (the note's GSD/3, `geoPerPixel`) becomes the same share of the 2 m pixel. Scaling a measured error
+    // with the pixel gave WorldView-2 pansharpened, 3.5 m CE90 on 0.4 m pixels, an error of 8 m on the 2 m grid.
+    common2m: centralPixelMinPlot(2, Math.hypot(s.sigmaPsf, s.geoPerPixel ? (s.gsd > 0 ? (s.sigmaGeo * 2) / s.gsd : 0) : s.sigmaGeo), s.threshold, null),
     ceilingGsd: L != null && s.gsd > 0 ? hardCeilingGsd(L, sigmaEff / s.gsd, s.threshold) : null,
     centred: L != null ? centredContamination(L, sigmaEff) : null,
     // Not on a plot more than 80 pixels a side: the draws would take seconds, and say nothing a count of 6000 pixels needs said.

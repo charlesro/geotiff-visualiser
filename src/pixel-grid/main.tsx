@@ -7,6 +7,15 @@ import PixelGridApp from './PixelGridApp.tsx';
 import 'leaflet/dist/leaflet.css';
 import '../index.css';
 import { prefetchLadderWorker } from './ladder-pool';
+import { exampleFromSearch } from './examples';
+import { openExampleStore } from './persist';
+
+// A worked example of the documentation, opened by one of its "Open this
+// example" links (?example=ID): the page starts from that example's settings,
+// in a store of its own. It must happen before the page is drawn, since every
+// setting is read from the store as its part of the page is first drawn.
+const example = exampleFromSearch(window.location.search);
+if (example) openExampleStore(example.id, example.seed);
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

@@ -191,8 +191,8 @@ export function useExperiment({ sigmaX, sigmaY, anyPosition, placeHeldM, fieldBo
   const [beta, setBeta] = usePersistentState('beta', 2, inRange(0.1, 10));
   // 100% by default: a pixel counts as pure only if it is entirely one crop.
   // The repo engine's own default is 80%, which flatters the design: it calls a
-  // pixel "pure maize" when a fifth of it is wheat. Start strict; the slider in
-  // "Noise & purity threshold" relaxes it.
+  // pixel "pure maize" when a fifth of it is wheat. Start strict; the Purity field
+  // of the Design section (or of Suggest a design) relaxes it.
   // 90 % is the PHENET note's definition of a pure pixel (contamination <= 10 %).
   // 100 is not offered: a Gaussian never reaches zero, so at 100 % "pure" meant
   // "nothing foreign inside the kernel's cut-off at ceil(3 sigma) pixels", an
@@ -947,10 +947,10 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
    */
   const ladderCtx = useMemo((): LadderContext | null => (aoi && build?.epsg
     ? { aoi, fieldRing, epsg: build.epsg, layout, threshold, blockDesign, importedAngle, importedFileAngle, importedBasePlan,
-        geoAuto: gridApi.geoAuto, geoManual: gridApi.geoManual, geoProvider: gridApi.geoProvider, placeFor: gridApi.placeFor }
+        geoAuto: false, geoManual: gridApi.geoManual, geoProvider: !gridApi.geoTyped, placeFor: gridApi.placeFor }
     : null),
     // The settings themselves, not a function made from them: see use-grid ce90At.
-    [aoi, fieldRing, build?.epsg, ladderSig, threshold, gridApi.geoAuto, gridApi.geoManual, gridApi.geoProvider, gridApi.placeFor]); // eslint-disable-line react-hooks/exhaustive-deps
+    [aoi, fieldRing, build?.epsg, ladderSig, threshold, gridApi.geoManual, gridApi.geoTyped, gridApi.placeFor]); // eslint-disable-line react-hooks/exhaustive-deps
   /** ONE satellite of the ladder at a given rotation: ladderStep, on the page's own thread. */
   const stepAt = useCallback((rotationDeg: number, rung: Rung, asDrawn = true): SweepStep | null =>
     (ladderCtx ? ladderStep(ladderCtx, rotationDeg, rung, asDrawn) : null), [ladderCtx]);
@@ -1133,11 +1133,15 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
    * tab can state the headline share rather than a second, unexplained
    * percentage of the same pure pixels (they read 62% and 47% side by side).
    */
+  // None on a chart run on a sample: its pure pixels are one in so many, the planted area every one
+  // (a share some 25 times too low; Neon, 2026-11-25). The tab then gives the sample's own share.
   const pcaPlanted = useMemo(
-    () => (pcaView ? plantedAreaPx(layout, pcaView.res) : null),
+    () => (pcaView && !pcaView.subsampled ? plantedAreaPx(layout, pcaView.res) : null),
     [pcaView, layoutSig]); // eslint-disable-line react-hooks/exhaustive-deps
   const pcaSim = pcaRun?.sim ?? null;
 
   return { pcaGrid, pcaSim, pcaBusy, pcaView, pcaSubsampled, pcaPlanted, selectedPixels, setSelectedPixels,
-           selectionGeojson, sweep, sweepAligned, sweepBusy };
+           selectionGeojson, sweep, sweepAligned, sweepBusy,
+           // What a rung is computed from, and the rungs: the plot-size card counts the trial with the same engine (2026-11-25).
+           ladderCtx, ladder };
 }

@@ -33,7 +33,6 @@ function bar(s: SweepStep): React.CSSProperties {
 
 /** What a rung says, as a panel's tooltips said it. */
 function about(s: SweepStep, geoErrM: number, threshold: number): string {
-  const t = s.plotsRobust ?? s.plots;
   return [
     s.resolvingPct == null
       ? null
@@ -41,8 +40,7 @@ function about(s: SweepStep, geoErrM: number, threshold: number): string {
     s.geoRobust !== undefined
       ? `${fmt(s.geoRobustPure ?? 0)} px stay pure, for the same plot, for any geolocation error within the CE90 (${s.ce90M ?? geoErrM} m)${s.geoMean !== undefined ? `; with σeff instead: ${pct0(s.geoMean)}` : ''}`
       : null,
-    t ? `pure pixels in each plot: minimum ${t.min}, median ${t.median}; ${t.none} of ${t.plots} plots have none` : null,
-    s.minPlotM !== undefined ? `the note's closed form asks for a plot side of at least ${s.minPlotM.toFixed(1)} m (ε = ${100 - threshold} %)` : null,
+    s.minPlotM !== undefined ? `the closed form asks for a plot side of at least ${s.minPlotM.toFixed(1)} m (ε = ${100 - threshold} %)` : null,
     s.contrastDead ? 'two varieties cannot be told apart at this pixel size' : null,
     s.partial ? 'sampled over the central part of a large field' : null,
     s.placement ? where(s.placement) : null,
@@ -84,7 +82,6 @@ export function ResTable({ steps, pairWith, pairLabels, shown = 0, activeId, onP
 }) {
   const isActive = (id: string) => activeId === id;
   const anyHeld = [...steps, ...(pairWith ?? [])].some(s => s.geoRobust !== undefined);
-  const anyPlots = steps.some(s => (s.plotsRobust ?? s.plots) !== undefined);
   // The satellite, and under it the pixel size its row is computed at.
   const size = (s: SweepStep) => (
     <span className="min-w-0 leading-tight">
@@ -156,35 +153,28 @@ export function ResTable({ steps, pairWith, pairLabels, shown = 0, activeId, onP
     );
   }
 
-  // One ladder: the share with its bar, what holds within the CE90, and the plot that has least.
+  // One ladder: the share with its bar and what holds within the CE90. The
+  // fewest pixels a plot keeps had a column of its own ("0 in 16/16") that read
+  // as a riddle; it was removed on request on 2026-11-24, with its hover line.
   // One template for the header and every row, each a grid of its own: the
-  // name column is as wide as the widest name the list can hold.
-  const cols: React.CSSProperties = { gridTemplateColumns: `5.4rem 2.6rem${anyHeld ? ' 2.9rem' : ''} minmax(0, 1fr)` };
+  // name takes what the two figures leave.
+  const cols: React.CSSProperties = { gridTemplateColumns: `minmax(0, 1fr) 2.6rem${anyHeld ? ' 2.9rem' : ''}` };
   return (
     <div className="space-y-0.5">
       <div className={`grid items-center gap-x-2 px-1 ${head}`} style={cols}>
         <span>satellite</span>
         <span className="text-right">pure</span>
         {anyHeld && <span className="text-right">CE90</span>}
-        <span className="text-right">{anyPlots && 'per plot'}</span>
       </div>
-      {steps.map(s => {
-        const t = s.current ? undefined : (s.plotsRobust ?? s.plots);
-        return (
-          <button key={s.id} type="button" onClick={() => onPick?.(s.id)} title={about(s, geoErrM, threshold)}
-            style={{ ...cols, ...bar(s) }}
-            className={`grid w-full items-center gap-x-2 rounded px-1 py-0.5 text-left text-[13px] transition-shadow ${isActive(s.id) ? 'ring-1 ring-sky-400/70' : 'hover:ring-1 hover:ring-white/15'}`}>
-            {size(s)}
-            <span className="text-right font-mono">{share(s)}</span>
-            {anyHeld && <span className="text-right font-mono">{held(s)}</span>}
-            <span className="whitespace-nowrap text-right font-mono text-[12px] text-neutral-500">
-              {!anyPlots || !t ? '' : t.none > 0
-                ? <span className="text-rose-400">{t.none}/{t.plots} empty</span>
-                : <>min <span className="text-neutral-300">{t.min}</span></>}
-            </span>
-          </button>
-        );
-      })}
+      {steps.map(s => (
+        <button key={s.id} type="button" onClick={() => onPick?.(s.id)} title={about(s, geoErrM, threshold)}
+          style={{ ...cols, ...bar(s) }}
+          className={`grid w-full items-center gap-x-2 rounded px-1 py-0.5 text-left text-[13px] transition-shadow ${isActive(s.id) ? 'ring-1 ring-sky-400/70' : 'hover:ring-1 hover:ring-white/15'}`}>
+          {size(s)}
+          <span className="text-right font-mono">{share(s)}</span>
+          {anyHeld && <span className="text-right font-mono">{held(s)}</span>}
+        </button>
+      ))}
     </div>
   );
 }

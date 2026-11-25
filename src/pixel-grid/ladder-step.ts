@@ -1,7 +1,7 @@
 import proj4 from 'proj4';
 import { crsToProj4Def } from '../lib/geo';
 import {
-  MIXED, bestPhaseOffset, coverStats, fieldShares, fieldVerdicts, plantedAreaPx, speciesChannel, stakeBlockPlan, utmEnvelope,
+  MIXED, bestPhaseOffset, blockPlots, coverStats, fieldShares, fieldVerdicts, plantedAreaPx, speciesChannel, stakeBlockPlan, utmEnvelope,
   type BlockDesign, type SensorParams, type SimLayout,
 } from './simulate';
 import { CE90_TO_SIGMA, ce90Shifts, contrastInfo, heldMask, minPlotSideM, plantedPixels, plantedShare, plotTally, type PlotTally } from './resolving';
@@ -494,7 +494,18 @@ export function ladderStep(ctx: LadderContext, rotationDeg: number, rung: Rung, 
  * across the pixels, so the whole trial is counted where it will lie, for
  * every plot size tried.
  */
-export function blockPlotCounts(ctx: LadderContext, rotationDeg: number, rung: Rung): { pure: number; held: number | null } | null {
+/**
+ * What blockPlotCounts can also give (2026-11-25, the plot-size card's "Now" and "Most in this field"
+ * read the engine, so that they say what the map and the table say): `mean`, the fewest pure pixels a
+ * plot keeps through the blur widened by the geolocation error (sigma_eff, the card's "average image");
+ * `centres`, every plot's centre in the grid's metres, where the trial was placed.
+ */
+export interface BlockCounts {
+  pure: number; held: number | null; mean?: number | null;
+  /** The plots' centres in the grid's metres, and where the lattice has a pixel corner (pixel edges at edge + k res). */
+  centres?: [number, number][]; edge?: [number, number];
+}
+export function blockPlotCounts(ctx: LadderContext, rotationDeg: number, rung: Rung, more?: { mean?: boolean; centres?: boolean }): BlockCounts | null {
   const { aoi, epsg, layout, threshold, fieldRing, blockDesign } = ctx;
   if (layout.pattern !== 'block') return null;
   const r = rung.res;
@@ -512,21 +523,38 @@ export function blockPlotCounts(ctx: LadderContext, rotationDeg: number, rung: R
   const nx = Math.round((e1 - e0) / r);
   if (nx * Math.round((n1 - n0) / r) > LADDER_MAX_CELLS) return null;
   const box = { res: r, utmBounds: [e0, n0, e1, n1] } as unknown as S2Grid;
-  const nominal = fieldVerdicts(box, base, lay, sensor);
-  // A pixel that does not overlap the field is not one of the row's: it counts for no plot.
-  if (fieldRing) {
-    const toUtm = proj4('EPSG:4326', crsToProj4Def(`EPSG:${epsg}`));
-    const overlaps = fieldOverlapTest(fieldRing.map(([lng, lat]) => toUtm.forward([lng, lat]) as [number, number]));
-    for (let k = 0; k < nominal.length; k++) {
-      const [cE, cN] = rungCellOrigin(k, nx, e0, n0, r);
-      if (!overlaps(cE, cN, r)) nominal[k] = MIXED;
+  // A pixel that does not overlap the field is not one of the row's: it counts for no plot, in every reading.
+  const toUtm = fieldRing ? proj4('EPSG:4326', crsToProj4Def(`EPSG:${epsg}`)) : null;
+  const overlaps = fieldRing && toUtm ? fieldOverlapTest(fieldRing.map(([lng, lat]) => toUtm.forward([lng, lat]) as [number, number])) : null;
+  const toField = (v: Uint8Array): Uint8Array => {
+    if (!overlaps) return v;
+    for (let k = 0; k < v.length; k++) { const [cE, cN] = rungCellOrigin(k, nx, e0, n0, r); if (!overlaps(cE, cN, r)) v[k] = MIXED; }
+    return v;
+  };
+  const nominal = toField(fieldVerdicts(box, base, lay, sensor));
+  const pure = plotTally(nominal, plan.nPlots)?.min ?? 0;
+  const ce90Exact = rungCe90(ctx, rung.id, r), ce90 = Math.round(ce90Exact * 100) / 100;
+  const out: BlockCounts = { pure, held: null };
+  if (ce90 > 0) {
+    if (ce90 >= Math.min(plan.design.plotLength, plan.design.plotWidth) / 2) out.held = 0;
+    else {
+      const lands = ce90Shifts(ce90, rotationDeg);
+      const mask = heldMask(nominal, lands.length, (q, need) => fieldVerdicts(box, [base[0] - lands[q][0], base[1] - lands[q][1]], lay, sensor, need));
+      out.held = plotTally(nominal, plan.nPlots, mask)?.min ?? 0;
     }
   }
-  const pure = plotTally(nominal, plan.nPlots)?.min ?? 0;
-  const ce90 = Math.round(rungCe90(ctx, rung.id, r) * 100) / 100;
-  if (!(ce90 > 0)) return { pure, held: null };
-  if (ce90 >= Math.min(plan.design.plotLength, plan.design.plotWidth) / 2) return { pure, held: 0 };
-  const lands = ce90Shifts(ce90, rotationDeg);
-  const mask = heldMask(nominal, lands.length, (q, need) => fieldVerdicts(box, [base[0] - lands[q][0], base[1] - lands[q][1]], lay, sensor, need));
-  return { pure, held: plotTally(nominal, plan.nPlots, mask)?.min ?? 0 };
+  if (more?.mean) {
+    // As ladderStep reads the mean image: the same plan, its pixels through sigma_eff.
+    const sigGeo = ce90Exact > 0 ? ce90Exact / CE90_TO_SIGMA / r : 0;
+    const effX = Math.hypot(rung.sigmaX, sigGeo), effY = Math.hypot(rung.sigmaY, sigGeo);
+    out.mean = Math.max(effX, effY) <= 5
+      ? plotTally(toField(fieldVerdicts(box, base, lay, { sigmaX: effX, sigmaY: effY, mixThreshold: threshold / 100 })), plan.nPlots)?.min ?? 0
+      : null;
+  }
+  if (more?.centres) {
+    const t = (rotationDeg * Math.PI) / 180, c = Math.cos(t), sn = Math.sin(t);
+    out.centres = blockPlots(plan).map(q => { const u = (q.u0 + q.u1) / 2, v = (q.v0 + q.v1) / 2; return [base[0] + u * c - v * sn, base[1] + u * sn + v * c] as [number, number]; });
+    out.edge = [pE, pN];
+  }
+  return out;
 }

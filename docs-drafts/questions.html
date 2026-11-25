@@ -1,0 +1,17 @@
+<!-- The Questions section of pixel-grid-docs.html, taken off the page on 2026-11-25 ("remove the questions section for now"). Its menu entry was under a "Help" heading: <a class="item" href="#faq">Questions</a> -->
+        <section id="faq">
+          <h2 class="t">Questions</h2>
+          <h3>Which column of Plot size required should I use?</h3>
+          <p>Use <i>9 images in 10</i> when pixels are chosen once by their coordinates and every image is used as delivered. Use <i>shift corrected</i> when the images are registered to each other or to ground control points. <i>Average image</i> suits values averaged over many dates.</p>
+          <h3>Why does Now show fewer pixels than the size I clicked?</h3>
+          <p>On Sentinel-2 and Landsat the sizes are for a plot at its best place on the grid. In a trial, every plot gets that place only when plot and alley come to a whole number of pixels. Add a small alley to round the step from one plot to the next to whole pixels, or let Suggest a design build the trial (see <a href="#grid-position">Where the grid falls</a>).</p>
+          <h3>Why does PlanetScope keep no pixel that holds?</h3>
+          <p>Its CE90 as delivered, 15.2 m, is more than a pure pixel has to spare inside a 40 m plot, so an image shifted that far brings every pixel too close to the plot's edge. With images registered to each other (a CE90 of 2 m typed), the same trial keeps 880 pixels that hold (example 3, part 6).</p>
+          <h3>Why do pansharpened products give so many pure pixels?</h3>
+          <p>Their pixels are small, but an index is computed on the blurrier colour bands. Size the trial on the native row of the same satellite (see <a href="#pansharpened">Pansharpened products</a>).</p>
+          <h3>Why does turning the trial change the counts?</h3>
+          <p>At 0 the plot edges can follow the pixel edges. At another angle each plot cuts the pixels differently, and the weakest plot keeps fewer pixels. Compare both with <span class="f">vs aligned</span>, or <span class="f">vs best</span> for an imported trial.</p>
+          <h3>How far can the counts be trusted?</h3>
+          <p>They come from a model of the blur and of the position error. Some effects are left out, such as light scattered by the atmosphere and the difference between two plots of the same variety; see <a href="#not-simulated">What is not simulated</a>.</p>
+        </section>
+

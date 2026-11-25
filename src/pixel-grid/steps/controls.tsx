@@ -143,7 +143,8 @@ export function LayoutFields({ pattern, stripWidth, setStripWidth, spacing, setS
   setBlockDesign?: (v: BlockDesign | ((p: BlockDesign) => BlockDesign)) => void;
 }) {
   const rotationField = (
-    <NumField label={rotationLabel} value={rotation} onChange={setRotation} min={-90} max={90} unit="°"
+    // Tenths of a degree: a field's direction is rarely a whole number (Use these and Build set it so).
+    <NumField label={rotationLabel} value={Math.round(rotation * 10) / 10} onChange={setRotation} min={-90} max={90} step={0.1} unit="°"
       action={rotationAction} />
   );
 

@@ -22,7 +22,7 @@ import { cellInFieldTest } from './field-membership';
 import { fmt } from './util';
 import { SOURCES, sourceCe90 } from './sensors';
 import { CE90_TO_SIGMA } from './resolving';
-import { inRange, isBool, usePersistentState } from './persist';
+import { inRange, isBool, readSaved, usePersistentState } from './persist';
 
 /**
  * Step 2: which satellite, and therefore exactly where its pixels fall.
@@ -46,6 +46,9 @@ import { inRange, isBool, usePersistentState } from './persist';
  * the click also reseeded the blur, so the purity on the thumbnail clicked was
  * not the purity that came back.
  */
+/** Measured FWHM (m) a satellite carried before, by id: a blur saved at one of them is the old default, not a figure typed. */
+const SUPERSEDED_FWHM: Record<string, number[]> = { wv: [1.9], planet: [9.7] };
+
 export function useFieldGrid({ aoi, fieldRing }: {
   aoi: LngLatBounds | null;
   /**
@@ -70,34 +73,27 @@ export function useFieldGrid({ aoi, fieldRing }: {
   // aligned design. Its saved value is no longer read: a stored offset with no
   // control left to undo it would have kept shifting every simulation unseen.
   /**
-   * How far the product's pixels may sit from where their coordinates say, in
+   * How far an image may land from where its coordinates say, as a CE90 in
    * metres. A property of the IMAGERY, not of the optics, which is why it is
    * here beside the source rather than with the design.
    *
-   * Sentinel-2 is specified to about 12.5 m and, since the reference-image
-   * refinement, is usually a few metres; Landsat is comparable. At the pixel
-   * sizes this page is used at, that is a large part of one pixel, and it is
-   * not knowable when the trial is planted.
+   * Two ways of setting it, and no third:
+   *  AS DELIVERED, the page's standing: every satellite at the figure its own
+   *    provider states for an image with no ground control (sensors.ts `geo`),
+   *    so that it follows the satellite, on the map as in the table.
+   *  TYPED: one figure for every satellite alike, for images registered to
+   *    each other or to ground control, which land much closer.
    *
-   * Off by default: the page opens assuming the imagery lands where it says,
-   * and the range appears once a value is entered. Only the default changed; a
-   * value already saved in a browser is kept, as every persisted setting is.
+   * There was a third, the PHENET note's rule of a third of a pixel, and it
+   * was the default. Every satellite of the list has a provider's figure, and
+   * the rule flattered each tasked one several times over: it is gone from the
+   * page ("remove all mentions of the default one", 2026-11-22). A browser that
+   * was on it, or had never set anything, opens as delivered.
    */
   const [geoManual, setGeoManual] = usePersistentState('geoErrM', 0, inRange(0, 50));
-  /**
-   * CE90 follows the PHENET note's default until a value is typed: the note
-   * takes sigma_geo = GSD / 3 for every sensor when no accuracy is known, which
-   * as a CE90 is 2.146 * GSD / 3 = 0.715 GSD (7.2 m for Sentinel-2). It was a
-   * flat 0, i.e. no geolocation error at all unless the reader knew to add one.
-   * Because it follows the pixel size, each rung of the ladder gets its own.
-   */
-  const [geoAuto, setGeoAutoOnly] = usePersistentState('geoAuto', true, isBool);
-  /**
-   * "As delivered": every satellite at the figure its own provider states for
-   * an image with no ground control (sensors.ts `geo`), in place of the default
-   * or of a figure typed. A mode of its own, so that it follows the satellite.
-   */
-  const [geoProvider, setGeoProvider] = usePersistentState('geoProvider', false, isBool);
+  // Typed is what a browser had when it was on neither the old default ('geoAuto') nor 'geoProvider'.
+  const [geoTyped, setGeoTyped] = usePersistentState('geoTyped',
+    () => readSaved<boolean>('geoAuto', isBool) === false && readSaved<boolean>('geoProvider', isBool) !== true, isBool);
   /**
    * What a trial is PLACED for, wherever the page chooses its position on the
    * pixel grid (the slide of strips, the staking of a block trial, an imported
@@ -110,20 +106,18 @@ export function useFieldGrid({ aoi, fieldRing }: {
    * geolocation error the two are one.
    */
   const [placeFor, setPlaceFor] = usePersistentState<'pure' | 'held'>('placeFor', 'held', (v): v is 'pure' | 'held' => v === 'pure' || v === 'held');
-  /** Back to the note's default: that is not "as delivered" either. */
-  const setGeoAuto = useCallback((v: boolean) => { setGeoProvider(false); setGeoAutoOnly(v); }, [setGeoProvider, setGeoAutoOnly]);
-  // For a satellite of the table (its id), or for the one selected. The default
-  // is a third of the pixel the satellite's geolocation goes by (sensors.ts
-  // geolocRes: Sentinel-2's 20 and 60 m bands land where its 10 m bands do).
+  /** Back to every satellite's own figure, as delivered. */
+  const setGeoDelivered = useCallback(() => setGeoTyped(false), [setGeoTyped]);
+  // For a satellite of the table (its id), or for the one selected.
   //
   // It does NOT close over the satellite selected: it is in the satellites
   // table's dependencies, and a function that changed with every click on a row
   // threw away every row already computed (found by an outside review,
   // 2026-11-22). The satellite is always passed.
-  const ce90At = useCallback((res: number, id: string): number => sourceCe90(id, res, { auto: geoAuto, manualM: geoManual, provider: geoProvider }),
-    [geoAuto, geoManual, geoProvider]);
-  /** Typing a CE90 is what turns the default off, and "as delivered" with it. */
-  const setGeoErrM = useCallback((v: number) => { setGeoAuto(false); setGeoManual(v); }, [setGeoAuto, setGeoManual]);
+  const ce90At = useCallback((res: number, id: string): number => sourceCe90(id, res, { auto: false, manualM: geoManual, provider: !geoTyped }),
+    [geoManual, geoTyped]);
+  /** Typing a CE90 is what leaves "as delivered". */
+  const setGeoErrM = useCallback((v: number) => { setGeoTyped(true); setGeoManual(v); }, [setGeoTyped, setGeoManual]);
 
   const source = SOURCES.find(s => s.id === sourceId)!;
 
@@ -138,13 +132,19 @@ export function useFieldGrid({ aoi, fieldRing }: {
     sigmaSource.current = sourceId;
     setSigmaX(source.psf); setSigmaY(source.psf);
   }, [sourceId]);
-  // One restored value IS replaced, once: a measured blur saved before the
-  // figures were made exact is this satellite's own old default, kept to two
-  // decimals (0.59 px for Sentinel-2, which is a FWHM of 13.9 m where the note
-  // measured 14). Anything else restored, a figure typed included, is left.
+  // One restored value IS replaced, once: a measured blur saved as this
+  // satellite's own OLD default. Either kept to two decimals before the figures
+  // were made exact (0.59 px for Sentinel-2, which is a FWHM of 13.9 m where the
+  // note measured 14), or a figure the note has since measured again
+  // (SUPERSEDED_FWHM: WorldView-2 native 1.9 -> 2.0 m and PlanetScope
+  // 9.7 -> 11.8 m, 2026-11-24), exact or to two decimals: left alone, it would
+  // keep the old blur and show it as one typed. Anything else restored, a
+  // figure typed included, is left.
   useEffect(() => {
-    const exact = source.psf, old = Math.round(exact * 100) / 100;
-    if (source.psfMeasured && old !== exact && sigmaX === old && sigmaY === old) { setSigmaX(exact); setSigmaY(exact); }
+    const exact = source.psf, two = (v: number) => Math.round(v * 100) / 100;
+    const olds = [two(exact), ...(SUPERSEDED_FWHM[sourceId] ?? []).flatMap(f => { const v = f / 2.3548 / source.res; return [v, two(v)]; })];
+    const isOld = (v: number) => olds.some(o => o !== exact && Math.abs(v - o) < 1e-12);
+    if (source.psfMeasured && isOld(sigmaX) && isOld(sigmaY)) { setSigmaX(exact); setSigmaY(exact); }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Authoritative grid lookup against the product catalog, per source.
@@ -377,18 +377,14 @@ export function useFieldGrid({ aoi, fieldRing }: {
    *    the radial miss is Rayleigh, so CE90 = sigma * sqrt(-2 ln 0.1), i.e.
    *    sigma = CE90 / 2.146. The PHENET note's default, when nothing is known,
    *    is a third of a pixel, which is a CE90 of 0.715 px.
-   *  PIXEL BOX. A pixel integrates over its own footprint, and a uniform
-   *    distribution over one pixel has variance 1/12, so sigma = 1/sqrt(12)
-   *    = 0.289 px.
    *
-   * The box is listed but NOT added into the total, which stays the note's
-   * sqrt(optics^2 + geolocation^2): a FWHM fitted on an image contains the
-   * detector, and so does a published MTF at Nyquist, which is a SYSTEM MTF
-   * and not a lens-only one. The engine follows the same rule (simulate.ts
-   * followsSpot): it reads each pixel through the spot alone, with no square
-   * under it. A blur typed in below the box's own 0.289 px cannot be an
-   * end-to-end blur and is simulated at 0.289 px (spotSigma); the panel says
-   * so on its "sigma simulated" row.
+   * Nothing is added for the pixel's own square: a FWHM fitted on an image
+   * contains the detector, and so does a published MTF at Nyquist, which is a
+   * SYSTEM MTF and not a lens-only one. The engine follows the same rule
+   * (simulate.ts followsSpot): it reads each pixel through the spot alone, with
+   * no square under it. The pixel footprint (1/sqrt(12) px) was listed in the
+   * panel and on the documentation page until 2026-11-24, when it was removed
+   * on request; the engine still raises a blur typed below it (spotSigma).
    */
   /**
    * The CE90 in force at the pixel size on screen, to the centimetre: what is
@@ -399,7 +395,6 @@ export function useFieldGrid({ aoi, fieldRing }: {
   const ce90Exact = ce90At(psfRes, sourceId);
   const geoErrM = Math.round(ce90Exact * 100) / 100;
   const geoSigmaM = ce90Exact > 0 ? ce90Exact / CE90_TO_SIGMA : 0;
-  const boxSigmaM = pxSize / Math.sqrt(12);
   const effSigmaXM = Math.hypot(psfSigmaXM, geoSigmaM);
   const effSigmaYM = Math.hypot(psfSigmaYM, geoSigmaM);
   const psfSigmaM = Math.max(psfSigmaXM, psfSigmaYM);
@@ -471,10 +466,10 @@ export function useFieldGrid({ aoi, fieldRing }: {
         ? `${source.provider} · ${fmt(build.cellCount)} px (zoom to view)`
         : gridState === 'loading' ? 'identifying…' : 'pick a satellite & resolution';
 
-  return { geoSigmaM, boxSigmaM, effSigmaXM, effSigmaYM,
+  return { geoSigmaM, effSigmaXM, effSigmaYM,
            sourceId, setSourceId, source, gsd, setGsd,
            sigmaX, setSigmaX, sigmaY, setSigmaY,
-           geoErrM, setGeoErrM, geoAuto, setGeoAuto, geoManual, geoProvider, setGeoProvider, ce90At, placeFor, setPlaceFor,
+           geoErrM, setGeoErrM, geoManual, geoTyped, setGeoDelivered, ce90At, placeFor, setPlaceFor,
            /** The CE90 the selected satellite's trial is placed for, in metres: 0 when placed for pure pixels. */
            placeHeldM: placeFor === 'held' ? geoErrM : 0,
            grids, gridState, selectedGridKey, setSelectedGridKey, selectedGrid,

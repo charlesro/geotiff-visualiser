@@ -1,6 +1,6 @@
 import { Disclosure, Step } from '../ui';
 import { Boundary } from '../Boundary';
-import { BlockSummary, ImportedSummary, LayoutFields, LayoutSelect, SpeciesList, SELECT } from './controls';
+import { BlockSummary, ImportedSummary, LayoutFields, LayoutSelect, NumField, SpeciesList, SELECT } from './controls';
 import { ImportPanel } from './ImportPanel';
 import { PlotSizeCard } from './PlotSize';
 import { SuggestDesign } from './SuggestDesign';
@@ -60,7 +60,7 @@ function SimStepBody(p: StepProps) {
   const satLabel = `Satellite · ${source.provider} ${source.kind === 'custom' ? `${build?.res ?? pxSize} m` : source.resLabel} · CE90 ${geoErrM} m · ${psfSigmaM > 0 ? `FWHM ${fwhmText(p.gridApi)} m` : 'no blur'}`;
 
   /**
-   * The step is six folds, one open at a time and all shut to begin with,
+   * The step is five folds, one open at a time and all shut to begin with,
    * each named by what it holds now: the design reads "4 species × 4 blocks ·
    * plots 10.5 × 10.5 m" when it is shut, so nothing has to be open to be
    * read. It was one column of everything, more than two screens of it.
@@ -139,6 +139,13 @@ function SimStepBody(p: StepProps) {
               />
             )}
 
+            {/* The purity threshold, the page's own, with its epsilon: the same field as in
+                Suggest a design. It had a fold of its own with the noise until 2026-11-24
+                ("remove the tab, put the purity in the Design tab"). */}
+            <div className="grid grid-cols-3 gap-2">
+              <NumField label={`Purity (ε = ${100 - threshold} %)`} value={threshold} onChange={setThreshold} min={50} max={99} unit="%" />
+            </div>
+
             {pattern === 'block' && (
               <BlockSummary design={blockDesign} plan={blockPlan} res={build?.res} />
             )}
@@ -177,6 +184,20 @@ function SimStepBody(p: StepProps) {
                 <SpeciesList wrapperClass="grid grid-cols-2 gap-2"
                   species={speciesD} presets={presetsActive} colors={colors} names={names}
                   setSpeciesAt={setSpeciesAt} setPresetAt={setPresetAt} />
+                {/* The noise added to each pixel's series, with the curves it is added to
+                    (it shared a fold with the purity threshold until 2026-11-24). */}
+                <div>
+                  <span className="mb-0.5 block text-[14px] text-neutral-400">Noise</span>
+                  <div className="grid grid-cols-3 gap-2">
+                    {([['mag', magnitude, setMagnitude, 0, 0.15, 0.005], ['α', alpha, setAlpha, 0.1, 10, 0.1], ['β', beta, setBeta, 0.1, 10, 0.1]] as const).map(([lbl, val, set, mn, mx, st]) => (
+                      <div key={lbl}>
+                        <span className="mb-0.5 block text-[14px] text-neutral-500">{lbl}</span>
+                        <input type="number" min={mn} max={mx} step={st} value={val}
+                          onChange={e => set(Math.max(mn, Math.min(mx, parseFloat(e.target.value) || 0)))} className={NUM} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
                 {ndviSeries && (
                   <div className="space-y-1">
                     <span className="block text-[14px] text-neutral-400">NDVI season</span>
@@ -190,25 +211,6 @@ function SimStepBody(p: StepProps) {
               </Disclosure>
             )}
 
-            <Disclosure label={`Noise & purity threshold · ε = ${100 - threshold} %`} open={at('noise')} onToggle={fold('noise')}>
-              <div className="grid grid-cols-3 gap-2">
-                {([['mag', magnitude, setMagnitude, 0, 0.15, 0.005], ['α', alpha, setAlpha, 0.1, 10, 0.1], ['β', beta, setBeta, 0.1, 10, 0.1]] as const).map(([lbl, val, set, mn, mx, st]) => (
-                  <div key={lbl}>
-                    <span className="mb-0.5 block text-[14px] text-neutral-500">{lbl}</span>
-                    <input type="number" min={mn} max={mx} step={st} value={val}
-                      onChange={e => set(Math.max(mn, Math.min(mx, parseFloat(e.target.value) || 0)))} className={NUM} />
-                  </div>
-                ))}
-              </div>
-              <div>
-                {/* 90 % is the PHENET note's pure pixel. 100 is not offered: a
-                    Gaussian never reaches zero, so at 100 % the answer was set by
-                    where the kernel is cut off, not by the trial. */}
-                <span className="mb-1 block text-[14px] text-neutral-500">Threshold ε = {100 - threshold} % (pure ≥ {threshold} %)</span>
-                <input type="range" min="50" max="99" step="1" value={threshold}
-                  onChange={e => setThreshold(parseInt(e.target.value))} className="w-full accent-sky-500" />
-              </div>
-            </Disclosure>
           </div>
         </Step>
   );

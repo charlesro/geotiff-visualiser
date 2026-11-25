@@ -218,15 +218,20 @@ console.log('\nU2b. one sampling-position control, not two, and its effect is wh
   // follows the pixel size each rung of the ladder computes its own.
   {
     const g = read('src/pixel-grid/use-grid.ts');
-    check('the CE90 defaults to the note\'s GSD / 3, not to 0',
-      /usePersistentState\('geoAuto', true, isBool\)/.test(g) && /sourceCe90\(id, res, \{ auto: geoAuto, manualM: geoManual, provider: geoProvider \}\)/.test(g)
-      && /ce90For = \(auto: boolean, manualM: number, res: number\): number => \(auto \? \(CE90_TO_SIGMA \* res\) \/ 3 : manualM\);/.test(read('src/pixel-grid/resolving.ts')));
-    check('typing a value is what turns the default off', /setGeoErrM = useCallback\(\(v: number\) => \{ setGeoAuto\(false\); setGeoManual\(v\); \}/.test(g));
+    // "since we have delivered values for ce 90 for all sattelite i think we can remove all mentions of the
+    // default one" (2026-11-22): as delivered, or a figure typed. The note's third of a pixel is not offered.
+    check('the CE90 is each satellite\'s own figure as delivered until one is typed, never a third of a pixel',
+      /usePersistentState\('geoTyped',/.test(g) && /sourceCe90\(id, res, \{ auto: false, manualM: geoManual, provider: !geoTyped \}\)/.test(g)
+      && !/usePersistentState\('geoAuto'/.test(g) && !/usePersistentState\('geoProvider'/.test(g));
+    check('a browser that was on the old default, or had set nothing, opens as delivered',
+      /readSaved<boolean>\('geoAuto', isBool\) === false && readSaved<boolean>\('geoProvider', isBool\) !== true, isBool\);/.test(g));
+    check('typing a value is what leaves "as delivered"', /setGeoErrM = useCallback\(\(v: number\) => \{ setGeoTyped\(true\); setGeoManual\(v\); \}/.test(g));
     check('each rung uses the CE90 of its own pixel size', /const ce90Exact = ce90At\(r\);\s*const ce90 = Math\.round\(ce90Exact \* 100\) \/ 100;/.test(rungSrc)
       && /const ce90At = \(res: number\) => rungCe90\(ctx, rung\.id, res\);/.test(rungSrc)
       && /sourceCe90\(id, res, \{ auto: ctx\.geoAuto, manualM: ctx\.geoManual, provider: ctx\.geoProvider \}\)/.test(rungSrc)
       && /ce90M: ce90 > 0 \? ce90 : undefined/.test(rungSrc));
-    check('and the input offers the way back to the default', /onClick=\{\(\) => setGeoAuto\(true\)\} disabled=\{geoAuto && !geoProvider\}/.test(read('src/pixel-grid/steps/GridStep.tsx')));
+    check('and one button is the way back to it', /onClick=\{setGeoDelivered\} disabled=\{!geoTyped \|\| !source\.geo\}/.test(read('src/pixel-grid/steps/GridStep.tsx'))
+      && />\s*As delivered\s*<\/button>/.test(read('src/pixel-grid/steps/GridStep.tsx')) && !/>\s*Default\s*<\/button>/.test(read('src/pixel-grid/steps/GridStep.tsx')));
   }
   check('every sample goes through the SAME share rule as the rung it qualifies',
     (rungSrc.match(/plantedShare\(/g) || []).length >= 2 && !/0\.8 \* geo/.test(rungSrc));
@@ -234,30 +239,28 @@ console.log('\nU2b. one sampling-position control, not two, and its effect is wh
     /within CE90 <span[^>]*>\{pct0\(c\.geoRobust\)\}<\/span>/.test(sweepSrc) && !/geoLo|geoHi/.test(sweepSrc));
   check('and its tooltip gives the count and the note\'s across-image mean',
     /px hold within the CE90 \(\$\{c\.ce90M \?\? geoErrM\} m\)/.test(sweepSrc) && /with σeff: \$\{pct0\(c\.geoMean\)\}/.test(sweepSrc));
-  // The plot is what a variety trial is read by: a fine share can still leave
-  // whole plots with nothing to follow.
-  // One figure on the panel: the fewest pure pixels any plot holds, or how
-  // many plots hold none. The median and the rest are in the tooltip.
-  check('each panel says how the pure pixels are spread over the plots',
-    /min <span className="text-neutral-300">\{t\.min\}<\/span> px \/ plot/.test(sweepSrc) && /\{t\.none\}\/\{t\.plots\} plots empty/.test(sweepSrc)
-    && /minimum \$\{t\.min\}, median \$\{t\.median\}/.test(sweepSrc));
-  check('counted over the robust set once a geolocation error is set',
-    /const t = c\.plotsRobust \?\? c\.plots;/.test(sweepSrc));
+  // The fewest pixels a plot keeps was a line on each panel ("min 4 px / plot",
+  // "16/16 plots empty") and the table's last column ("0 in 16/16"). It read
+  // as a riddle and was removed on request on 2026-11-24, with its hover lines.
+  // The count is still worked out: Suggest a design reads it (row.plots).
+  const tableSrc = fs.readFileSync(path.join(ROOT, 'src/pixel-grid/ResTable.tsx'), 'utf8');
+  const shown = sweepSrc.replace(/\{\/\*[\s\S]*?\*\/\}|\/\*[\s\S]*?\*\/|\/\/.*$/gm, '') + tableSrc.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
+  check('no panel and no table row gives the fewest pixels a plot keeps',
+    !/px \/ plot|plots empty|fewest px|t\.none|in each plot|per plot: minimum|c\.plots|s\.plots/.test(shown));
   // The closed form left the panel for its tooltip when the plot-size card
-  // arrived: it was one more line on each of nine panels, and the card gives
-  // the size a design needs. A design under it still shows, in amber.
-  check('and keeps the note\'s closed-form smallest plot one hover away, flagging a design under it',
-    /closed form: a side of \$\{c\.minPlotM\.toFixed\(1\)\} m or more/.test(sweepSrc) && /c\.plotSideM < c\.minPlotM/.test(sweepSrc)
-    && /small && t\.none === 0 \? 'text-amber-300\/80'/.test(sweepSrc));
+  // arrived, and moved to the share's tooltip when the line that held it went.
+  check('and keeps the note\'s closed-form smallest plot one hover away',
+    /closed form: a side of \$\{c\.minPlotM\.toFixed\(1\)\} m or more/.test(sweepSrc));
   // Six or seven lines of caption stood over each small chart.
-  check('a panel\'s caption is two short lines that never wrap',
-    (sweepSrc.match(/whitespace-nowrap px-0\.5 font-mono text-\[12px\] leading-tight tracking-tight/g) || []).length === 2);
+  check('a panel\'s caption is one short line that never wraps',
+    (sweepSrc.match(/whitespace-nowrap px-0\.5 font-mono text-\[12px\] leading-tight tracking-tight/g) || []).length === 1);
   // 90 % is the note's pure pixel. At 100 % a Gaussian never clears, so the
   // answer was set by where the kernel is cut off: 0 pure pixels on Pleiades
   // where the note counts 20.
   check('the threshold defaults to the note\'s 90 % and 100 is not offered',
     /usePersistentState\('threshold', 90, inRange\(50, 99\)\)/.test(useSim2)
-    && /min="50" max="99" step="1"/.test(read('src/pixel-grid/steps/SimStep.tsx')));
+    // The Purity field of the Design section since the slider's fold went (2026-11-24).
+    && /onChange=\{setThreshold\} min=\{50\} max=\{99\} unit="%"/.test(read('src/pixel-grid/steps/SimStep.tsx')));
   check('and step 4 hands the panels the error to label it with', (pcaStep.match(/geoErrM=\{geoErrM\}/g) || []).length >= 2);
   check('and step 3 no longer carries a second range', !/GeoSpread/.test(read('src/pixel-grid/steps/controls.tsx')) && !/geoSpread/.test(useSim2));
 }
@@ -345,14 +348,15 @@ console.log('\nU3. the aligned-vs-drawn verdict reads the number it prints, both
   // Marked on its row, said in the row's own hover, and the mark is named on the documentation page.
   ok('and a sampled rung says it was sampled, on its own row',
     /\{s\.res\} m\{s\.partial \? ' ◦' : null\}/.test(table) && /s\.partial \? 'sampled over the central part of a large field' : null/.test(table)
-    && /<dt>◦<\/dt><dd>Sampled over the central part of a large field\.<\/dd>/.test(fs.readFileSync(path.join(ROOT, 'pixel-grid-docs.html'), 'utf8')));
+    && /<dt>◦<\/dt><dd>Counted on the central part of a large field\.<\/dd>/.test(fs.readFileSync(path.join(ROOT, 'pixel-grid-docs.html'), 'utf8')));
 
   // (8) With a geolocation error set it judges the WORST cases. The nominal is
   // one draw, and for a staked placement it is the lucky draw by construction:
   // on a 50 m plot trial at 10 m the verdict called staking better on 182
   // against 225 pure pixels where the worst cases were 177 against 180.
   ok('with a geolocation error it ranks what survives it, not the nominals',
-    /const worstCase = geoErrM > 0;/.test(src) &&
+    // Judged within the CE90 when the satellites compared have one, whatever the selected one has (Neon, 2026-11-25).
+    /const worstCase = sweep \? sweep\.some\(s => \(s\.ce90M \?\? 0\) > 0\) : geoErrM > 0;/.test(src) &&
     /if \(worstCase\) \{[\s\S]{0,200}drawn: own\.geoRobust, aligned: al\.geoRobust/.test(src));
   ok('and prints the robust pure counts, not the nominal ones',
     /drawnPure: own\.geoRobustPure \?\? NaN, alignedPure: al\.geoRobustPure \?\? NaN/.test(src));
@@ -447,7 +451,7 @@ console.log('\nU6. a measured PSF reproduces the FWHM it was measured at');
   // sensors the two differ by a factor of two to four. Pinned so a later edit
   // cannot quietly put the flattering spec figures back.
   const MEASURED = [
-    ['s2-10', 10, 14.0], ['planet', 3, 9.7], ['wv', 1.6, 1.9],
+    ['s2-10', 10, 14.0], ['planet', 3, 11.8], ['wv', 1.6, 2.0],
     ['wv-ps', 0.4, 1.1], ['pleiades', 2, 5.0], ['pleiades-ps', 0.5, 3.0],
   ];
   // The FWHM itself is what the row carries, turned into a sigma by one rule: a
@@ -465,15 +469,18 @@ console.log('\nU6. a measured PSF reproduces the FWHM it was measured at');
   check('the two pansharpened rows the note measured are named as such, and the documentation says what they are sharp in',
     /note: 'Pansharpened\. Measured FWHM 1\.1 m\.' \}/.test(src) && /note: 'Pansharpened\. Measured FWHM 3 m\.' \}/.test(src)
     && !/\bwarn\b/.test(src) && !/source\.warn/.test(read('src/pixel-grid/steps/GridStep.tsx'))
-    && /sharp only in the panchromatic band/.test(read('pixel-grid-docs.html')) && /Size a trial on the native row/.test(read('pixel-grid-docs.html'))
-    && /the note measured about 1 m between images/.test(read('pixel-grid-docs.html')));
+    && /but only its panchromatic band is/.test(read('pixel-grid-docs.html')) && /use the native row of the same satellite/.test(read('pixel-grid-docs.html'))
+    && /about 1 m was measured for this tool/.test(read('pixel-grid-docs.html')));
   // A link would be a fabrication: the note is not published.
   check('and says it was measured rather than linking somewhere it is not',
     /const SRC_PHENET = \{ label: 'measured on PHENET images at Mauguio and Toulouse' \};/.test(src) && !/SRC_PHENET = \{ url/.test(src));
   // The panel says measured or published and links nowhere: the sources are the documentation's.
-  check('the panel says which of the two a blur is, with no link, and the documentation says the note is not published',
-    /\{source\.psfSrc && ownBlur\(p\.gridApi\) && <>, \{source\.psfMeasured \? 'measured' : 'from the published MTF'\}<\/>\}/.test(read('src/pixel-grid/steps/GridStep.tsx'))
-    && !/psfSrc\.url/.test(read('src/pixel-grid/steps/GridStep.tsx')) && /The note is not published\./.test(read('pixel-grid-docs.html')));
+  // Said on the FWHM row of Every source of blur since the line under the controls was removed (2026-11-24).
+  check('the panel says which of the two a blur is, with no link, and neither it nor the documentation cites the note',
+    /note=\{optFrom === 'measured' \? 'measured' : optFrom === 'published' \? 'published MTF' : optFrom === 'assumed' \? 'assumed MTF' : undefined\}/.test(read('src/pixel-grid/steps/GridStep.tsx'))
+    && !/r = FWHM\/GSD = \{/.test(read('src/pixel-grid/steps/GridStep.tsx'))
+    && !/psfSrc\.url/.test(read('src/pixel-grid/steps/GridStep.tsx')) && !/\bnote\b/i.test(read('pixel-grid-docs.html').replace(/<style[\s\S]*?<\/style>/g, ''))
+    && !/by the note|the note's/.test(read('src/pixel-grid/steps/GridStep.tsx').replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '')) && !/the note's closed form asks/.test(read('src/pixel-grid/ResTable.tsx')));
   // Pansharpened sharpness is spatial, borrowed from the panchromatic band.
   check('and the native MS row is the one offered first',
     src.indexOf("id: 'wv'") < src.indexOf("id: 'wv-ps'")
@@ -498,8 +505,11 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
     && /const ce90Exact = ce90At\(psfRes, sourceId\);\s*const geoErrM = Math\.round\(ce90Exact \* 100\) \/ 100;\s*const geoSigmaM = ce90Exact > 0 \? ce90Exact \/ CE90_TO_SIGMA : 0;/.test(grid)
     // ONE constant: the budget and the ladder must not each carry their own.
     && !/const CE90_TO_SIGMA/.test(grid));
-  check('a pixel integrates over its footprint, so the box is 1\/sqrt(12)',
-    /boxSigmaM = pxSize \/ Math\.sqrt\(12\)/.test(grid));
+  // The pixel footprint (GSD / sqrt(12)) was listed in the panel and explained on
+  // the documentation page; both were removed on request on 2026-11-24. The
+  // engine still raises a blur typed below it (simulate.ts spotSigma).
+  check('the pixel footprint is mentioned neither in the panel nor on the documentation page',
+    !/boxSigmaM/.test(grid) && !/footprint|σ simulated|sqrt\(12\)/i.test(step) && !/footprint|√12|σ simulated/i.test(read('pixel-grid-docs.html')));
 
   // Both a measured FWHM and a published MTF at Nyquist are SYSTEM figures that
   // already contain the detector, so the box is a second helping of it. Only a
@@ -508,40 +518,41 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
   check('the box is never added to a blur, in the budget or in the simulation',
     !/boxDoubleCounts/.test(grid) && !/boxDoubleCounts/.test(step) && !/Math\.hypot\(optX, box\)/.test(step)
     && /if \(followsSpot\(sensor\)\) \{\s*const spot = spotCovers\(/.test(read('src/pixel-grid/simulate.ts')));
-  check('and the panel says which of the three the sigma came from',
-    /'measured' \| 'published' \| 'typed'/.test(step)
+  check('and the panel says which of the four the sigma came from: measured, published, assumed or typed',
+    /'measured' \| 'published' \| 'assumed' \| 'typed'/.test(step)
     // A blur typed over the satellite's own is the reader's: the panel went on calling it measured.
-    && /optFrom=\{!ownBlur\(p\.gridApi\) \? 'typed' : source\.psfMeasured \? 'measured' : source\.psfSrc \? 'published' : 'typed'\}/.test(step)
+    && /optFrom=\{!ownBlur\(p\.gridApi\) \? 'typed' : source\.psfMeasured \? 'measured' : source\.psfAssumed \? 'assumed' : source\.psfSrc \? 'published' : 'typed'\}/.test(step)
     && /const ownBlur = \(\{ sigmaX, sigmaY, source \}: StepProps\['gridApi'\]\): boolean =>\s*Math\.abs\(sigmaX - source\.psf\) < 1e-6 && Math\.abs\(sigmaY - source\.psf\) < 1e-6;/.test(step));
 
-  // A panel that printed only the clean total could disagree with the purity
-  // numbers beside it: the row states what the simulation reads a pixel with.
-  // The spot alone, read no narrower than a pixel's own footprint when the
-  // blur typed in is; never the geolocation error.
-  check('the list always states the sigma the engine really simulates',
-    /name="σ simulated" val=\{pair\(Math\.max\(optX, box\), Math\.max\(optY, box\)\)\} note=\{optX < box \|\| optY < box \? 'the footprint: the blur typed is narrower' : 'the PSF alone'\}/.test(step)
-    && /The simulation does not blur the geolocation error in/.test(read('pixel-grid-docs.html')));
-  check('and marks the pixel footprint as already inside the FWHM rather than adding it',
-    /name="pixel footprint" val=\{m\(box\)\} dim note="included in FWHM"/.test(step));
-  // The note's own figures, worked as its page works them, beside the page's.
-  check('the note\'s minimum plots, its hard ceiling and its random placements are in the list, from note-model.ts',
-    /noteFigures\(\{ gsd: res, sigmaPsf: opt, sigmaGeo: geo, threshold: threshold \/ 100 \}, plotSideM\)/.test(step)
-    && ['name="central pixel"', 'name="registered to ½ px"', 'name="any pixel, swept"', 'name="on a 2 m grid"', 'name="largest pixel for L"', 'name="centred pixel"', 'name="random placements"'].every(s => step.includes(s)));
-  check('and the list says at which position a satellite is counted', /note=\{catalog \? 'counted at the best position' : 'counted at the worst position'\}/.test(step));
+  // The simulation reads a pixel with the spot alone, never with the geolocation error.
+  check('the documentation says the simulation does not blur by the geolocation error',
+    /The simulation does not include σ<sub>geo<\/sub> in the blur/.test(read('pixel-grid-docs.html')));
+  // The minimum plots left the panel on request (2026-11-24): the closed form's
+  // row and the whole "Minimum plot, worst placement" block. The documentation keeps them.
+  check('no minimum plot is in the list, and the documentation still explains each',
+    !/noteFigures|minPlotSideM|Minimum plot, worst placement/.test(step.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, ''))
+    && !['name="central pixel"', 'name="registered to ½ px"', 'name="any pixel, swept"', 'name="on a 2 m grid"', 'name="largest pixel for L"', 'name="centred pixel"', 'name="random placements"', 'name="min. plot, any pixel"'].some(s => step.includes(s))
+    && ['Min. plot, any pixel', 'Central pixel', 'Any pixel, swept', 'Largest pixel for L', 'Random placements'].every(t => read('pixel-grid-docs.html').includes(`<dt>${t}</dt>`)));
+  // The grid placement and signal blocks left the list on request (2026-11-24); the documentation keeps their terms.
+  check('the list has no grid placement and no noise row', !/name="grid phase"|name="grid rotation"|name="noise"|<Head>Grid placement|<Head>Signal/.test(step)
+    && ['Grid phase', 'Grid rotation', 'Noise'].every(t => read('pixel-grid-docs.html').includes(`<dt>${t}</dt>`)));
   // One list, every source, at the current setting: blur, what it costs, where
   // the grid and the image sit, the signal noise, and what is NOT simulated.
   // In the PHENET note's own terms and symbols, so a figure here can be read
-  // straight against the note: GSD, FWHM, r, alpha, the three sigmas, epsilon,
+  // straight against the note: GSD, FWHM, r, the three sigmas, epsilon,
   // the buffer b, the pure core L - 2b and the any-pixel minimum plot.
   check('the list uses the note\'s terms and symbols',
-    ['"GSD"', '"FWHM"', '"r = FWHM/GSD"', '"α"', '"pure core L − 2b"', '"min. plot, any pixel"', '"grid phase"', '"grid rotation"']
+    ['"GSD"', '"FWHM"', '"r = FWHM/GSD"', '"pure core L − 2b"']
       .every(n => step.includes(`name=${n}`))
-    && ['σ<sub>PSF</sub>', 'σ<sub>geo</sub>', 'σ<sub>eff</sub>', 'buffer b = k σ<sub>eff</sub>'].every(n => step.includes(n))
+    && ['σ<sub>PSF</sub>', 'σ<sub>geo</sub>', 'σ<sub>eff</sub>'].every(n => step.includes(n))
+    // k left the panel on request (2026-11-24) and stays on the documentation page.
+    && step.includes('<Row name="buffer b" val={m(b)} />') && !/<Row name="k"|buffer b = k/.test(step)
+    && read('pixel-grid-docs.html').includes('<dt>k</dt>')
     && /Threshold <span className="normal-case">ε<\/span> = \{100 - threshold\} %/.test(step) && / id="not-simulated"/.test(read('pixel-grid-docs.html')));
-  check('alpha is the MTF at Nyquist, exp(-0.890 r^2)', /Math\.exp\(-0\.890 \* r \* r\)/.test(step));
-  // PlanetScope's alpha is about 9 x 10^-5. Two decimals printed it as 0.00.
-  check('and a small alpha is never printed as 0.00', /val=\{small\(Math\.exp\(-0\.890 \* r \* r\)\)\}/.test(step)
-    && /if \(!\(v > 0\) \|\| v >= 0\.01\) return v\.toFixed\(2\);/.test(step));
+  // "remove the mentions of alpha" (2026-11-24): the MTF at Nyquist is no row of the list, and no entry of the documentation.
+  check('alpha, the MTF at Nyquist, is neither in the list nor in the documentation',
+    !/name="α"/.test(step) && !/MTF at Nyquist/.test(step) && !/0\.890/.test(step)
+    && !/<dt>α<\/dt>/.test(read('pixel-grid-docs.html')) && !/0\.890/.test(read('pixel-grid-docs.html')) && !/gen:alpha/.test(read('pixel-grid-docs.html')));
   // A name and a figure per row, and nothing on hover: every term's definition
   // is on the documentation page ("remove all additional info" whose place is
   // in the documentation, 2026-11-22). The counts catch a row whose term the
@@ -550,8 +561,8 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
     const list = step.slice(step.indexOf('function VarianceSources'), step.indexOf('function GridStepBody'));
     const docs = read('pixel-grid-docs.html');
     const rows = (list.match(/<Row name=/g) || []).length;
-    check('every row of the list is a name and a figure, with nothing on hover', rows >= 15 && !/\btip=/.test(list) && !/Explain/.test(list), `${rows} rows`);
-    const terms = ['GSD', 'FWHM', 'r = FWHM / GSD', 'α', 'Pixel footprint', 'σ simulated', 'k', 'Buffer b = k σ<sub>eff</sub>', 'Pure core L − 2b', 'Min. plot, any pixel',
+    check('every row of the list is a name and a figure, with nothing on hover', rows >= 9 && !/\btip=/.test(list) && !/Explain/.test(list), `${rows} rows`);
+    const terms = ['GSD', 'FWHM', 'r = FWHM / GSD', 'k', 'Buffer b = k σ<sub>eff</sub>', 'Pure core L − 2b', 'Min. plot, any pixel',
       'Grid phase', 'Grid rotation', 'Noise', 'Central pixel', 'Registered to ½ px', 'Any pixel, swept', 'On a 2 m grid', 'Largest pixel for L', 'Centred pixel', 'Random placements'];
     const missing = terms.filter(t => !docs.includes(`<dt>${t}</dt>`));
     check(`and the documentation defines each of them${missing.length ? `: not ${missing.join(', ')}` : ''}`, missing.length === 0 && /<dt>σ<sub>PSF<\/sub>, σ<sub>geo<\/sub>, σ<sub>eff<\/sub><\/dt>/.test(docs));
@@ -563,8 +574,9 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
   // which read as generated text rather than as an instrument.
   check('as a table of numbers, with no sentence in it',
     !/Conservative, not correct|what is really convolved|wherever the grid falls/.test(step));
-  check('the buffer and the smallest plot follow the threshold in force',
-    /bufferK\(threshold \/ 100\)/.test(step) && /minPlotSideM\(res, eff, threshold \/ 100\)/.test(step));
+  // The smallest plot left the list on request (2026-11-24); the buffer is still there.
+  check('the buffer follows the threshold in force',
+    /bufferK\(threshold \/ 100\)/.test(step));
 
   // The export carried geometry only, so the pixels worth trusting never left
   // the screen.
@@ -596,14 +608,32 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
     ["pattern === 'block'", "pattern === 'imported'", "pattern === 'checker'"].every(t => card.includes(t)) && /b: Infinity/.test(card)
     && /importedPlotBoxes\(importedPlan, importedAngle\)/.test(card));
   check('at the sensor and threshold in force', /gsd: d\.res, sigma: c\.sigma, shift: c\.shift, threshold: d\.threshold \/ 100, angleDeg: d\.angle/.test(card));
+  // A "worst case" column (2026-11-24) was added and removed the same day, on request.
+  check('the card has no worst case column', !/worst<br \/>case|WORST_ROTATIONS/.test(card) && !read('pixel-grid-docs.html').includes('<dt>Worst case</dt>'));
+  // On a known grid the trial is counted where it falls (2026-11-24).
+  check('on a fixed grid, with the plots along the pixel rows, the sizes are at the best place and the trials counted plot by plot',
+    /const known = source\.kind === 'catalog';/.test(card) && /pureScales\(plot, v, rows, shape \? 'best' : 'worst'\)/.test(card) && /seatedTrial\(centresOf\(shape, d\.a, d\.b\), plot, v\)/.test(card)
+    && /shape: alongRows\(rotation\) \? \{ kind: 'blocks'/.test(card) && !/shape:/.test(card.slice(card.indexOf("if (pattern === 'imported')"), card.indexOf("if (pattern === 'checker')")))
+    && /Their grid is fixed, so the sizes are those of a plot sitting at its best place on the grid, and Now counts each plot of the trial where it falls/.test(read('pixel-grid-docs.html')));
+  // "this should be a button allowing to go back to the previous settings" (2026-11-24).
+  check('after Use these the button undoes it, putting back the plots it replaced, kept in the shell and saved',
+    // The angle too since Use these may turn the plots along the field (2026-11-25).
+    /setMostUndo\(\{ from: \{ plotLength: bd\.plotLength, plotWidth: bd\.plotWidth, blocksPerRow: bd\.blocksPerRow, rotation \},/.test(card)
+    && /const \{ rotation: back, \.\.\.plots \} = undo;\s*setBlockDesign\(dd => \(\{ \.\.\.dd, \.\.\.plots \}\)\);\s*if \(back !== undefined && back !== rotation\) setRotation\(back\);\s*setMostUndo\(null\);/.test(card)
+    && /\{undo \? 'Undo' : there \? 'In use' : 'Use these'\}/.test(card) && /usePersistentState<MostUndo \| null>\('mostUndo', null,/.test(shell)
+    && read('pixel-grid-docs.html').includes('<span class="f">Undo</span> then puts back the plots and the angle it had'));
+  // "use the > or < symbol instead of under" (2026-11-24).
+  check('a share too small to print reads < 0.1 %, not in words', /out < 0\.05 \? '< 0\.1 %'/.test(card) && !/'under /.test(card));
   check('it also says what the plots hold now, and how far the purest pixel is from pure',
     /fewestPure\(plot, v\)/.test(card) && /purestShare\(plot, v\)/.test(card) && /purest pixel, from outside/.test(card));
   check('a size can be given to the design, except for a trial read from a file',
     /onClick=\{\(\) => design\.apply!\(s\)\}/.test(card) && /setBlockDesign\(d => \(\{ \.\.\.d, plotLength: fieldSize\(a \* s\), plotWidth: fieldSize\(b \* s\) \}\)\)/.test(card));
   // Step unmounts a collapsed panel, and the card is shown in two of them.
   check('the count it is asked for lives in the shell, saved and validated',
-    /usePersistentState\('wantPure', 16, v => Number\.isInteger\(v\)/.test(shell) && /wantPure, setWantPure, suggest \}/.test(shell)
-    && !/useState\(/.test(card) && /const \{ wantPure, setWantPure \} = p;/.test(card));
+    /usePersistentState\('wantPure', 16, v => Number\.isInteger\(v\)/.test(shell) && /wantPure, setWantPure, mostUndo, setMostUndo, suggest \}/.test(shell)
+    // Its only state is what it measures: its own width (2026-11-24).
+    && (card.match(/useState[<(]/g) || []).length === 1 && /const \[cardW, setCardW\] = useState\(0\);/.test(card)
+    && /const \{ wantPure, setWantPure, mostUndo, setMostUndo \} = p;/.test(card));
   check('the numbers follow the inputs without holding up the field being typed in', /useDeferredValue\(inputs, null\)/.test(card));
   check('the model counts every side, and knows nothing of the engine',
     /between\(plot\.a, x, sigma\) \* between\(plot\.b, y, sigma\)/.test(model) && !/from '\.\/simulate'/.test(model));
@@ -746,7 +776,8 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
   check('step 3 folds the crops and their season for every layout, as it did for an imported trial',
     /\(pattern !== 'imported' \|\| varieties\.length > 0\) && \(\s*<Disclosure/.test(simStep2)
     && simStep2.indexOf('Growth curves ·') < simStep2.indexOf('<SpeciesList') && simStep2.indexOf('<SpeciesList') < simStep2.indexOf('NDVI season')
-    && simStep2.indexOf('NDVI season') < simStep2.indexOf('Noise & purity threshold · ε')
+    // The noise is set with the curves since its fold went (2026-11-24): between the crops and their season.
+    && simStep2.indexOf('<SpeciesList') < simStep2.indexOf('>Noise</span>') && simStep2.indexOf('>Noise</span>') < simStep2.indexOf('NDVI season')
     && (simStep2.match(/<SpeciesList/g) || []).length === 1);
   check('so the plot-size card follows the design directly', simStep2.indexOf('<PlotSizeCard') < simStep2.indexOf('Growth curves ·'));
   check('step 4 folds the chart\'s five selects, naming what is drawn on the fold',
@@ -869,7 +900,7 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
     && /buildCropMap\(wE, wN, wy \* g, cols, res \/ g, patternOrigin\[0\], patternOrigin\[1\], layout\)/.test(engine));
   // What a dot is worth, the first line and the mark are said on the documentation page: the card is figures only.
   check('a thousand dots, so that one dot is a tenth of a percent, and the documentation says so',
-    /export const SOURCE_DOTS = 1000;/.test(src) && !/One dot is/.test(card) && /A pixel's signal as 1000 dots, one dot for 0\.1 % of it\./.test(read('pixel-grid-docs.html')));
+    /export const SOURCE_DOTS = 1000;/.test(src) && !/One dot is/.test(card) && /Where one pixel's signal comes from, as 1000 dots, one for 0\.1 % of it\./.test(read('pixel-grid-docs.html')));
   check('the dots are canvas markers added by hand, never one React element each',
     /L\.circleMarker\(\[lat, lng\], \{ \.\.\.first, pane, fillColor: colorOf\[sources\.dotCover\[m\]\], fillOpacity: 1, interactive: false \}\)\.addTo\(group\)/.test(dots)
     && !/<CircleMarker/.test(dots) && /return \(\) => \{ map\.off\('zoomend', resize\); group\.remove\(\); \};/.test(dots));
@@ -884,7 +915,7 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
   // 90.39 % under the pointer and 90.4 % on the card would be two purities for one pixel.
   check('the first line is the purity, cut as the figure under the pointer is',
     /q === 0 \? purityText\(Math\.fround\(r\.share\)\) : shareText\(r\.share\)/.test(card) && !/The first line is the purity/.test(card)
-    && /Its first line is the pixel's purity, and the mark on its bar is the threshold the purity must reach\./.test(read('pixel-grid-docs.html')));
+    && /The first is the pixel's purity, with a mark at the threshold\./.test(read('pixel-grid-docs.html')));
   check('the bar carries a mark at the threshold, so pure or not is read off it',
     /style=\{\{ left: `\$\{threshold\}%` \}\}/.test(card));
   // Fixed in a corner, the card sat on the dots of any pixel picked there.
@@ -1015,7 +1046,7 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
   // A click selects another satellite. Were a rung computed from the sensor selected, every click would rebuild the ladder.
   check('a rung is computed from its own satellite, never from the sensor selected, so a click rebuilds nothing',
 /const sensorL: SensorParams = \{ sigmaX: rung\.sigmaX, sigmaY: rung\.sigmaY, mixThreshold: threshold \/ 100, anyPosition: rung\.anyPosition, placeHeldM: placedCe90\(ctx, rung\.id, r\) \};/.test(read('src/pixel-grid/ladder-step.ts'))
-    && /\[aoi, fieldRing, build\?\.epsg, ladderSig, threshold, gridApi\.geoAuto, gridApi\.geoManual, gridApi\.geoProvider, gridApi\.placeFor\]\);/.test(hook)
+    && /\[aoi, fieldRing, build\?\.epsg, ladderSig, threshold, gridApi\.geoManual, gridApi\.geoTyped, gridApi\.placeFor\]\);/.test(hook)
     && /\(ladderCtx \? ladderStep\(ladderCtx, rotationDeg, rung, asDrawn\) : null\), \[ladderCtx\]\);/.test(hook)
     && /const rungKey = \(g: Rung\) => `\$\{g\.id\}\|\$\{g\.res\}\|\$\{g\.sigmaX\}\|\$\{g\.sigmaY\}`;/.test(hook)
     && /const key = `\$\{rot\}\|\$\{which\}\|\$\{rungKey\(g\)\}`;/.test(hook));
@@ -1121,7 +1152,7 @@ console.log('\nU-suggest. a block trial built from what is asked of it');
   check('it holds nothing itself: step 3 forgets what it holds when folded', !/useState\(|useRef\(/.test(panel)
     && /usePersistentState<SuggestAsk>\('suggestAsk'/.test(shell));
   check('the four things asked: species, repetitions, pixels per plot, and a satellite of the table',
-    /label="Species" value=\{ask\.species\}/.test(panel) && /label="Repetitions" value=\{ask\.reps\}/.test(panel)
+    /label="Species" value=\{ask\.species\}/.test(panel) && /label=\{most \? 'Repetitions \(most\)' : 'Repetitions'\} value=\{ask\.reps\}/.test(panel)
     && /label="Pixels \/ plot" value=\{p\.wantPure\} onChange=\{p\.setWantPure\}/.test(panel)
     && /const sats = ladderRungs\(\{ id: sourceId, res, sigmaX, sigmaY \}\);/.test(panel));
   // The same figure as the plot-size card's last row, and the same satellites as the table: one page, one set of numbers.
@@ -1133,7 +1164,7 @@ console.log('\nU-suggest. a block trial built from what is asked of it');
     /exp\.setPattern\('block'\);\s*exp\.setBlockDesign\(built\.design\);\s*exp\.setRotation\(angle\);\s*setAdopted\(null\);\s*if \(sat\.id !== gridApi\.sourceId\) gridApi\.setSourceId\(sat\.id\);/.test(shell));
   check('the plot is counted at the phase the page will stake it at, on the area the trial ends up in',
     /return stakeMesh\(\[Math\.floor\(\(e0 - pE\) \/ r\) \* r \+ pE, Math\.floor\(\(n0 - pN\) \/ r\) \* r \+ pN, Math\.ceil\(\(e1 - pE\) \/ r\) \* r \+ pE, Math\.ceil\(\(n1 - pN\) \/ r\) \* r \+ pN\], r\)\?\.steps;/.test(shell)
-    && /let built = aoi && had \? ask\(field, stepsOn\(aoi\), turned \? countOn\(aoi, fieldRing\) : undefined\) : null;/.test(shell) && /const need = stepsOn\(box\);\s*if \(need === steps\) break;/.test(shell));
+    && /let built = found && found\.fits !== false \? found : aoi && had \? ask\(field, stepsOn\(aoi\), turned \? countOn\(aoi, fieldRing\) : undefined\) : null;/.test(shell) && /const need = stepsOn\(box\);\s*if \(need === steps\) break;/.test(shell));
   // The first version carried over the design's own alleys, the layout's
   // defaults, and built a trial with dirt strips nobody had asked for.
   check('the alleys are asked for in the panel, none by default, and never the design\'s leftovers',
@@ -1154,16 +1185,25 @@ console.log('\nU-suggest. a block trial built from what is asked of it');
   // "it shouldnt require to draw an experiment area": Build was greyed out with
   // no area, step 3 was locked, and a small area got "draw a larger field".
   check('no experiment area is needed: the button does not wait for one, and step 3 is open without one',
-    /disabled=\{busy \|\| !sat\}/.test(panel) && !/disabled=\{[^}]*aoi/.test(panel)
+    // Only "Coarsest that fits the field" waits for one: it is the field it has to fit (2026-11-24).
+    /disabled=\{busy \|\| !sat \|\| noField\}/.test(panel) && /const noField = \(fit \|\| most\) && !p\.area\.aoi;/.test(panel) && !/disabled=\{[^}]*aoi/.test(panel)
     && /onClick=\{\(\) => toggleStep\('sim'\)\} enabled>/.test(step) && !/Draw an experiment area in step&nbsp;1 first/.test(step));
-  check('with no area, or one too small for any arrangement, the build makes the area around the trial',
-    /if \(!built \|\| built\.fits === false\) \{/.test(shell) && /if \(area\) setFieldBox\(ground\);/.test(shell)
-    && /area = \{ how: aoi \? 'replaced' : 'made', u: e1 - e0, v: n1 - n0 \};/.test(shell));
+  // A field drawn is never replaced (2026-11-25: "it doesnt respect my field boundaries. it creates a new one"):
+  // only with no field at all is one made around the trial.
+  check('with no area the build makes one around the trial, and a field drawn is never replaced',
+    /if \(!aoi && !built\) \{/.test(shell) && /if \(area\) setFieldBox\(ground\);/.test(shell)
+    && /area = \{ how: 'made', u: e1 - e0, v: n1 - n0 \};/.test(shell) && !/'replaced'/.test(shell) && !/'replaced'/.test(panel)
+    && /if \(aoi && built && built\.fits === false\) \{\s*setSuggestOutcome\(\{ \.\.\.said, built: null, onField: null, area: null, tooBig: \{ footprint: built\.footprint \} \}\);\s*return;/.test(shell)
+    && /A field you drew is never changed/.test(read('pixel-grid-docs.html')));
   check('in the middle of the area there was, or of the map, with a margin that keeps the trial off the edge',
     /const centre: \[number, number\] = aoi \? \[\(aoi\[0\] \+ aoi\[2\]\) \/ 2, \(aoi\[1\] \+ aoi\[3\]\) \/ 2\]\s*: view \? \[view\.lng, view\.lat\]/.test(shell)
     && /const margin = Math\.max\(3 \* r, 0\.05 \* Math\.max\(u, v\), 5\);/.test(shell) && /box = areaFor\(own\.footprint\[0\], own\.footprint\[1\]\);/.test(shell));
-  check('an area that holds the trial is left as the reader drew it', /let built = aoi && had \? ask\(field, stepsOn\(aoi\), turned \? countOn\(aoi, fieldRing\) : undefined\) : null;\s*if \(!built \|\| built\.fits === false\) \{/.test(shell));
-  check('and the reader is told when the area was made or replaced', /Experiment area made around it/.test(panel) && /was too small: replaced by one of/.test(panel));
+  // The trial a search already found on the field is built as it is, not asked for twice (Neon, 2026-11-25).
+  check('an area that holds the trial is left as the reader drew it', /let built = found && found\.fits !== false \? found : aoi && had \? ask\(field, stepsOn\(aoi\), turned \? countOn\(aoi, fieldRing\) : undefined\) : null;/.test(shell));
+  // The pixel to spare is said, or a trial smaller than the field read as too large for it (Neon, 2026-11-25).
+  check('and the reader is told when the area was made, or why nothing was built', /Experiment area made around it/.test(panel)
+    && /Nothing was built: the smallest trial for \{o\.sat\} · \{o\.res\} m, .* does not fit the field .* with a pixel to spare all round\./.test(panel)
+    && /and a pixel to spare all round\.<\/>/.test(panel));
   check('a page-made area does not send the reader to step 2, as a drawn one does',
     /const setFieldBox = useCallback\(\(b: LngLatBounds\) => \{\s*setAoi\(b\);\s*setAoiPoly\(null\);\s*setDrawKind\(null\);\s*forgetPreTrial\(\);\s*\}, \[\]\);/.test(read('src/pixel-grid/use-area.ts')));
   check('step 3 names its design in the header with or without an area', !/const simSummary = !aoi/.test(read('src/pixel-grid/use-simulation.ts')));
@@ -1178,18 +1218,22 @@ console.log('\nU-compact. step 3 is folds, one open at a time');
   const shell = read('src/pixel-grid/PixelGridApp.tsx');
   const panel = read('src/pixel-grid/steps/SuggestDesign.tsx');
   const folds = (step.match(/<Disclosure\b/g) || []).length;
-  check('everything in the step is a fold: the satellite, the design, the suggestion, the plot size, the crops, the noise', folds === 7
+  // "for the noise and purity threshold: remove the tab. put the purity in the Design tab. for the noise
+  // parameters of the growth curves, put them in the growth curves tab" (2026-11-24).
+  check('everything in the step is a fold: the satellite, the design, the suggestion, the plot size, the crops', folds === 6
     && step.indexOf("open={at('sat')}") < step.indexOf("open={at('design')}")
-    && ['sat', 'design', 'suggest', 'size', 'curves', 'noise'].every(id => new RegExp(`open=\\{at\\('${id}'\\)\\} onToggle=\\{fold\\('${id}'\\)\\}`).test(step)),
+    && ['sat', 'design', 'suggest', 'size', 'curves'].every(id => new RegExp(`open=\\{at\\('${id}'\\)\\} onToggle=\\{fold\\('${id}'\\)\\}`).test(step))
+    && !/at\('noise'\)|Noise & purity threshold/.test(step) && !/'noise'/.test(read('src/pixel-grid/steps/props.ts')),
     `${folds} folds`);
   check('one open at a time, and the choice is remembered',
     /const fold = \(id: SimSection\) => \(\) => setSimSection\(cur => \(cur === id \? null : id\)\);/.test(step)
     && /usePersistentState<SimSection>\('simFold', null,/.test(shell));
   // Nothing has to be open to be read.
-  check('a shut fold says what it holds: the design by its figures, the noise by its threshold',
+  check('a shut fold says what it holds: the design by its figures, and the purity is set in it',
     /`Design · \$\{layoutName\} · \$\{blockDesign\.nSpecies\} species × \$\{blockDesign\.nBlocks\} · \$\{blockDesign\.plotLength\} × \$\{blockDesign\.plotWidth\} m`/.test(step)
     && /`Design · \$\{layoutName\} · \$\{stripWidth\} m wide/.test(step)
-    && /label=\{`Noise & purity threshold · ε = \$\{100 - threshold\} %`\}/.test(step));
+    && /<NumField label=\{`Purity \(ε = \$\{100 - threshold\} %\)`\} value=\{threshold\} onChange=\{setThreshold\} min=\{50\} max=\{99\} unit="%" \/>/.test(step)
+    && step.indexOf("open={at('design')}") < step.indexOf('Purity (ε') && step.indexOf('Purity (ε') < step.indexOf("open={at('suggest')}"));
   // "make all subtabs closed by default and emphasise more the fact that they
   // are subtabs and can be opened"
   check('every fold is shut to begin with, and choosing another layout opens none', !/setSimSection\('design'\)/.test(step)
@@ -1213,9 +1257,36 @@ console.log('\nU-compact. step 3 is folds, one open at a time');
     && step.indexOf('<BlockSummary') < step.indexOf('</Disclosure>', step.indexOf("open={at('design')}")));
   // "also in the build trial settings add purity threshold"
   check('the build settings carry the purity threshold, and it is the page\'s own',
-    /const \{ threshold, setThreshold \} = p\.exp;/.test(panel) && /<NumField label="Purity" value=\{threshold\} onChange=\{setThreshold\} min=\{50\} max=\{99\} unit="%"/.test(panel)
+    /const \{ threshold, setThreshold \} = p\.exp;/.test(panel) && /<NumField label=\{purityLabel\} value=\{threshold\} onChange=\{setThreshold\} min=\{50\} max=\{99\} unit="%"/.test(panel)
+    // The purity labelled with its epsilon in Suggest a design, and the plot-size card in purity, not epsilon (2026-11-24).
+    && /const purityLabel = `Purity \(ε = \$\{100 - threshold\} %\)`;/.test(panel) && /purity \{threshold\} %<\/span>/.test(read('src/pixel-grid/steps/PlotSize.tsx'))
+    && !/ε = \{eps\} %/.test(read('src/pixel-grid/steps/PlotSize.tsx'))
     && /threshold: exp\.threshold \/ 100, anyPosition: sat\.anyPosition, placeHeldM, ce90M,/.test(shell));
   check('a build described under the button is gone once the threshold is another', /&& suggestOutcome\.threshold === exp\.threshold/.test(shell));
+  // Neon's review, 2026-11-25: a build cut into steps went on in a hidden tab only when a frame came, wrote over
+  // what was typed meanwhile, put its trial on a field redrawn since, and wrote the page before its last count.
+  check('a build goes on in a hidden tab, stops when the field or layout changes under it, and writes the page last',
+    /requestAnimationFrame\(go\);\s*window\.setTimeout\(go, 50\);/.test(shell) && /return run === buildRun\.current;/.test(shell)
+    && /useEffect\(\(\) => \{ buildRun\.current\+\+; \}, \[aoi\?\.join\(','\), fieldRing, exp\.pattern\]\);/.test(shell)
+    && /setSuggestAsk\(cur => \(\{ \.\.\.cur, reps \}\)\)/.test(shell)
+    && shell.indexOf("if (!await step('Counting its pixels on the field'))") < shell.indexOf("exp.setBlockDesign(built.design);"));
+  check('a turned trial too large to count at one angle does not stop the search at the others',
+    /catch \(e\) \{ error = e instanceof Error \? e\.message : String\(e\); continue; \}/.test(shell));
+  check('the repetitions are tried until two counts in a row do not fit',
+    /if \(n >= 2 && !tried\[n\]\?\.fits && !tried\[n - 1\]\?\.fits\) break;/.test(shell));
+  check('the edge warning compares the table\'s count of the same reading as the build',
+    /const table = o\.onField \? \(b\.held !== null \? o\.onField\.held : o\.onField\.pure\) : null;/.test(panel));
+  // "i dont specify sattelite [...] i just say the species and the number of pixels and it gives me the biggest gsd that works" (2026-11-24).
+  check('the satellite can be the coarsest that fits the field: the list from the largest pixel down, each at its own blur and CE90, the first whose trial fits',
+    /export const SUGGEST_FIT = 'fit';/.test(panel) && /\{p\.exp\.pattern === 'block' && <option value=\{SUGGEST_FIT\}>Coarsest that fits the field<\/option>\}/.test(panel)
+    && /const fitSearch = suggestAsk\.sat === SUGGEST_FIT && exp\.pattern === 'block';/.test(shell)
+    // Native multispectral products only: a trial is not designed on pansharpened pixels (Neon, 2026-11-25).
+    && /const fitOrder = fitSearch \? sats\.filter\(g => g\.id !== 'custom' && !\/pansharpened\/i\.test\(SOURCES\.find\(s => s\.id === g\.id\)\?\.provider \?\? ''\)\)\.sort\(\(a, b\) => b\.res - a\.res\) : \[\];/.test(shell)
+    && /const on = onTheField\(g\);\s*if \(on\.fits\) \{ sat = g; angle = on\.deg; found = on\.tried; break; \}/.test(shell)
+    // A CE90 typed holds every satellite to it, and is said; one of 0 leaves no box to tick.
+    && /const ce90 = fit \? \(geoTyped \? Math\.round\(geoManual \* 100\) \/ 100 : 1\)/.test(panel) && /\{fit && !geoTyped \? '' : ` \(\$\{ce90\} m\)`\}/.test(panel)
+    && /\{noField \? 'Draw the field first'/.test(panel) && /Coarsest that fits: <b className=\{strong\}>/.test(panel)
+    && read('pixel-grid-docs.html').includes('<span class="f">Coarsest that fits the field</span> names none'));
 }
 
 console.log('\nU-seat. a block trial sits inside its field');
@@ -1233,7 +1304,7 @@ console.log('\nU-seat. a block trial sits inside its field');
   check('the map\'s trial is placed again when the outline changes', /rotation, pixelSize, fieldRing, aoi\?\.join\(','\), epsg,/.test(hook));
   check('the experiment is given the field\'s outline', /epsg: gridApi\.build\?\.epsg \?\? null, aoi, fieldRing,/.test(shell));
   check('the suggestion asks whether the outline holds the trial, and shows the trial where it was seated',
-    /const seat = aoi \? fieldSeat\(fieldRing, aoi, epsg, u, v, angle\) : null;/.test(shell)
+    /const fitsField = \(u: number, v: number\) => !!aoi && trialFitsField\(fieldRing, aoi, epsg, u, v, angle, r\);/.test(shell)
     && /fitsField: field \? fitsField : undefined/.test(shell)
     && /fieldSeat\(ring, ground, epsg, built\.footprint\[0\], built\.footprint\[1\], angle\)\?\.centre/.test(shell));
 }
@@ -1245,10 +1316,22 @@ console.log('\nU-angle. a trial can be built at an angle');
   const panel = read('src/pixel-grid/steps/SuggestDesign.tsx');
   const search = read('src/pixel-grid/suggest-design.ts');
   check('the build settings ask for the angle, beside the satellite',
-    /<NumField label="Angle" value=\{ask\.angle \?\? 0\} onChange=\{set\('angle'\)\} min=\{-90\} max=\{90\} unit="°"/.test(panel)
+    // In tenths: a field's direction is rarely a whole number, and a whole-number field cut it on leaving (Neon, 2026-11-25).
+    /<NumField label="Angle" value=\{Math\.round\(\(ask\.angle \?\? 0\) \* 10\) \/ 10\} onChange=\{set\('angle'\)\} min=\{-90\} max=\{90\} step=\{0\.1\} unit="°"/.test(panel)
+    && /value=\{Math\.round\(rotation \* 10\) \/ 10\} onChange=\{setRotation\} min=\{-90\} max=\{90\} step=\{0\.1\} unit="°"/.test(read('src/pixel-grid/steps/controls.tsx'))
     && /<select className=\{`\$\{SELECT\} col-span-2`\}/.test(panel));
   check('a request saved before the angle existed is still read, as along the pixel rows',
-    /\(v as SuggestAsk\)\.angle === undefined \|\| inRange\(-90, 90\)\(\(v as SuggestAsk\)\.angle\)/.test(shell) && /const angle = suggestAsk\.angle \?\? 0;/.test(shell));
+    /\(v as SuggestAsk\)\.angle === undefined \|\| inRange\(-90, 90\)\(\(v as SuggestAsk\)\.angle\)/.test(shell) && /const askedAngle = suggestAsk\.angle \?\? 0;/.test(shell));
+  // "this one could fit in if it was rotated" (2026-11-25): at the angle asked, else along the field's two directions.
+  check('a trial that does not fit the field at the angle asked is tried along the field\'s own two directions',
+    /const fieldDeg = aoi \? fieldAngle\(fieldRing, aoi, epsg\) : null;/.test(shell)
+    && /\[askedAngle, \.\.\.\[fieldDeg, fieldDeg <= 0 \? fieldDeg \+ 90 : fieldDeg - 90\]\.filter\(d => Math\.abs\(d - askedAngle\) > 1e-6\)\]/.test(shell)
+    && /for \(const deg of angles\) \{\s*const w = withSat\(g, deg\);/.test(shell) && /export function fieldAngle\(fieldRing: Poly \| null, aoi: LngLatBounds \| null, epsg: number\): number \| null/.test(read('src/pixel-grid/trial-seat.ts'))
+    && /\{o\.alongField && ' along the field'\}/.test(panel));
+  check('and what Build calls fitting leaves a pixel to spare all round, as Most in this field does',
+    /const fitsField = \(u: number, v: number\) => !!aoi && trialFitsField\(fieldRing, aoi, epsg, u, v, angle, r\);/.test(shell)
+    // A traced outline with no seat holds no trial, whatever its box (Neon, 2026-11-25).
+    && /if \(fieldRing && fieldRing\.length >= 3 && !isBoxRing\(fieldRing, aoi\)\) return false;/.test(read('src/pixel-grid/trial-seat.ts')));
   check('the trial is built at that angle, and the page is turned to it',
     /rotationDeg: angle, countAt,/.test(shell) && /exp\.setRotation\(angle\);/.test(shell) && !/exp\.setRotation\(0\)/.test(shell));
   check('a turned trial is sized on the satellites table\'s own count, on the ground it will lie on',
@@ -1257,15 +1340,15 @@ console.log('\nU-angle. a trial can be built at an angle');
     && /const alongPixels = Math\.abs\(deg % 90\) < 1e-9, sideways = alongPixels && Math\.abs\(deg % 180\) > 1e-9;/.test(search)
     && /if \(!alongPixels\) return suggestTurned\(ask, nSpecies, nBlocks, pixels, deg\);/.test(search));
   check('with the box unticked it holds against no geolocation error, as along the rows',
-    /geoAuto: suggestAsk\.hold \? gridApi\.geoAuto : false, geoManual: suggestAsk\.hold \? gridApi\.geoManual : 0,/.test(shell));
+    /geoAuto: false, geoManual: suggestAsk\.hold \? gridApi\.geoManual : 0, geoProvider: suggestAsk\.hold && !gridApi\.geoTyped,/.test(shell));
   check('the area made for a turned trial holds the trial\'s own box',
-    /const halfBox = \(u: number, v: number\): \[number, number\] => \[\(u \* cosA \+ v \* sinA\) \/ 2, \(u \* sinA \+ v \* cosA\) \/ 2\];/.test(shell)
+    /return \(u: number, v: number\): \[number, number\] => \[\(u \* cosA \+ v \* sinA\) \/ 2, \(u \* sinA \+ v \* cosA\) \/ 2\];/.test(shell)
     && /const \[bu, bv\] = halfBox\(u, v\), hu = bu \+ margin, hv = bv \+ margin;/.test(shell));
   check('the summary says the angle, and that the figure is the worst plot\'s',
-    /\{b\.angle !== 0 && <>, turned \{b\.angle\}°<\/>\}/.test(panel) && /\{offRows\(b\.angle\) && 'at least '\}/.test(panel));
+    /\{b\.angle !== 0 \? <>, turned \{b\.angle\}°\{o\.alongField && ' along the field'\}<\/> : o\.alongField && ', along the field'\}/.test(panel) && /\{offRows\(b\.angle\) && 'at least '\}/.test(panel));
   check('and it stands only while the page is at the angle it was built at', /exp\.rotation === suggestOutcome\.angle/.test(shell));
   check('the table\'s figure under the summary is read at the same angle',
-    /layout: \{ pattern: 'block', width: exp\.stripWidth, spacing: exp\.spacing, rotationDeg: angle \},\s*importedAngle: 0, importedFileAngle: 0, importedBasePlan: undefined,\s*geoAuto: gridApi\.geoAuto, geoManual: gridApi\.geoManual, geoProvider: gridApi\.geoProvider, placeFor: gridApi\.placeFor,\s*\}, angle, sat, true\);/.test(shell));
+    /layout: \{ pattern: 'block', width: exp\.stripWidth, spacing: exp\.spacing, rotationDeg: angle \},\s*importedAngle: 0, importedFileAngle: 0, importedBasePlan: undefined,\s*geoAuto: false, geoManual: gridApi\.geoManual, geoProvider: !gridApi\.geoTyped, placeFor: gridApi\.placeFor,\s*\}, angle, sat, true\);/.test(shell));
 }
 
 console.log('\nU-strips. alternating rows and columns are suggested too');
@@ -1282,7 +1365,7 @@ console.log('\nU-strips. alternating rows and columns are suggested too');
     /spacing: suggestAsk\.stripAlley \?\? 0, rotationDeg: angle \};/.test(shell) && /suggestStrips\(\{ pattern: kind, \.\.\.sized, base, ring \}\)/.test(shell)
     && /\(v as SuggestAsk\)\.stripAlley === undefined \|\| inRange\(0, 100\)\(\(v as SuggestAsk\)\.stripAlley\)/.test(shell));
   check('the build goes to the strips for those two layouts, whichever the reader has selected',
-    /const kind = exp\.pattern === 'row' \|\| exp\.pattern === 'col' \|\| exp\.pattern === 'checker' \? exp\.pattern : null;\s*if \(kind\) \{ buildStrips\(kind, sat, epsg, centre, angle\); return; \}/.test(shell));
+    /const kind = exp\.pattern === 'row' \|\| exp\.pattern === 'col' \|\| exp\.pattern === 'checker' \? exp\.pattern : null;\s*if \(kind\) \{ if \(named\) buildStrips\(kind, named, epsg, centre, askedAngle\); return; \}/.test(shell));
   check('it writes the layout\'s own fields, the angle and the satellite together',
     /exp\.setStripWidth\(found\.width\);\s*exp\.setSpacing\(found\.spacing\);\s*exp\.setRotation\(angle\);\s*setAdopted\(null\);\s*if \(sat\.id !== gridApi\.sourceId\) gridApi\.setSourceId\(sat\.id\);/.test(shell));
   check('the strips are counted from the corner the page anchors them on',
@@ -1391,9 +1474,32 @@ console.log('\nU-most. the plot-size card says the most pixels the parcel can gi
   // "in the plot size required add an option to have the max amount of pure pixels given the parcel"
   const card = read('src/pixel-grid/steps/PlotSize.tsx');
   check('for a block trial on a field it finds the largest plots that fit, a pixel clear of the edge',
-    /largestPlots\(bd, \(u, v\) => trialFitsField\(fieldRing, aoi, epsg, u, v, rotation, res\)\)/.test(card) && /if \(pattern !== 'block' \|\| !aoi \|\| !epsg/.test(card));
+    // At the design's angle and along the field's two directions (2026-11-25): the largest plots win.
+    /largestPlots\(bd, \(u, v\) => trialFitsField\(fieldRing, aoi, epsg, u, v, angle, res\)\)/.test(card) && /if \(pattern !== 'block' \|\| !aoi \|\| !epsg/.test(card)
+    && /for \(const x of \[fieldDeg, fieldDeg <= 0 \? fieldDeg \+ 90 : fieldDeg - 90\]\)/.test(card)
+    // On a known grid along the rows, also the plots a whole number of pixels apart (Neon, 2026-11-25).
+    && /if \(known && alongRows\(angle\)\) \{/.test(card)
+    && /\{largest\.angle !== rotation \? `, turned \$\{largest\.angle\}°` : ''\}/.test(card) && /if \(largest\.angle !== rotation\) setRotation\(largest\.angle\);/.test(card)
+    // A field along the rows has 0 and 90 degrees for directions: a block trial differs turned a quarter.
+    && /if \(!fieldRing \|\| fieldRing\.length < 3 \|\| isBoxRing\(fieldRing, aoi\)\) return 0;/.test(read('src/pixel-grid/trial-seat.ts')));
   check('it shows what a plot of that size keeps, by the card\'s own count, for each reading',
-    /most: d\.maxA > 0 && d\.maxB > 0 \? fewestPure\(\{ a: d\.maxA, b: d\.maxB \}, v\) : null/.test(card) && /Most in this field:/.test(card));
+    /const m = mostE \? engineColumn\(mostE, id\) : null;/.test(card) && /: fewestPure\(mp, \{ \.\.\.v, angleDeg: mostPick\.angle \}\);/.test(card) && /Most in this field:/.test(card));
+  // Neon's second review (2026-11-25): "Now" counted each column where that column did best, the map once, by
+  // "Place the trial for" (40 m plots on Sentinel-2: 9 pure on the card, 4 on the map). A block trial is now the engine's.
+  check('a block trial\'s Now and Most in this field are the satellites table\'s own counts, at the place the map has the trial',
+    /return countedOnce\(\{ \.\.\.ctx, blockDesign: design \}, rg, pick \? pick\.angle : d\.angle\);/.test(card)
+    && /out = blockPlotCounts\(ctx, angle, rung, \{ mean: true, centres: true \}\);/.test(card)
+    && /return id === 'corrected' \? e\.pure : id === 'average' \? e\.mean \?\? null : e\.held;/.test(card)
+    && /keeps = nowE\.centres\?\.length && nowE\.edge \? purestOfPlots\(nowE\.centres, plot, v, nowE\.edge\) : keeps;/.test(card)
+    && /const engineCtx = pattern === 'block' \? p\.pca\.ladderCtx : null;/.test(card) && /ladderCtx, ladder \};/.test(read('src/pixel-grid/use-simulation.ts')));
+  check('the pick is the one whose weakest plot keeps the most of what the trial is placed for, the larger on a tie',
+    /const rank = \(e: BlockCounts\): \[number, number\] => \(e\.held === null \? \[e\.pure, 0\] : forPure \? \[e\.pure, e\.held\] : \[e\.held, e\.pure\]\);/.test(card)
+    && /pk\.a \* pk\.b > mostPick!\.a \* mostPick!\.b/.test(card));
+  check('Undo stands while the design is what Use these set, whatever the pick has become since',
+    /const undo = mostUndo && mostUndo\.to\.plotLength === bd\.plotLength/.test(card));
+  check('a checkerboard\'s cells repeat at cell and spacing', /pitch: stripWidth \+ \(spacing > 0 \? spacing : 0\), grid: true/.test(card));
+  check('the card reads a typed blur as the engine does, never under a pixel\'s own footprint',
+    /const sigma = typed > 0 && res > 0 \? Math\.max\(typed, FOOTPRINT_SIGMA \* res\) : typed;/.test(card));
   check('one press sets the design to those plots, arrangement included, rounded down so that they still fit',
     /setBlockDesign\(dd => \(\{ \.\.\.dd, plotLength: largest\.a, plotWidth: largest\.b, blocksPerRow: largest\.perRow \}\)\)/.test(card)
     && /const down = \(m: number\) => Math\.floor\(m \* 10 \+ 1e-6\) \/ 10;/.test(card));
@@ -1418,7 +1524,7 @@ console.log('\nU-review. what an outside review of the code found (2026-11-22), 
   check('shut, the fold names the satellite, its CE90 and its blur', /const satLabel = `Satellite · \$\{source\.provider\}/.test(step) && /· CE90 \$\{geoErrM\} m ·/.test(step));
   check('the hidden step and the fold show the same controls, written once',
     /export function SensorPick\(p: StepProps\)/.test(gridStep) && /export function BlurGeo\(p: StepProps & \{ budget\?: boolean \}\)/.test(gridStep)
-    && /export function BlurBudget\(p: StepProps\)/.test(gridStep) && (gridStep.match(/onClick=\{\(\) => setGeoAuto\(true\)\}/g) || []).length === 1);
+    && /export function BlurBudget\(p: StepProps\)/.test(gridStep) && (gridStep.match(/onClick=\{setGeoDelivered\}/g) || []).length === 1);
 
   // A third of a pixel is the note's default. What a provider states for an
   // image as delivered is another figure, and it is shown, with its source.
@@ -1429,18 +1535,20 @@ console.log('\nU-review. what an outside review of the code found (2026-11-22), 
     ids.length >= 12 && withGeo.length === ids.length - 1 && !withGeo.includes('custom'), `${withGeo.length} of ${ids.length} rows`);
   check('each of those figures has a source that can be opened',
     (() => { const all = sensors.match(/const GEO_[A-Z0-9]+ = \{[\s\S]*?\};/g) || []; return all.length >= 6 && all.every(g => /ce90M:/.test(g) && /says: '/.test(g) && /label: '/.test(g) && /url: /.test(g)); })());
-  check('the panel shows it beside the default, a click away, and says what it is',
-    /<span>As delivered:<\/span>\s*<span className="font-mono text-neutral-300">CE90 \{geo\.ce90M\} m<\/span>/.test(gridStep) && /onClick=\{\(\) => setGeoProvider\(true\)\} disabled=\{asDelivered\}/.test(gridStep)
+  check('the panel shows the figure in its field, with the way back beside it, and says where it is from',
+    /value=\{geoErrM\}/.test(gridStep) && /onClick=\{setGeoDelivered\}/.test(gridStep) // The CE90 on a row of its own above sigma_geo (2026-11-24), saying whether it is the provider's or typed.
+    && /<Row name="CE90" val=\{geoErrM > 0 \? m\(geoErrM\) : 'none'\} note=\{geoErrM > 0 \? \(delivered \? 'as delivered' : 'typed'\) : undefined\} \/>\s*<Row name=\{<>σ<sub>geo<\/sub><\/>\} val=\{m\(geo\)\} \/>/.test(gridStep)
     // Whose statement it is, and the link to it, are the documentation's: no link in the panel.
-    && !/geo\.url/.test(gridStep) && /<dt>As delivered \(Use\)<\/dt>/.test(read('pixel-grid-docs.html')));
-  check('the default is still the note\'s third of a pixel, and says so',
+    && !/geo\.url/.test(gridStep) && /<dt>As delivered<\/dt>/.test(read('pixel-grid-docs.html')));
+  check('the note\'s third of a pixel stays in the engine for the note\'s own figures, and is offered nowhere on the page or in its documentation',
     /ce90For = \(auto: boolean, manualM: number, res: number\): number => \(auto \? \(CE90_TO_SIGMA \* res\) \/ 3 : manualM\);/.test(resolving)
-    && /the note's figure when nothing is known/.test(read('pixel-grid-docs.html')) && /CE90 = 0\.715 GSD/.test(read('pixel-grid-docs.html')));
+    && !/0\.715 GSD/.test(read('pixel-grid-docs.html')) && !/default CE90|CE90, default|default geolocation error|by default, a third|note's default/i.test(read('pixel-grid-docs.html'))
+    && !/', default'/.test(gridStep) && !/geoAuto/.test(gridStep));
   check('Sentinel-2\'s 20 m and 60 m bands take the 10 m bands\' geolocation, not a third of their own pixel',
     /export function geolocRes\(sourceId: string, res: number\): number \{\s*return sourceId\.startsWith\('s2-'\) \? Math\.min\(res, 10\) : res;/.test(sensors));
   check('a pansharpened product says so, and names the pixel an index is computed on',
     /id: 'spot', short: 'SPOT pan', provider: 'SPOT 6\/7 · pansharpened'/.test(sensors) && /id: 'skysat', short: 'SkySat pan', provider: 'SkySat · pansharpened'/.test(sensors)
-    && /An index is computed on the native multispectral bands/.test(read('pixel-grid-docs.html')) && /about 1 m for SkySat, 6 m for SPOT/.test(read('pixel-grid-docs.html')));
+    && /An index such as NDVI is computed on the colour bands, so it keeps their blur/.test(read('pixel-grid-docs.html')) && /about 1 m for SkySat, 6 m for SPOT/.test(read('pixel-grid-docs.html')));
 
   // One rule for "holds within the CE90", in the plots' own directions.
   check('the table, the map and the export ask one rule where the image can land',
@@ -1467,12 +1575,12 @@ console.log('\nU-review. what an outside review of the code found (2026-11-22), 
   const turn2 = read('src/pixel-grid/imported-rotate.ts');
   const shell2 = read('src/pixel-grid/PixelGridApp.tsx');
   check('a click on a row of the table does not throw the table away: its CE90 is not a function that changes with the satellite',
-    /const ce90At = useCallback\(\(res: number, id: string\): number => sourceCe90\(/.test(grid2) && /\[geoAuto, geoManual, geoProvider\]\);/.test(grid2)
-    && /\[aoi, fieldRing, build\?\.epsg, ladderSig, threshold, gridApi\.geoAuto, gridApi\.geoManual, gridApi\.geoProvider, gridApi\.placeFor\]\);/.test(hook) && !/ladderSig, threshold, ce90At\]/.test(hook));
+    /const ce90At = useCallback\(\(res: number, id: string\): number => sourceCe90\(/.test(grid2) && /\[geoManual, geoTyped\]\);/.test(grid2)
+    && /\[aoi, fieldRing, build\?\.epsg, ladderSig, threshold, gridApi\.geoManual, gridApi\.geoTyped, gridApi\.placeFor\]\);/.test(hook) && !/ladderSig, threshold, ce90At\]/.test(hook));
   check('"as delivered" is a setting of its own, read per satellite, not a figure typed for all of them',
-    /usePersistentState\('geoProvider', false, isBool\)/.test(grid2) && /export function sourceCe90\(sourceId: string, res: number, geo: GeoSetting\): number/.test(sensors)
-    && /const setGeoAuto = useCallback\(\(v: boolean\) => \{ setGeoProvider\(false\); setGeoAutoOnly\(v\); \}/.test(grid2)
-    && /geoProvider: gridApi\.geoProvider, placeFor: gridApi\.placeFor \}/.test(hook));
+    /usePersistentState\('geoTyped',/.test(grid2) && /export function sourceCe90\(sourceId: string, res: number, geo: GeoSetting\): number/.test(sensors)
+    && /const setGeoDelivered = useCallback\(\(\) => setGeoTyped\(false\), \[setGeoTyped\]\);/.test(grid2)
+    && /geoProvider: !gridApi\.geoTyped, placeFor: gridApi\.placeFor \}/.test(hook));
   check('a trial is staked, and its extent cut, on the lattice of the box it is given',
     /export function latticeOffset\(edge: number, res: number\): number/.test(engine2)
     && /const w0 = Math\.floor\(\(cx - \(nx \* res\) \/ 2 - pE\) \/ res\) \* res \+ pE;/.test(engine2)
@@ -1484,7 +1592,7 @@ console.log('\nU-review. what an outside review of the code found (2026-11-22), 
     /export function importedLandings\(ce90: number, angleDeg: number, plotIds: boolean\)/.test(turn2)
     && /const lands = importedLandings\(ce90, trialAngle\(plan\), plan\.plotIds\);/.test(turn2) && /importedLandings\(ce90, fileAngle \+ turn, base\.plotIds\)/.test(turn2));
   check('a quarter turn is not a turned trial: sized like no turn, and said to keep its count in every plot',
-    /const turned = Math\.abs\(angle % 90\) > 1e-9;/.test(shell2) && /const offRows = \(deg: number\): boolean => Math\.abs\(deg % 90\) > 1e-9;/.test(read('src/pixel-grid/steps/SuggestDesign.tsx')));
+    /const isTurned = \(deg: number\) => Math\.abs\(deg % 90\) > 1e-9;/.test(shell2) && /const offRows = \(deg: number\): boolean => Math\.abs\(deg % 90\) > 1e-9;/.test(read('src/pixel-grid/steps/SuggestDesign.tsx')));
   check('the fold names the pixel as it stands, which a tasked sensor lets one type', /source\.kind === 'custom' \? `\$\{build\?\.res \?\? pxSize\} m` : source\.resLabel/.test(step));
 
   // The third look: four small things.
@@ -1493,9 +1601,9 @@ console.log('\nU-review. what an outside review of the code found (2026-11-22), 
   check('strips and checkerboards are suggested on the satellite\'s own lattice',
     /const \[pE, pN\] = latticePhase\(sat\.id, r, epsg\);\s*const off = \(q: \[number, number\]\): \[number, number\] => \(pE \|\| pN \? \[q\[0\] - pE, q\[1\] - pN\] : q\);/.test(shell2)
     && /const base = off\(corner\), ring = outline && outline\.map\(off\);/.test(shell2));
-  check('a sensor with no provider reads "default" under "as delivered", which is what it is given',
-    /const asDelivered = geoProvider && !!source\.geo, byDefault = geoProvider \? !source\.geo : geoAuto;/.test(gridStep)
-    && /geoAuto=\{geoProvider \? !source\.geo : geoAuto\} geoProvider=\{geoProvider && !!source\.geo\}/.test(gridStep));
+  check('a sensor with no provider has no figure as delivered: none is held against it until one is typed',
+    /if \(geo\.provider\) return SOURCES\.find\(s => s\.id === sourceId\)\?\.geo\?\.ce90M \?\? 0;/.test(sensors)
+    && /disabled=\{!geoTyped \|\| !source\.geo\}/.test(gridStep) && /delivered=\{!geoTyped && !!source\.geo\}/.test(gridStep));
 
   check('an outline is its own box only with all four corners: a right-angled triangle is not',
     /function isBoxRing\(ring: Poly, \[w, s, e, n\]: LngLatBounds\): boolean/.test(seat) && /return corners === 15;/.test(seat) && /if \(isBoxRing\(fieldRing, aoi\)\) return null;/.test(seat));
@@ -1544,9 +1652,9 @@ console.log('\nU-note. the page follows the PHENET note: a spot with no pixel bo
   check('an imported trial as it stands is counted at its worst shift on a tasked satellite\'s row',
     /\} else if \(plan && rung\.anyPosition\) \{[\s\S]{0,400}const \[sE, sN\] = worstShift\(plan, r, sensorL, placedCe90\(ctx, rung\.id, r\)\);\s*if \(sE \|\| sN\) plan = shiftImportedPlan\(plan, sE, sN\);/.test(read('src/pixel-grid/ladder-step.ts'))
     && /export function worstShift\(plan: ImportedPlan, r: number, sensor: SensorParams, ce90 = 0\): \[number, number\]/.test(turn));
+  // The panel's "grid phase" row said it too until 2026-11-24, when that row was removed on request.
   check('and the page says so where the satellite is chosen, and no longer calls a tasked grid one\'s own',
-    /note=\{catalog \? 'counted at the best position' : 'counted at the worst position'\}/.test(step)
-    && /Each image comes on a grid of its own, which cannot be known when the trial is planted/.test(read('pixel-grid-docs.html'))
+    /which cannot be known when the trial is sown\. The designer counts the trial at the position that is worst for it\./.test(read('pixel-grid-docs.html'))
     && /const TASK = 'Commercial, tasked: the grid falls where the image does';/.test(sensors) && !/you define the grid/.test(sensors) && !/grid you define/.test(step));
 }
 
@@ -1573,7 +1681,7 @@ console.log('\nU-place. what a trial is placed for is the reader\'s choice, and 
     && /const count = holdM > 0 \? heldPixels\(candidate, r, sensor, holdM\) : purePixels\(candidate, r, sensor, extent\);/.test(turn));
   check('the map, the table and the suggestions are all told: the selected satellite\'s CE90 on the map, each rung\'s own in the table',
     /placeHeldM: gridApi\.placeHeldM,/.test(shell) && (shell.match(/const placeHeldM = gridApi\.placeFor === 'held' \? Math\.round\(gridApi\.ce90At\(r, sat\.id\) \* 100\) \/ 100 : 0;/g) ?? []).length === 2
-    && /placeFor: gridApi\.placeFor, pageGeo: \{ auto: gridApi\.geoAuto, manualM: gridApi\.geoManual, provider: gridApi\.geoProvider \},/.test(shell)
+    && /placeFor: gridApi\.placeFor, pageGeo: \{ auto: false, manualM: gridApi\.geoManual, provider: !gridApi\.geoTyped \},/.test(shell)
     && /placeHeldM: number;/.test(hook));
   // Imported shapes: the even-odd rule, the later plot wins, and no pixel past the index.
   check('a plot\'s rings are signed by what they enclose, not by the way they wind, and shared ground goes to the later plot',
@@ -1677,22 +1785,70 @@ console.log('\nU-docs. the panel explains nothing, and a documentation page says
     // "there are not enough illustrations. every menu every concept should be illustrated. also make an
     // examples section where you showcase multiple things" (2026-11-22).
     const ex = gen.find(g => g[1] === 'example')?.[2] ?? '';
-    check('it has an Examples section of six worked cases, each listed in the contents, the first with its steps, tables and figure',
+    // Four since 2026-11-25: a trial that exists, then what is fixed: the field, the satellite, or both.
+    check('it has an Examples section of four worked cases, each listed in the contents, the Sentinel-2 one with its steps, tables and figure',
       /<section id="examples">\s*<h2 class="t">Examples<\/h2>/.test(docs)
-      && ['ex-varieties', 'ex-strips', 'ex-satellites', 'ex-file', 'ex-strict', 'ex-checker'].every(id => new RegExp(`<h3 id="${id}">`).test(docs) && new RegExp(`<a class="item" href="#${id}">`).test(docs))
-      && ['exStrips', 'exSats', 'exFile', 'exStrict', 'exChecker'].every(n => (gen.find(g => g[1] === n)?.[2] ?? '').length > 500)
-      && (ex.match(/<h4>/g) || []).length >= 6 && (ex.match(/<table/g) || []).length === 2 && /<figure class="fig"/.test(ex) && /What the example shows/.test(ex));
+      && ['ex-file', 'ex-fit', 'ex-varieties', 'ex-reps'].every(id => new RegExp(`<h3 id="${id}">`).test(docs) && new RegExp(`<a class="item" href="#${id}">`).test(docs))
+      && ['exFile', 'exFit', 'exReps'].every(n => (gen.find(g => g[1] === n)?.[2] ?? '').length > 500)
+      && (ex.match(/<h4>/g) || []).length >= 6 && (ex.match(/<table/g) || []).length === 2 && /<figure class="fig"/.test(ex) && !/What the example shows|<h4>Summary<\/h4>/.test(ex));
+    // "align the designer with the new note" (2026-11-24): a blur saved at a figure the note has since measured
+    // again is replaced once on load, as the old two-decimal figures were; a blur typed is left.
+    {
+      const grid = read('src/pixel-grid/use-grid.ts');
+      check('a saved blur at a superseded measured figure (WorldView-2 1.9 m, PlanetScope 9.7 m) becomes the new one, once',
+        /const SUPERSEDED_FWHM: Record<string, number\[\]> = \{ wv: \[1\.9\], planet: \[9\.7\] \};/.test(grid)
+        && /if \(source\.psfMeasured && isOld\(sigmaX\) && isOld\(sigmaY\)\) \{ setSigmaX\(exact\); setSigmaY\(exact\); \}/.test(grid)
+        && /const v = f \/ 2\.3548 \/ source\.res;/.test(grid) && /const measured = \(fwhmM: number, res: number\): number => fwhmM \/ FWHM_PER_SIGMA \/ res;/.test(read('src/pixel-grid/sensors.ts')));
+      check('the FWHM is written to a tenth of a metre, a whole number past 10 m excepted: 11.8 m is not shown as 12',
+        /const one = \(v: number\) => \(v >= 10 && Math\.abs\(v - Math\.round\(v\)\) < 0\.05 \? String\(Math\.round\(v\)\) : v\.toFixed\(1\)\);/.test(read('src/pixel-grid/steps/GridStep.tsx')));
+    }
+    // "for each example add a button open this example and it opens the example in the app with these exact
+    // settings" (2026-11-23): a plain link, since the page has no script, to the designer on that example.
+    {
+      const exSrc = read('src/pixel-grid/examples.ts'), persist = read('src/pixel-grid/persist.ts');
+      const ids = [...exSrc.matchAll(/\{ id: '([a-z]+)', seed: \{/g)].map(m => m[1]);
+      check('every example has an "Open this example" link to the designer on that example, and no other example is linked',
+        ids.join() === 'file,fit,varieties,reps'
+        && ids.every(id => new RegExp(`<h3 id="ex-${id}">[^\\n]*</h3>\\s*<p><a class="example" href="\\./pixel-grid\\.html\\?example=${id}" target="_blank" rel="noopener noreferrer">Open this example</a></p>`).test(docs))
+        && (docs.match(/\?example=/g) || []).length === ids.length);
+      check('the page opens an example before it is drawn, in a store of its own',
+        /const example = exampleFromSearch\(window\.location\.search\);\s*if \(example\) openExampleStore\(example\.id, example\.seed\);\s*createRoot\(/.test(read('src/pixel-grid/main.tsx'))
+        && /PREFIX = `pgrid\.ex\.\$\{id\}\.`;/.test(persist) && !/from '\.\/examples'/.test(persist)
+        && /DOC_EXAMPLES\.find\(e => e\.id === id\) \?\? null/.test(exSrc));
+      {
+        // Tried on a copy of the module of its own, so that the store it switches to is not the other checks'.
+        const copy = path.join(BUILD, 'src/pixel-grid/persist-example.mjs');
+        fs.copyFileSync(path.join(BUILD, 'src/pixel-grid/persist.mjs'), copy);
+        const px = await import(copy);
+        const mine = store(); use(mine);
+        px.writeSaved('threshold', 77); px.writeSaved('sourceId', 'pleiades');
+        px.openExampleStore('strict', { threshold: 95, sourceId: 's2-10' });
+        const opened = px.readSaved('threshold', () => true) === 95 && px.readSaved('sourceId', () => true) === 's2-10';
+        px.writeSaved('threshold', 60); px.writeSaved('extra', 1);
+        px.openExampleStore('strict', { threshold: 95, sourceId: 's2-10' });
+        check('an example starts from its own settings every time, and leaves the visitor\'s own where they were',
+          opened && px.readSaved('threshold', () => true) === 95 && px.readSaved('extra', () => true) === undefined
+          && mine.getItem('pgrid.v1.threshold') === '77' && mine.getItem('pgrid.v1.sourceId') === '"pleiades"' && mine.getItem('pgrid.ex.strict.threshold') === '95');
+        use(store());
+      }
+      // What a link opens is what its example is computed with: the generator stops otherwise.
+      check('and the generator holds each link against what its example is computed with',
+        (read('scripts/docs-figures.mjs').match(/need\(opensOn\('(file|fit|varieties|reps)'/g) || []).length === 4
+        && /same\(seedOf\('file'\)\.importedDesign, design\)/.test(read('scripts/docs-figures.mjs')));
+    }
     // A section with no picture is a section someone has to read: every one but the list of sources has at least one.
-    const bare = [...docs.matchAll(/<section id="([^"]+)">([\s\S]*?)<\/section>/g)].filter(m => m[1] !== 'sources' && !/<figure class="(fig|shot)"/.test(m[2])).map(m => m[1]);
+    // The questions answer in words (2026-11-25, the page rewritten as a usage guide), and the sources are a list.
+    const bare = [...docs.matchAll(/<section id="([^"]+)">([\s\S]*?)<\/section>/g)].filter(m => m[1] !== 'sources' && m[1] !== 'faq' && !/<figure class="(fig|shot)"/.test(m[2])).map(m => m[1]);
     check(`every section is illustrated${bare.length ? `: not ${bare.join(', ')}` : ''}`, bare.length === 0);
     check('with drawings of the ideas and pictures of the menus, by the dozen',
-      (docs.match(/<figure class="fig"/g) || []).length >= 34 && (docs.match(/<figure class="shot"/g) || []).length >= 24
+      // 31 since the examples became four (2026-11-25): the strips example's drawing went with it.
+      (docs.match(/<figure class="fig"/g) || []).length >= 31 && (docs.match(/<figure class="shot"/g) || []).length >= 24
       && /figure\.shot img \{ display: block; max-width: 100%; height: auto;/.test(docs) && (docs.match(/<img /g) || []).every(() => true)
-      && [...docs.matchAll(/<img ([^>]*)>/g)].every(m => /src="\.\/docs-img\/[a-z-]+\.png"/.test(m[1]) && /alt="[^"]+"/.test(m[1]) && /width="\d+" height="\d+"/.test(m[1]) && /loading="lazy"/.test(m[1])));
+      && [...docs.matchAll(/<img ([^>]*)>/g)].every(m => /src="\.\/docs-img\/[a-z-]+\.svg"/.test(m[1]) && /alt="[^"]+"/.test(m[1]) && /width="\d+" height="\d+"/.test(m[1]) && /loading="lazy"/.test(m[1])));
     // Both ways round: no picture on the page that the folder does not hold, at the size the page gives it.
     {
       const sizes = JSON.parse(read('docs-img/shots.json'));
-      const lost = [...docs.matchAll(/<img src="\.\/docs-img\/([a-z-]+)\.png"[^>]* width="(\d+)" height="(\d+)"/g)].filter(m => !sizes[m[1]] || sizes[m[1]].w !== +m[2] || sizes[m[1]].h !== +m[3] || !fs.existsSync(path.resolve(ROOT, 'docs-img', `${m[1]}.png`))).map(m => m[1]);
+      const lost = [...docs.matchAll(/<img src="\.\/docs-img\/([a-z-]+)\.svg"[^>]* width="(\d+)" height="(\d+)"/g)].filter(m => !sizes[m[1]] || sizes[m[1]].w !== +m[2] || sizes[m[1]].h !== +m[3] || !fs.existsSync(path.resolve(ROOT, 'docs-img', `${m[1]}.svg`))).map(m => m[1]);
       check(`every picture the page names is in the folder, at the size the page gives it${lost.length ? `: not ${lost.join(', ')}` : ''}`, lost.length === 0);
     }
     check('the pictures are taken in English, whatever the computer that takes them', /locale: 'en-US'/.test(read('scripts/docs-screenshots.mjs')));
@@ -1703,9 +1859,9 @@ console.log('\nU-docs. the panel explains nothing, and a documentation page says
       /GSD = L \/ \(2 c z<sub>c<\/sub>\)/.test(docs) && /z<sub>c<\/sub> = Q⁻¹\(\(1 − √\(1 − ε\)\) \/ 2\)/.test(docs)
       && /const z = -probit\(\(1 - Math\.sqrt\(threshold\)\) \/ 2\);/.test(read('src/pixel-grid/note-model.ts')));
     check('what the page says of the staking, of an imported trial and of the dots is what the code does',
-      /is tried at 24 positions a side \(at up to 6 with no blur at all, or a threshold of 50 %\)\. At another angle/.test(docs) && /export const SPOT_STAKE_N = 24;/.test(read('src/pixel-grid/simulate.ts')) && /const PHASE_MAX_N = 6;/.test(read('src/pixel-grid/simulate.ts'))
-      && /With more than 253 plots it is also tried on a second ring of eight, at half the CE90\./.test(docs) && /\[\.\.\.lands, \.\.\.ce90Shifts\(ce90 \/ 2, angleDeg \+ 22\.5\)\]/.test(read('src/pixel-grid/imported-rotate.ts'))
-      && /A dot's colour says whose ground it lands on, not what grows there/.test(docs) && !/in the colour of the ground it lands on/.test(docs)
+      /is tested at 24 positions per side \(up to 6 when the blur is 0 or the purity 50 %\)\. At another angle/.test(docs) && /export const SPOT_STAKE_N = 24;/.test(read('src/pixel-grid/simulate.ts')) && /const PHASE_MAX_N = 6;/.test(read('src/pixel-grid/simulate.ts'))
+      && /with more than 253 plots it is also tried on a second ring of eight, at half the CE90\./.test(docs) && /\[\.\.\.lands, \.\.\.ce90Shifts\(ce90 \/ 2, angleDeg \+ 22\.5\)\]/.test(read('src/pixel-grid/imported-rotate.ts'))
+      && /Green dots fall on the plot the pixel belongs to/.test(docs) && /\(they are not the crop colours\)/.test(docs) && !/in the colour of the ground it lands on/.test(docs)
       && !/only the counts compare/.test(docs) && /its fonts \(Google Fonts\)/.test(docs));
     check('the figures are drawn with the page\'s own colours, so that they print', /svg \.grid \{ stroke: var\(--grid\)/.test(docs) && (docs.match(/--grid: /g) || []).length === 2);
   }

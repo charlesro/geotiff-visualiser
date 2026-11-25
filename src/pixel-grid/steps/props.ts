@@ -30,7 +30,12 @@ export const SHOW_GRID_STEP = false;
 export const STEP_NO = SHOW_GRID_STEP ? { area: 1, grid: 2, sim: 3, pca: 4 } : { area: 1, grid: 2, sim: 2, pca: 3 };
 
 /** The folds of the Simulate experiment step. */
-export type SimSection = 'sat' | 'design' | 'suggest' | 'size' | 'curves' | 'noise' | null;
+/** The plots of a block design that "Use these" changes. */
+export interface PlotsSetting { plotLength: number; plotWidth: number; blocksPerRow: number; /** The trial's angle, when Use these turned it along the field. */ rotation?: number }
+/** The plots before "Use these", and the plots it set. */
+export interface MostUndo { from: PlotsSetting; to: PlotsSetting }
+
+export type SimSection = 'sat' | 'design' | 'suggest' | 'size' | 'curves' | null;
 
 export interface StepProps {
   activeStep: 'area' | 'grid' | 'sim' | 'pca' | null;
@@ -105,6 +110,13 @@ export interface StepProps {
    */
   wantPure: number; setWantPure: (n: number) => void;
   /**
+   * What "Use these" of the plot-size card replaced, and what it set, so that
+   * its button can put the plots back while the design is still the one it set
+   * (2026-11-24: "this should be a button allowing to go back to the previous
+   * settings"). In the shell, and saved, for the same reason as `wantPure`.
+   */
+  mostUndo: MostUndo | null; setMostUndo: (u: MostUndo | null) => void;
+  /**
    * "Suggest a design" in step 3: what is asked of the trial, the last trial
    * built from it, and the build itself. In the shell because a build writes
    * the design, the angle and the satellite at once, and because step 3
@@ -113,6 +125,8 @@ export interface StepProps {
   suggest: {
     ask: SuggestAsk; setAsk: (a: SuggestAsk) => void;
     busy: boolean;
+    /** How far the build running has got: steps done of all, and what is being worked out. */
+    progress: { done: number; total: number; what: string } | null;
     outcome: SuggestOutcome | null;
     build: () => void;
   };
