@@ -1,5 +1,5 @@
 import React from 'react';
-import { fmt, pct0 } from './util';
+import { pct0 } from './util';
 import type { SweepStep } from './PcaSweep';
 
 /**
@@ -31,31 +31,8 @@ function bar(s: SweepStep): React.CSSProperties {
   return { backgroundImage: `linear-gradient(to right, rgba(${rgb}, 0.16) ${v}%, transparent ${v}%)` };
 }
 
-/** What a rung says, as a panel's tooltips said it. */
-function about(s: SweepStep, geoErrM: number, threshold: number): string {
-  return [
-    s.resolvingPct == null
-      ? null
-      : `${fmt(s.pureCount ?? NaN)} pure of the ${fmt(s.plantCount ?? NaN)} pixels of crop this design plants`,
-    s.geoRobust !== undefined
-      ? `${fmt(s.geoRobustPure ?? 0)} px stay pure, for the same plot, for any geolocation error within the CE90 (${s.ce90M ?? geoErrM} m)${s.geoMean !== undefined ? `; with σeff instead: ${pct0(s.geoMean)}` : ''}`
-      : null,
-    s.minPlotM !== undefined ? `the closed form asks for a plot side of at least ${s.minPlotM.toFixed(1)} m (ε = ${100 - threshold} %)` : null,
-    s.contrastDead ? 'two varieties cannot be told apart at this pixel size' : null,
-    s.partial ? 'sampled over the central part of a large field' : null,
-    s.placement ? where(s.placement) : null,
-  ].filter(Boolean).join(' · ');
-}
-
 /** An angle to the pixel rows, as short as it can be said: 45°, 22.75°. */
 const deg = (a: number) => `${+a.toFixed(2)}°`;
-/** Where a best-placement rung puts the trial, in words. */
-function where(p: NonNullable<SweepStep['placement']>): string {
-  if (!p.searched) return 'not searched at this size (too many pixels to try placements on): the trial as the file has it';
-  if (p.turn === 0 && p.shift[0] === 0 && p.shift[1] === 0) return `no placement found that beats the trial as the file has it, at ${deg(p.angle)}`;
-  return `the trial at ${deg(p.angle)} to the pixel rows, turned ${+Math.abs(p.turn).toFixed(2)}° ${p.turn < 0 ? 'clockwise' : 'counter-clockwise'} from the file and moved ${+p.shift[0].toFixed(2)} m east, ${+p.shift[1].toFixed(2)} m north`;
-}
-
 /** A rung's pure share, or what stands in for it while it is being worked out. */
 const share = (s: SweepStep): React.ReactNode =>
   s.current || s.resolvingPct === undefined ? <span className="text-neutral-600">…</span>
@@ -65,7 +42,7 @@ const held = (s: SweepStep): React.ReactNode =>
   s.current || s.geoRobust === undefined ? <span className="text-neutral-600">…</span>
     : <span className={s.geoRobust < 0.5 ? 'text-rose-400' : 'text-neutral-300'}>{pct0(s.geoRobust)}</span>;
 
-export function ResTable({ steps, pairWith, pairLabels, shown = 0, activeId, onPick, onPickPair, geoErrM = 0, threshold }: {
+export function ResTable({ steps, pairWith, pairLabels, shown = 0, activeId, onPick, onPickPair }: {
   steps: SweepStep[];
   /** A second ladder over the same sizes (the design along the pixel rows): two groups of columns. */
   pairWith?: SweepStep[] | null;
@@ -77,8 +54,6 @@ export function ResTable({ steps, pairWith, pairLabels, shown = 0, activeId, onP
   activeId?: string;
   onPick?: (id: string) => void;
   onPickPair?: (id: string) => void;
-  geoErrM?: number;
-  threshold: number;
 }) {
   const isActive = (id: string) => activeId === id;
   const anyHeld = [...steps, ...(pairWith ?? [])].some(s => s.geoRobust !== undefined);
@@ -112,7 +87,7 @@ export function ResTable({ steps, pairWith, pairLabels, shown = 0, activeId, onP
       if (!s) return <span className={span} />;
       const on = isActive(s.id) && shown === which;
       return (
-        <button type="button" onClick={() => pick?.(s.id)} title={about(s, geoErrM, threshold)} style={bar(s)}
+        <button type="button" onClick={() => pick?.(s.id)} style={bar(s)}
           className={`${span} grid ${anyHeld ? 'grid-cols-2' : 'grid-cols-1'} rounded px-1 py-0.5 text-right font-mono text-[13px] transition-shadow ${on ? 'ring-1 ring-sky-400/70' : 'hover:ring-1 hover:ring-white/15'}`}>
           <span>{share(s)}</span>
           {anyHeld && <span>{held(s)}</span>}
@@ -122,7 +97,7 @@ export function ResTable({ steps, pairWith, pairLabels, shown = 0, activeId, onP
     return (
       <div className="grid items-center gap-x-1 gap-y-0.5" style={cols}>
         {[0, 1].map(i => (
-          <span key={i} className={`${nameSpan[i]} truncate px-1 text-right ${head} ${shown === i ? 'text-sky-300' : ''}`} title={pairLabels?.[i]}>
+          <span key={i} className={`${nameSpan[i]} truncate px-1 text-right ${head} ${shown === i ? 'text-sky-300' : ''}`}>
             {pairLabels?.[i] ?? (i ? 'aligned' : 'as drawn')}
           </span>
         ))}
@@ -142,7 +117,7 @@ export function ResTable({ steps, pairWith, pairLabels, shown = 0, activeId, onP
               {group(s, 0, onPick)}
               {group(pairWith[k], 1, onPickPair)}
               {anyPlace && (
-                <span className="whitespace-nowrap text-right font-mono text-[12px] text-neutral-500" title={place ? where(place) : undefined}>
+                <span className="whitespace-nowrap text-right font-mono text-[12px] text-neutral-500">
                   {!place ? '' : place.searched ? deg(Math.round(place.angle * 10) / 10) : '·'}
                 </span>
               )}
@@ -167,7 +142,7 @@ export function ResTable({ steps, pairWith, pairLabels, shown = 0, activeId, onP
         {anyHeld && <span className="text-right">CE90</span>}
       </div>
       {steps.map(s => (
-        <button key={s.id} type="button" onClick={() => onPick?.(s.id)} title={about(s, geoErrM, threshold)}
+        <button key={s.id} type="button" onClick={() => onPick?.(s.id)}
           style={{ ...cols, ...bar(s) }}
           className={`grid w-full items-center gap-x-2 rounded px-1 py-0.5 text-left text-[13px] transition-shadow ${isActive(s.id) ? 'ring-1 ring-sky-400/70' : 'hover:ring-1 hover:ring-white/15'}`}>
           {size(s)}

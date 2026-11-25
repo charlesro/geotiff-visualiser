@@ -35,9 +35,9 @@ export interface SweepStep extends CoverSource {
    * placeholder rung, `null` when the design plants nothing measurable here.
    */
   resolvingPct?: number | null;
-  /** Tooltip only: what the mixed pixels are worth unmixed (see resolving.ts). */
+  /** What the mixed pixels are worth unmixed (see resolving.ts). Not shown on the page. */
   nEff?: number;
-  /** Tooltip only: two varieties cannot be told apart at all at this size. */
+  /** Two varieties cannot be told apart at all at this size. Not shown on the page. */
   contrastDead?: boolean;
   /** The share's denominator: the planted crop area, in whole pixels. */
   plantCount?: number;
@@ -126,7 +126,7 @@ function DotCanvas({ pts, height }: { pts: Dot[]; height: number }) {
   return <canvas ref={ref} style={{ width: '100%', height, display: 'block' }} />;
 }
 
-function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, threshold, colorBy, activeId, activeSim, onPick, onPickPair, geoErrM = 0 }: {
+function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, threshold, colorBy, activeId, activeSim, onPick, onPickPair }: {
   steps: SweepStep[];
   /**
    * A second ladder over the same resolutions (e.g. the rows laid along the
@@ -165,8 +165,6 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
    * drawn, which is a third thing that is neither panel.
    */
   onPickPair?: (id: string) => void;
-  /** Step 2's geolocation error in metres, to label each panel's range. 0 = off. */
-  geoErrM?: number;
 }) {
   const speciesSig = species.map(c => `${c.truth}_${c.L1}_${c.k1}_${c.x01}_${c.k2}_${c.x02}_${c.tc}`).join('|');
 
@@ -175,7 +173,7 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
       const isActive = mayUseActive && !!activeSim && activeId === s.id;
       if (!isActive && s.current) {
         // Waiting for the big chart's simulation, which this panel will draw.
-        return { id: s.id, name: s.name, res: s.res, purePct: NaN, pureCount: NaN, trialCount: NaN, partial: false, pts: [] as Dot[], tooFew: 0, waiting: true };
+        return { id: s.id, name: s.name, res: s.res, purePct: NaN, pureCount: NaN, partial: false, pts: [] as Dot[], tooFew: 0, waiting: true };
       }
       const src: CoverSource = isActive ? activeSim! : s;
       // Every rung is fitted on ALL its trial pixels, exactly as the big chart
@@ -208,13 +206,11 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
        * The current rung's own figure arrives with the idle pass, so until then
        * the panel shows no number rather than the big chart's.
        */
+      // What a panel shows, and no more: its tooltips, which said the rest, were removed on request (2026-11-25).
       return { id: s.id, name: s.name, res: s.res, purePct: s.purePct,
-               resolvingPct: s.current ? undefined : s.resolvingPct, nEff: s.current ? undefined : s.nEff,
-               plantCount: s.plantCount, contrastDead: s.contrastDead,
-               geoRobust: s.current ? undefined : s.geoRobust, geoRobustPure: s.current ? undefined : s.geoRobustPure,
-               geoMean: s.current ? undefined : s.geoMean, ce90M: s.ce90M,
-               minPlotM: s.minPlotM, plotSideM: s.plotSideM,
-               pureCount: s.current ? NaN : (s.pureCount ?? NaN), trialCount: s.trialCount ?? NaN,
+               resolvingPct: s.current ? undefined : s.resolvingPct,
+               geoRobust: s.current ? undefined : s.geoRobust,
+               pureCount: s.current ? NaN : (s.pureCount ?? NaN),
                partial: !!s.partial, pts, tooFew: fit.tooFew, waiting: false };
     });
   // The rotated ladder may substitute the big scatter; the 0° comparison ladder
@@ -227,19 +223,11 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
 
   const panel = (c: ReturnType<typeof toCharts>[number], key: string, paired = false) => {
     const active = activeId === c.id;
-    const sampled = c.partial ? ' (sampled over the central part of a large field)' : '';
-    // A rung of an imported trial's best-placement ladder says where it puts the trial.
-    const place = paired ? pairWith?.find(s => s.id === c.id)?.placement : undefined;
     return (
       <button
         key={key}
         type="button"
         onClick={() => (paired ? onPickPair : onPick)?.(c.id)}
-        title={paired
-          ? place
-            ? `Put the trial at the placement searched for ${c.name}, ${c.res} m (${+place.angle.toFixed(2)}° to the pixel rows), and show it${sampled}`
-            : `Turn the design along the pixel rows and show it as ${c.name} sees it, ${c.res} m${sampled}`
-          : `Show the field as ${c.name} sees it, ${c.res} m${sampled}`}
         className={`rounded-md border p-1 text-left transition-colors ${active ? 'border-sky-400 bg-sky-500/10 ring-1 ring-sky-400/40' : 'border-white/10 bg-black/30 hover:border-sky-500/40 hover:bg-white/[0.04]'}`}
       >
         <div className="truncate px-0.5 text-[12px] leading-tight text-neutral-400">{c.name}</div>
@@ -257,17 +245,7 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
               measured denominator moves when the trial does and hid a 10.2%
               gain in pure pixels behind a 4.5% change. */}
           {c.resolvingPct !== undefined && (
-            <span className="flex items-baseline gap-1 whitespace-nowrap"
-              title={[
-                c.resolvingPct === null
-                  ? 'This design plants less than one pixel of crop at this size'
-                  : `${fmt(c.pureCount)} pure of the ${fmt(c.plantCount ?? NaN)} pixels of crop this design plants`,
-                Number.isFinite(c.trialCount) ? `${fmt(c.trialCount ?? NaN)} trial pixels in all` : null,
-                c.contrastDead
-                  ? 'Two varieties cannot be told apart at this pixel size'
-                  : c.nEff ? `the mixed ones are worth ${c.nEff.toFixed(1)} more clean pixels per variety if you unmix them` : null,
-                c.minPlotM !== undefined ? `closed form: a side of ${c.minPlotM.toFixed(1)} m or more${c.plotSideM !== undefined ? `, here ${c.plotSideM} m` : ''}` : null,
-              ].filter(Boolean).join(' · ')}>
+            <span className="flex items-baseline gap-1 whitespace-nowrap">
               <span className={c.resolvingPct === null ? 'text-rose-400' : pc(c.resolvingPct)}>
                 {c.resolvingPct === null ? 'n/a' : `${c.resolvingPct.toFixed(0)}%`}
               </span>
@@ -281,20 +259,18 @@ function PcaSweep({ steps, pairWith, pairLabels, species, colors, magnitude, thr
             in a panel a third of the sidebar wide. They were four, of up to
             thirty-five characters, in a panel that holds seventeen: six or seven
             lines of caption over each small chart, nine times, or eighteen.
-            What they left out is in their tooltips. */}
+            What they left out is in the table and the documentation. */}
         {/* What survives the geolocation error: pixels pure for the same plot at
             every image position within the CE90. A count range hid this (64 to
             77 pure at every position, 16 of them the same pixels). */}
         {c.geoRobust !== undefined && (
-          <div className="whitespace-nowrap px-0.5 font-mono text-[12px] leading-tight tracking-tight text-neutral-500"
-            title={`${fmt(c.geoRobustPure ?? 0)} px hold within the CE90 (${c.ce90M ?? geoErrM} m)${c.geoMean !== undefined ? ` · with σeff: ${pct0(c.geoMean)}` : ''}`}>
+          <div className="whitespace-nowrap px-0.5 font-mono text-[12px] leading-tight tracking-tight text-neutral-500">
             within CE90 <span className={c.geoRobust < 0.5 ? 'text-rose-400' : 'text-neutral-300'}>{pct0(c.geoRobust)}</span>
           </div>
         )}
         {/* The fewest pixels a plot keeps had a line here ("min 4 px / plot",
             "16/16 plots empty"), the same figure as the table's last column;
-            both were removed on request on 2026-11-24. The closed-form plot
-            side it carried in its tooltip is in the share's tooltip above. */}
+            both were removed on request on 2026-11-24. */}
         <div className="pointer-events-none">
           {c.waiting
             ? <div className="flex items-center justify-center text-[12px] text-neutral-600" style={{ height: 92 }}>…</div>

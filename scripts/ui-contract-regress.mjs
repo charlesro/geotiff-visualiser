@@ -237,8 +237,11 @@ console.log('\nU2b. one sampling-position control, not two, and its effect is wh
     (rungSrc.match(/plantedShare\(/g) || []).length >= 2 && !/0\.8 \* geo/.test(rungSrc));
   check('each panel prints what stays pure within the CE90, never a bare 0%',
     /within CE90 <span[^>]*>\{pct0\(c\.geoRobust\)\}<\/span>/.test(sweepSrc) && !/geoLo|geoHi/.test(sweepSrc));
-  check('and its tooltip gives the count and the note\'s across-image mean',
-    /px hold within the CE90 \(\$\{c\.ce90M \?\? geoErrM\} m\)/.test(sweepSrc) && /with σeff: \$\{pct0\(c\.geoMean\)\}/.test(sweepSrc));
+  // The tooltips of the Across satellites card were removed on request (2026-11-25: "remove the tooltips in
+  // the accros sattelit table"): its panels, rows, cells and toggle carry none.
+  check('the Across satellites card has no tooltips, in its table, its charts or its toggle',
+    !/title=/.test(sweepSrc) && !/title=/.test(read('src/pixel-grid/ResTable.tsx'))
+    && !/title=\{v === 'table'/.test(read('src/pixel-grid/steps/PcaStep.tsx')));
   // The fewest pixels a plot keeps was a line on each panel ("min 4 px / plot",
   // "16/16 plots empty") and the table's last column ("0 in 16/16"). It read
   // as a riddle and was removed on request on 2026-11-24, with its hover lines.
@@ -247,10 +250,10 @@ console.log('\nU2b. one sampling-position control, not two, and its effect is wh
   const shown = sweepSrc.replace(/\{\/\*[\s\S]*?\*\/\}|\/\*[\s\S]*?\*\/|\/\/.*$/gm, '') + tableSrc.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
   check('no panel and no table row gives the fewest pixels a plot keeps',
     !/px \/ plot|plots empty|fewest px|t\.none|in each plot|per plot: minimum|c\.plots|s\.plots/.test(shown));
-  // The closed form left the panel for its tooltip when the plot-size card
-  // arrived, and moved to the share's tooltip when the line that held it went.
-  check('and keeps the note\'s closed-form smallest plot one hover away',
-    /closed form: a side of \$\{c\.minPlotM\.toFixed\(1\)\} m or more/.test(sweepSrc));
+  // The closed form left the panel for its tooltip when the plot-size card arrived; the tooltips went on
+  // 2026-11-25, and with them every figure a panel does not show.
+  check('a panel carries only the figures it shows',
+    !/minPlotM|nEff|plantCount|contrastDead|geoErrM/.test(sweepSrc.slice(sweepSrc.indexOf('const toCharts'), sweepSrc.indexOf('const charts = useMemo'))));
   // Six or seven lines of caption stood over each small chart.
   check('a panel\'s caption is one short line that never wraps',
     (sweepSrc.match(/whitespace-nowrap px-0\.5 font-mono text-\[12px\] leading-tight tracking-tight/g) || []).length === 1);
@@ -261,7 +264,7 @@ console.log('\nU2b. one sampling-position control, not two, and its effect is wh
     /usePersistentState\('threshold', 90, inRange\(50, 99\)\)/.test(useSim2)
     // The Purity field of the Design section since the slider's fold went (2026-11-24).
     && /onChange=\{setThreshold\} min=\{50\} max=\{99\} unit="%"/.test(read('src/pixel-grid/steps/SimStep.tsx')));
-  check('and step 4 hands the panels the error to label it with', (pcaStep.match(/geoErrM=\{geoErrM\}/g) || []).length >= 2);
+  check('and step 4 hands the panels no error to label a tooltip with, since they have none', !/geoErrM=\{geoErrM\}/.test(pcaStep));
   check('and step 3 no longer carries a second range', !/GeoSpread/.test(read('src/pixel-grid/steps/controls.tsx')) && !/geoSpread/.test(useSim2));
 }
 
@@ -330,9 +333,9 @@ console.log('\nU3. the aligned-vs-drawn verdict reads the number it prints, both
   // (5) The counts, both or neither, in the units the panels show. Trial-pixel
   // totals used to be printed here, a THIRD denominator beside shares over
   // planted crop, which is the currency mix this page has shipped twice.
-  ok('each placement\'s pure counts are one hover away on its own cell, never one side\'s alone under both',
-    /title=\{about\(s, geoErrM, threshold\)\}/.test(table) && /pure of the \$\{fmt\(s\.plantCount \?\? NaN\)\} pixels of crop this design plants/.test(table)
-    && /px stay pure, for the same plot, for any geolocation error within the CE90/.test(table) && !/Pure/.test(sentence.replace(/pure crop/g, '')));
+  // The counts were one hover away on each cell until the table's tooltips were removed (2026-11-25).
+  ok('each placement\'s cell shows its own shares, and the sentence quotes no count',
+    /\{group\(s, 0, onPick\)\}/.test(table) && /\{group\(pairWith\[k\], 1, onPickPair\)\}/.test(table) && !/title=/.test(table) && !/Pure/.test(sentence.replace(/pure crop/g, '')));
   ok('and no trial-pixel total is quoted beside the shares', !/trial pixels/.test(sentence) && !/trial pixels/.test(table));
 
   // (6) It leads with the size where the placements differ most.
@@ -345,9 +348,9 @@ console.log('\nU3. the aligned-vs-drawn verdict reads the number it prints, both
   ok('sampled rungs are not thrown out of the comparison',
     !/own\.partial \|\| al\.partial\) return \[\]/.test(src) && /sampled: !!\(own\.partial \|\| al\.partial\)/.test(src));
   ok('nor is the rung currently on the map', !/own\.current \|\|/.test(src));
-  // Marked on its row, said in the row's own hover, and the mark is named on the documentation page.
+  // Marked on its row, and the mark is named on the documentation page (its hover line went with the tooltips, 2026-11-25).
   ok('and a sampled rung says it was sampled, on its own row',
-    /\{s\.res\} m\{s\.partial \? ' ◦' : null\}/.test(table) && /s\.partial \? 'sampled over the central part of a large field' : null/.test(table)
+    /\{s\.res\} m\{s\.partial \? ' ◦' : null\}/.test(table)
     && /<dt>◦<\/dt><dd>Counted on the central part of a large field\.<\/dd>/.test(fs.readFileSync(path.join(ROOT, 'pixel-grid-docs.html'), 'utf8')));
 
   // (8) With a geolocation error set it judges the WORST cases. The nominal is
@@ -391,7 +394,7 @@ console.log('\nU4. a ladder panel reports its OWN rung, never the chart it borro
   // worth 49% read 50% for exactly as long as it was the size on screen, so
   // clicking along the ladder moved the figures it was being read for.
   ok('the drawing may still come from the big chart', /isActive \? activeSim! : s/.test(body));
-  for (const field of ['purePct', 'pureCount', 'trialCount', 'partial']) {
+  for (const field of ['purePct', 'pureCount', 'partial']) {
     const m = ret.match(new RegExp(field + ':\\s*([^,\\n]+)'));
     ok(`${field} is read off the rung, not the borrowed chart`,
       !!m && !/activeSim|isActive/.test(m[1]), m ? m[1].trim() : 'not returned');
@@ -399,7 +402,7 @@ console.log('\nU4. a ladder panel reports its OWN rung, never the chart it borro
   // And the stub for the size the big chart is drawing carries no number at all,
   // rather than the chart's: it gets its own once the idle pass has built it.
   ok('the not-yet-built rung shows no number rather than the chart\'s',
-    /purePct: NaN, pureCount: NaN, trialCount: NaN/.test(body));
+    /purePct: NaN, pureCount: NaN, partial: false/.test(body));
 }
 
 
@@ -1023,8 +1026,7 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
     /const onMap: 0 \| 1 \| null = p\.compareFrom === null \? 0/.test(pca) && /placed\(sweepAligned\?\.find\(s => s\.id === sourceId\)\) \? 1 : null;/.test(pca)
     && /shown\?: 0 \| 1 \| null;/.test(table));
   check('each rung says at which angle its placement is, and whether one was searched for at all',
-    /const anyPlace = pairWith\.some\(s => s\.placement\);/.test(table) && /place\.searched \? deg\(Math\.round\(place\.angle \* 10\) \/ 10\) : '·'/.test(table)
-    && /not searched at this size/.test(table));
+    /const anyPlace = pairWith\.some\(s => s\.placement\);/.test(table) && /place\.searched \? deg\(Math\.round\(place\.angle \* 10\) \/ 10\) : '·'/.test(table));
 }
 
 // The ladder's rows are satellites. They were nine pixel sizes, all under the

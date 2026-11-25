@@ -308,7 +308,6 @@ function PcaStepBody(p: StepProps) {
                 <span className="ml-auto flex overflow-hidden rounded border border-white/10 text-[12px]">
                   {(['table', 'charts'] as const).map(v => (
                     <button key={v} type="button" onClick={() => setLadderView(v)}
-                      title={v === 'table' ? 'The figures of every size, side by side' : 'One small PCA per size'}
                       className={`px-1.5 py-0.5 capitalize transition-colors ${ladderView === v ? 'bg-sky-500/15 text-sky-300' : 'text-neutral-500 hover:text-neutral-300'}`}>
                       {v}
                     </button>
@@ -320,8 +319,7 @@ function PcaStepBody(p: StepProps) {
                   {ladderView === 'table' ? (
                     <ResTable steps={sweep} pairWith={sweepAligned}
                       pairLabels={[`${angleLabel}° as drawn`, imported ? 'best placement' : '0° on the grid']} shown={onMap}
-                      activeId={sourceId} onPick={sweepAligned ? pickOwn : pickSat} onPickPair={pickAligned}
-                      geoErrM={geoErrM} threshold={threshold} />
+                      activeId={sourceId} onPick={sweepAligned ? pickOwn : pickSat} onPickPair={pickAligned} />
                   ) : (
                   <Suspense fallback={<p className="flex items-center gap-2 text-[14px] text-neutral-500"><Spinner className="h-3 w-3" /> Loading the charts</p>}>
                   {sweepAligned ? (
@@ -332,10 +330,10 @@ function PcaStepBody(p: StepProps) {
                       pairLabels={pairLabels}
                       species={speciesD} colors={colors} magnitude={magnitude} threshold={threshold} colorBy={pcaColorBy}
                       activeId={sourceId} activeSim={lendable}
-                      onPick={pickOwn} onPickPair={pickAligned} geoErrM={geoErrM} />
+                      onPick={pickOwn} onPickPair={pickAligned} />
                   ) : (
                   <PcaSweep steps={sweep} species={speciesD} colors={colors} magnitude={magnitude} threshold={threshold} colorBy={pcaColorBy}
-                    activeId={sourceId} activeSim={activeSim} onPick={pickSat} geoErrM={geoErrM} />
+                    activeId={sourceId} activeSim={activeSim} onPick={pickSat} />
                   )}
                   </Suspense>
                   )}

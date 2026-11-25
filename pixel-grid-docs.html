@@ -20,7 +20,9 @@
       .wrap { display: grid; grid-template-columns: 250px minmax(0, 1fr); max-width: 1180px; margin: 0 auto; }
       nav { position: sticky; top: 0; align-self: start; height: 100vh; overflow-y: auto; padding: 22px 16px 22px 20px; border-right: 1px solid var(--line); font-size: 14px; }
       nav .home { display: block; margin-bottom: 14px; font-weight: 600; color: var(--head); }
-      nav .open { display: inline-block; margin-bottom: 16px; padding: 4px 10px; border: 1px solid #0ea5e966; border-radius: 6px; background: #0ea5e91a; }
+      /* The way back to the designer, on screen wherever the page is scrolled, at any width (2026-11-25). */
+      a.back { position: fixed; right: 16px; bottom: 16px; z-index: 10; padding: 8px 14px; border: 1px solid #0ea5e999; border-radius: 999px; background: #0c1c27; color: var(--link); font-size: 14px; font-weight: 500; box-shadow: 0 4px 16px #000000a0; }
+      a.back:hover { background: #102a3a; text-decoration: none; }
       a.example { display: inline-block; margin: 2px 0 8px; padding: 4px 12px; border: 1px solid #0ea5e966; border-radius: 6px; background: #0ea5e91a; font-size: 14px; text-decoration: none; }
       nav h2 { margin: 16px 0 4px; font-size: 12px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); }
       nav a.item { display: block; padding: 2px 0; color: var(--dim); }
@@ -99,17 +101,17 @@
       }
       @media print {
         :root { --bg: #fff; --panel: #f6f7f9; --line: #d5d9df; --grid: #00000038; --text: #111; --dim: #333; --faint: #555; --head: #000; --link: #0b5cab; --warn: #b45309; }
-        nav { display: none; }
+        nav, a.back { display: none; }
         .wrap { display: block; }
         .box.warn { color: #111; }
       }
     </style>
   </head>
   <body>
+    <a class="back" href="./pixel-grid.html">← Back to the designer</a>
     <div class="wrap">
       <nav>
         <a class="home" href="#top">Pixel Grid Designer</a>
-        <a class="open" href="./pixel-grid.html">Open the designer</a>
         <h2>Getting started</h2>
         <a class="item" href="#overview">Quick start</a>
         <a class="item" href="#map">The map</a>
@@ -143,7 +145,7 @@
 
       <main id="top">
         <h1>Pixel Grid Designer</h1>
-        <p class="lead">A guide to planning a field trial that a satellite can follow: how large the plots must be, which pixels can be used, and which satellite suits the trial. Four <a href="#examples">worked examples</a> go through it from start to finish. The formulas are gathered at the end, under <a href="#budget">Behind the numbers</a>; they are not needed to use the designer.</p>
+        <p class="lead">A guide to planning a field trial that a satellite can follow: how large the plots must be, which pixels can be used, and which satellite suits the trial. Four <a href="#examples">worked examples</a> go through it from start to finish. The formulas are gathered at the end, under <a href="#budget">Behind the numbers</a>.</p>
 
         <section id="overview">
           <h2 class="t">Quick start</h2>
