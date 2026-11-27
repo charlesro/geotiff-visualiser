@@ -4,7 +4,7 @@ import { crsToProj4Def } from '../lib/geo';
 import {
   BARE, CROP_COLORS, MAX_COVER, strideFieldSim, CROP_PRESETS, PATTERNS, TRUTH_TYPES, bestPhaseOffset, cropById, makeBetaSchedule, simulateField,
   makeTruth, parsOf, TMAX, coverStats, speciesChannel, meanPerSpecies,
-  layoutKey, plantedAreaPx, stakeBlockPlan,
+  layoutKey, plantedAreaPx, stakeBlockPlan, buildBlockPlan,
   type BlockDesign, type FieldParams, type FieldSim, type PatternType, type SensorParams, type SimLayout, latticeOffset,
 } from './simulate';
 import { holdTracker } from './resolving';
@@ -19,13 +19,13 @@ import { importedTrialExtent, trialExtent } from './ladder';
 import { ladderKey } from './ladder-rung';
 import { OPTIMIZE_PLACEMENT, ladderSearch, ladderStep, type LadderContext } from './ladder-step';
 import { ladderPool } from './ladder-pool';
-import { seatedPlacement } from './trial-seat';
+import { fieldAngle, seatedPlacement, trialFitsField } from './trial-seat';
 import type { SweepStep } from './PcaSweep';
 import type { useFieldGrid } from './use-grid';
 import { arrayOf, inRange, isLngLat, isNum, oneOf, readSaved, shape, usePersistentState } from './persist';
 import { MAX_IMPORT_PLOTS, tooManyVarieties, varietiesOf } from './design-import';
 import { resolveImportedPlan } from './imported-plan';
-import { alignedWithin, rotateImportedPlan, shiftImportedPlan, trialAngle } from './imported-rotate';
+import { nearestGridAngle, rotateImportedPlan, shiftImportedPlan, trialAngle } from './imported-rotate';
 import type { ImportedDesign, ImportedPlan } from './imported-types';
 
 /** A restored crop must still be a usable curve, not whatever happened to be stored. */
@@ -981,6 +981,36 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
   const pooled = useRef<{ ctx: LadderContext; id: number } | null>(null);
   const sameSteps = (a: SweepStep[] | null, b: SweepStep[] | null) =>
     a === b || (!!a && !!b && a.length === b.length && a.every((s, i) => s === b[i]));
+  /**
+   * The angles a generated trial's best placement is chosen among (see runSweep):
+   * the one drawn first, then the pixel axis nearest it and the other one, then
+   * the field's two directions, none twice (half a turn is the same direction),
+   * and a block trial's only where it fits the field. Strips and checkerboards
+   * fill whatever field there is.
+   */
+  const bestAngles = (drawn: number): number[] => {
+    const g = nearestGridAngle(drawn);
+    const fd = aoi && build?.epsg ? fieldAngle(fieldRing, aoi, build.epsg) : null;
+    const raw = [g, g === 0 ? 90 : 0, ...(fd == null ? [] : [fd, fd <= 0 ? fd + 90 : fd - 90])];
+    const same = (a: number, b: number) => { const d = (((a - b) % 180) + 180) % 180; return Math.min(d, 180 - d) < 0.05; };
+    let fits: (a: number) => boolean = () => true;
+    if (layout.pattern === 'block' && aoi && build?.epsg) {
+      const plan = buildBlockPlan(blockDesign, { centerU: 0, centerV: 0 }), epsg = build.epsg;
+      fits = a => trialFitsField(fieldRing, aoi, epsg, plan.totalU, plan.totalV, a, 0);
+    }
+    const out = [drawn];
+    for (const a of raw) if (!out.some(b => same(a, b)) && fits(a)) out.push(a);
+    return out;
+  };
+  /** A rung of the best placement, saying at which angle: one object per rung and angle, so an unchanged ladder compares equal. */
+  const placedRungs = useRef(new WeakMap<SweepStep, Map<number, SweepStep>>());
+  const placedAt = (s: SweepStep, a: number): SweepStep => {
+    let byAngle = placedRungs.current.get(s);
+    if (!byAngle) { byAngle = new Map(); placedRungs.current.set(s, byAngle); }
+    let out = byAngle.get(a);
+    if (!out) { out = { ...s, placement: { turn: 0, shift: [0, 0], angle: a, searched: true } }; byAngle.set(a, out); }
+    return out;
+  };
 
   const runSweep = useCallback(() => {
     if (!aoi || !build?.epsg) return;
@@ -999,14 +1029,44 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
     // comparison the button says there is no point in. An imported trial is
     // compared with its best placement instead, which is worth asking about
     // at any angle, the pixel rows' included.
-    const wantAligned = compareAligned && (layout.pattern === 'imported' ? !!importedBasePlan : !alignedWithin(angle, 0.05));
+    const isImported = layout.pattern === 'imported';
+    const wantAligned = compareAligned && (isImported ? !!importedBasePlan : true);
+    /**
+     * THE BEST PLACEMENT OF A GENERATED TRIAL (2026-11-25: "i put an angle at
+     * random so the best placement col should at least be as good"). It was
+     * the same trial along the pixel rows, at 0 and then at the nearest axis,
+     * and could read worse throughout. Its place on the grid is already the
+     * best for its angle (the staking), so what is left to choose is the angle:
+     * the one drawn, the pixel rows both ways, and the field's two directions,
+     * each only where the trial still fits the field. Every satellite keeps the
+     * one that counts the most of what the trial is placed for, then of the
+     * other figure; the angle drawn is first and wins a tie, so the column is
+     * never below the one beside it on what the trial is placed for.
+     */
+    const tries = isImported ? [0] : bestAngles(angle);
     const jobs: [number, Rung, 0 | 1][] = [
       ...ladder.map(g => [angle, g, 0] as [number, Rung, 0]),
-      ...(wantAligned ? ladder.map(g => [0, g, 1] as [number, Rung, 1]) : []),
+      ...(wantAligned ? ladder.flatMap(g => tries.map(a => [a, g, 1] as [number, Rung, 1])) : []),
     ];
+    const forHeld = gridApi.placeFor !== 'pure';
+    const rank = (s: SweepStep): [number, number] => {
+      const pure = Number.isFinite(s.pureCount) ? s.pureCount! : -1, held = s.geoRobustPure ?? -1;
+      return forHeld && s.geoRobustPure !== undefined ? [held, pure] : [pure, held];
+    };
+    // Only with the comparison asked for, and every candidate back: otherwise there is nothing to choose from.
+    const pickBest = (al: SweepStep[]): SweepStep[] => (isImported || !wantAligned || al.length !== ladder.length * tries.length ? al : ladder.map((_, k) => {
+      const options = al.slice(k * tries.length, (k + 1) * tries.length);
+      let w = 0;
+      for (let q = 1; q < options.length; q++) {
+        const [a1, a2] = rank(options[q]), [b1, b2] = rank(options[w]);
+        if (a1 > b1 || (a1 === b1 && a2 > b2)) w = q;
+      }
+      return placedAt(options[w], tries[w]);
+    }));
     const commit = (cur: SweepStep[], al: SweepStep[]) => {
       setSweep(prev => (sameSteps(prev, cur) ? prev : cur));
-      setSweepAligned(prev => (!wantAligned ? null : sameSteps(prev, al) ? prev : al));
+      const best = pickBest(al);
+      setSweepAligned(prev => (!wantAligned ? null : sameSteps(prev, best) ? prev : best));
       setSweepBusy(false);
     };
     // What the page's own pass keeps (`next`, further down: the path of a
@@ -1109,7 +1169,7 @@ export function usePcaSim({ aoi, fieldRing, gridApi, exp, patternOrigin, activeS
       };
       idle(fill);
     }
-  }, [aoi, build?.epsg, ladderKeys, gridApi.sourceId, rotation, compareAligned, compareFrom, stepAt, layout.pattern, importedAngle]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [aoi, fieldRing, build?.epsg, ladderKeys, gridApi.sourceId, gridApi.placeFor, rotation, compareAligned, compareFrom, stepAt, layout.pattern, layoutSig, importedAngle]); // eslint-disable-line react-hooks/exhaustive-deps
   // Auto-recompute whenever an input that feeds the sweep changes: no button click
   // needed. Debounced so dragging a slider doesn't refit on every frame. Only while
   // the PCA step is open (nothing else shows the sweep). The crop / noise params only

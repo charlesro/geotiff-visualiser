@@ -7,7 +7,6 @@ import { SuggestDesign } from './SuggestDesign';
 import { BlurBudget, BlurGeo, SensorPick, fwhmText } from './GridStep';
 import { Suspense, lazy } from 'react';
 import { STEP_NO, type SimSection, type StepProps } from './props';
-import { alignedWithin } from '../imported-rotate';
 import { PATTERNS } from '../simulate';
 
 /**
@@ -32,9 +31,8 @@ function SimStepBody(p: StepProps) {
   // The angle the controls show and edit: the trial's own for an imported one.
   const imported = pattern === 'imported';
   const angle = imported ? importedAngle : rotation;
-  // An imported trial is compared with its best placement, at whatever angle
-  // that is: there is no angle at which the comparison has nothing to say.
-  const aligned = !imported && alignedWithin(angle, 0.05);
+  // Every trial is compared with its best placement, at whatever angle that is:
+  // there is no angle at which the comparison has nothing to say (2026-11-25).
   const { ndviSeries } = p.sim;
   /**
    * One line per distinct growth CURVE, not per species. An imported trial can
@@ -127,13 +125,11 @@ function SimStepBody(p: StepProps) {
                     as in file
                   </button>
                 )}
-                <button type="button" disabled={aligned}
+                <button type="button"
                   onClick={() => { setCompareAligned(true); setActiveStep('pca'); }}
-                  title={aligned
-                    ? 'Already aligned with the pixels'
-                    : imported ? 'Compare with the angle and position that keep the most pure pixels at each pixel size' : 'Compare with strips aligned to the pixels'}
+                  title={imported ? 'Compare with the angle and position that keep the most pure pixels at each pixel size' : 'Compare with the angle that keeps the most pixels at each pixel size, where the trial fits the field'}
                   className={`${imported && importedTurn !== 0 ? '' : 'ml-auto'} rounded px-1.5 py-0.5 text-[13px] font-normal normal-case tracking-normal transition-colors disabled:opacity-30 ${compareAligned ? 'bg-sky-500/15 text-sky-300' : 'text-neutral-500 hover:text-neutral-300'}`}>
-                  {imported ? 'vs best' : 'vs aligned'}
+                  vs best
                 </button>
               </>}
               />

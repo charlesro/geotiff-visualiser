@@ -7,7 +7,7 @@ import { ResTable } from '../ResTable';
 import { fmt } from '../util';
 import { FIXED, SOURCES, TASK } from '../sensors';
 import { SHOW_GRID_STEP, STEP_NO, type StepProps } from './props';
-import { alignedWithin } from '../imported-rotate';
+
 
 /**
  * The "Retune design" fold under the results (satellite, layout, design fields
@@ -69,10 +69,10 @@ function PcaStepBody(p: StepProps) {
   const own = imported ? importedAngle : rotation;
   const angle = p.compareFrom ?? own;
   const angleLabel = Math.round(angle * 10) / 10;
-  // Strips and block trials are compared with themselves along the pixel
-  // rows, which is pointless once they lie along them. An imported trial is
-  // compared with its best placement, whatever angle that is at.
-  const aligned = !imported && alignedWithin(angle, 0.05);
+  // Every trial is compared with its best placement (use-simulation runSweep): an imported one by the
+  // search over angles and shifts, a generated one over the angles worth trying where it fits the field.
+  /** Two angles of a generated trial that are the same placement: half a turn round. */
+  const sameDirection = (a: number, b: number) => { const d = (((a - b) % 180) + 180) % 180; return Math.min(d, 180 - d) < 0.05; };
   const { pcaBusy, pcaView, pcaSubsampled, pcaGrid, setSelectedPixels, sweep, sweepBusy } = p.pca;
   const { pcaRetuneOpen, setPcaRetuneOpen, compareAligned, setCompareAligned, pcaColorBy, setPcaColorBy, pcaShapeBy, setPcaShapeBy, ladderView, setLadderView } = p;
   const { sweepAligned } = p.pca;
@@ -90,8 +90,9 @@ function PcaStepBody(p: StepProps) {
   const placed = (s: { placement?: { turn: number; shift: [number, number] } } | undefined) => !!s?.placement
     && Math.abs(s.placement.turn - importedTurn) < 1e-6
     && Math.abs(s.placement.shift[0] - importedShift[0]) < 1e-6 && Math.abs(s.placement.shift[1] - importedShift[1]) < 1e-6;
+  const bestHere = sweepAligned?.find(s => s.id === sourceId)?.placement;
   const onMap: 0 | 1 | null = p.compareFrom === null ? 0
-    : !imported ? 1
+    : !imported ? (bestHere && sameDirection(rotation, bestHere.angle) ? 1 : null)
     : placed(sweepAligned?.find(s => s.id === sourceId)) ? 1 : null;
   // The big chart's simulation, for the thumbnail of the size it was computed at.
   // Right after a click the grid is already the new size while the chart still
@@ -141,7 +142,7 @@ function PcaStepBody(p: StepProps) {
   // (Custom, with none, turned the whole sentence to the nominal figures; Neon, 2026-11-25).
   const worstCase = sweep ? sweep.some(s => (s.ce90M ?? 0) > 0) : geoErrM > 0;
   /** The right-hand ladder, as the verdict's subject and verb. */
-  const other = imported ? 'best placement gives' : 'pixel rows give';
+  const other = 'best placement gives';
   const comparison = (() => {
     if (!sweep || !sweepAligned) return null;
     const rows = sweepAligned.flatMap(al => {
@@ -226,11 +227,13 @@ function PcaStepBody(p: StepProps) {
       p.importApi.setPlacement(place.turn, place.shift);
       return;
     }
+    // The angle this satellite's best placement found; remembered BEFORE the turn, so the comparison
+    // keeps showing the placement this one was chosen over, and clicking back is one click.
+    const best = sweepAligned?.find(s => s.id === id)?.placement;
+    if (!best) return;
     pickSat(id);
-    // Remembered BEFORE the turn, so the comparison keeps showing the placement
-    // this one was chosen over, and clicking back is one click.
-    p.setCompareFrom(angle);
-    setRotation(0);
+    p.setCompareFrom(angle, best.angle);
+    setRotation(best.angle);
   };
   /**
    * Picking a rung of the left-hand ladder. It is the design at its own angle,
@@ -253,8 +256,8 @@ function PcaStepBody(p: StepProps) {
    */
   const pairLabels = useMemo<[string, string]>(() => [
     `at ${angleLabel}° · your design${onMap === 0 ? ' · shown' : ''}`,
-    `${imported ? 'best placement' : 'at 0° · on the pixel grid'}${onMap === 1 ? ' · shown' : ''}`,
-  ], [angleLabel, onMap, imported]);
+    `best placement${onMap === 1 ? ' · shown' : ''}`,
+  ], [angleLabel, onMap]);
 
   // Back to the file's own angle, as step 3 offers it: this is the step where
   // the trial gets turned, by a click on the aligned ladder.
@@ -268,12 +271,10 @@ function PcaStepBody(p: StepProps) {
           as in file
         </button>
       )}
-      <button type="button" onClick={() => setCompareAligned(v => !v)} disabled={aligned}
-        title={aligned
-          ? 'Already aligned with the pixels'
-          : imported ? 'Compare with the angle and position that keep the most pure pixels at each pixel size' : 'Compare with rows aligned to the pixels'}
+      <button type="button" onClick={() => setCompareAligned(v => !v)}
+        title={imported ? 'Compare with the angle and position that keep the most pure pixels at each pixel size' : 'Compare with the angle that keeps the most pixels at each pixel size, where the trial fits the field'}
         className={`${turned ? '' : 'ml-auto'} rounded px-1.5 py-0.5 text-[13px] font-normal normal-case tracking-normal transition-colors disabled:opacity-30 ${compareAligned ? 'bg-sky-500/15 text-sky-300' : 'text-neutral-500 hover:text-neutral-300'}`}>
-        {imported ? 'vs best' : 'vs aligned'}
+        vs best
       </button>
     </>
   );
@@ -318,7 +319,7 @@ function PcaStepBody(p: StepProps) {
                 <div className="space-y-2">
                   {ladderView === 'table' ? (
                     <ResTable steps={sweep} pairWith={sweepAligned}
-                      pairLabels={[`${angleLabel}° as drawn`, imported ? 'best placement' : '0° on the grid']} shown={onMap}
+                      pairLabels={[`${angleLabel}° as drawn`, 'best placement']} shown={onMap}
                       activeId={sourceId} onPick={sweepAligned ? pickOwn : pickSat} onPickPair={pickAligned} />
                   ) : (
                   <Suspense fallback={<p className="flex items-center gap-2 text-[14px] text-neutral-500"><Spinner className="h-3 w-3" /> Loading the charts</p>}>
@@ -346,7 +347,7 @@ function PcaStepBody(p: StepProps) {
                         <>
                           {worstCase ? 'On the pixels that hold within the CE90, ' : ''}
                           {comparison.better.length > 0 && comparison.worse.length === 0
-                            ? `${worstCase ? 'the' : 'The'} ${other} more pure crop for ${comparison.better.join(', ')}, and ${imported ? 'is' : 'are'} never more than ${TIE_POINTS} points behind for any of the ${comparison.sizes} ${comparison.sizes === 1 ? 'satellite' : 'satellites'}.`
+                            ? `${worstCase ? 'the' : 'The'} ${other} more pure crop for ${comparison.better.join(', ')}, and is never more than ${TIE_POINTS} points behind for any of the ${comparison.sizes} ${comparison.sizes === 1 ? 'satellite' : 'satellites'}.`
                             : comparison.better.length > 0
                               ? `${worstCase ? 'the' : 'The'} ${other} more for ${comparison.better.join(', ')} and less for ${comparison.worse.join(', ')}.`
                               : comparison.worse.length > 0

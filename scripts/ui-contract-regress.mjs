@@ -276,10 +276,11 @@ console.log('\nU2c. the trial angle accepts negative values, and nothing hand-ro
   check('and so does the control', /min=\{-90\} max=\{90\}/.test(controls3));
   // One mod-90 helper, not a copy per file: the hand-written form reads -3.6 as
   // aligned, which switched the whole comparison off for a trial that was not.
-  for (const f of ['src/pixel-grid/steps/PcaStep.tsx', 'src/pixel-grid/steps/SimStep.tsx', 'src/pixel-grid/use-simulation.ts']) {
-    check(`${f.split('/').pop()} asks the shared helper instead of hand-rolling it`,
-      /alignedWithin\(/.test(read(f)) && !/Math\.min\(angle, 90 - angle\)/.test(read(f)));
+  // Since 2026-11-25 the steps no longer ask (every trial is compared with its best placement); the shell does.
+  for (const f of ['src/pixel-grid/steps/PcaStep.tsx', 'src/pixel-grid/steps/SimStep.tsx', 'src/pixel-grid/use-simulation.ts', 'src/pixel-grid/PixelGridApp.tsx']) {
+    check(`${f.split('/').pop()} never hand-rolls the axis test`, !/Math\.min\(angle, 90 - angle\)/.test(read(f)));
   }
+  check('and the shell asks the shared helper', /alignedWithin\(p - q, 0\.05\)/.test(read('src/pixel-grid/PixelGridApp.tsx')));
 }
 
 console.log('\nU3. the aligned-vs-drawn verdict reads the number it prints, both ways');
@@ -324,7 +325,7 @@ console.log('\nU3. the aligned-vs-drawn verdict reads the number it prints, both
   // (3) The sentence can actually SAY better, not only "behind".
   ok('the sentence has a branch that says the other placement gives more',
     /comparison\.better\.length > 0/.test(sentence) && /\$\{other\} more/.test(sentence)
-    && /const other = imported \? 'best placement gives' : 'pixel rows give';/.test(src));
+    && /const other = 'best placement gives';/.test(src));
 
   // (4) The margin in the words is the margin in the rule.
   ok('the tie margin the panel prints comes from the constant it ranks with',
@@ -968,7 +969,8 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
   check('it counts only while that kind of design still sits at that angle, read from the angle on screen',
     /const angleShown = importedNow \? \(pendingAngle \?\? exp\.importedAngle\) : exp\.rotation;/.test(shell)
     && /const compareFrom = turnedFrom && sameAngle\(angleShown, turnedFrom\.to\) && !sameAngle\(turnedFrom\.deg, turnedFrom\.to\) \? turnedFrom\.deg : null;/.test(shell)
-    && /const sameAngle = \(p: number, q: number\) => alignedWithin\(p - q, 0\.05\);/.test(shell));
+    // A quarter turn is the same placement for an imported trial, not for a generated one (its blocks stack the other way).
+    && /const sameAngle = \(p: number, q: number\) => \(importedNow \? alignedWithin\(p - q, 0\.05\)/.test(shell));
   // The file's own angle needs no remembering: a trial aligned before the angle was kept still has one.
   check('an imported trial found along the pixel rows is compared with the file\'s angle when nothing was remembered',
     /const fileFrom = importedNow && exp\.importedTurn !== 0 \? \{ deg: exp\.importedFileAngle, to: 0 \} : null;/.test(shell)
@@ -1012,9 +1014,8 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
   check('the sweep runs the search a slice per task, and the rung only reads its answer',
     /if \(search && !search\.step\(\)\) \{ i--; worked = true; continue; \}/.test(hook) && /function\* searchSteps\(/.test(turn));
   check('it is offered at any angle, the pixel rows\' included',
-    /const wantAligned = compareAligned && \(layout\.pattern === 'imported' \? !!importedBasePlan : !alignedWithin\(angle, 0\.05\)\);/.test(hook)
-    && /const aligned = !imported && alignedWithin\(angle, 0\.05\);/.test(pca) && /const aligned = !imported && alignedWithin\(angle, 0\.05\);/.test(sim)
-    && /\{imported \? 'vs best' : 'vs aligned'\}/.test(pca) && /\{imported \? 'vs best' : 'vs aligned'\}/.test(sim));
+    /const wantAligned = compareAligned && \(isImported \? !!importedBasePlan : true\);/.test(hook)
+    && !/disabled=\{aligned\}/.test(pca) && !/disabled=\{aligned\}/.test(sim) && /vs best/.test(pca) && /vs best/.test(sim));
   // Searching again on the click could land somewhere the rung never measured.
   check('a click on a rung puts the trial exactly where that rung measured it, with nothing searched again',
     /const place = sweepAligned\?\.find\(s => s\.id === id\)\?\.placement;/.test(pca)
@@ -1025,6 +1026,22 @@ console.log('\nU7. the blur budget adds variances, and owns up to the box');
   check('the ladder marks the placement on the map only when it is one of its own',
     /const onMap: 0 \| 1 \| null = p\.compareFrom === null \? 0/.test(pca) && /placed\(sweepAligned\?\.find\(s => s\.id === sourceId\)\) \? 1 : null;/.test(pca)
     && /shown\?: 0 \| 1 \| null;/.test(table));
+  // 2026-11-25: a block trial drawn at -78.6 degrees was compared with itself at 0, turned 78.6 out of the
+  // field it lay along, and the column read worse throughout. Now the smallest turn onto the rows, and a
+  // turned trial that does not fit the field says so.
+  // A generated trial is compared with its BEST placement since 2026-11-25 ("i put an angle at random so the
+  // best placement col should at least be as good"): the angle drawn, the pixel rows both ways and the field's
+  // two directions, where the trial fits, the one counting the most kept per satellite, the angle drawn first.
+  check('a generated trial\'s best placement tries the angle drawn first, then the axes and the field\'s directions, where it fits',
+    /const tries = isImported \? \[0\] : bestAngles\(angle\);/.test(read('src/pixel-grid/use-simulation.ts'))
+    && /const out = \[drawn\];\s*for \(const a of raw\) if \(!out\.some\(b => same\(a, b\)\) && fits\(a\)\) out\.push\(a\);/.test(read('src/pixel-grid/use-simulation.ts'))
+    && /fits = a => trialFitsField\(fieldRing, aoi, epsg, plan\.totalU, plan\.totalV, a, 0\);/.test(read('src/pixel-grid/use-simulation.ts')));
+  check('and keeps, per satellite, what counts the most of what the trial is placed for, a tie to the angle drawn',
+    /if \(a1 > b1 \|\| \(a1 === b1 && a2 > b2\)\) w = q;/.test(read('src/pixel-grid/use-simulation.ts'))
+    && /return forHeld && s\.geoRobustPure !== undefined \? \[held, pure\] : \[pure, held\];/.test(read('src/pixel-grid/use-simulation.ts')));
+  check('the column is called best placement for every trial, and a click puts the trial at that satellite\'s angle',
+    /pairLabels=\{\[`\$\{angleLabel\}° as drawn`, 'best placement'\]\}/.test(pca) && /p\.setCompareFrom\(angle, best\.angle\);\s*setRotation\(best\.angle\);/.test(pca)
+    && !/vs aligned/.test(pca) && !/vs aligned/.test(read('src/pixel-grid/steps/SimStep.tsx')) && !/vs aligned/.test(read('pixel-grid-docs.html')));
   check('each rung says at which angle its placement is, and whether one was searched for at all',
     /const anyPlace = pairWith\.some\(s => s\.placement\);/.test(table) && /place\.searched \? deg\(Math\.round\(place\.angle \* 10\) \/ 10\) : '·'/.test(table));
 }
@@ -1330,6 +1347,12 @@ console.log('\nU-angle. a trial can be built at an angle');
     && /\[askedAngle, \.\.\.\[fieldDeg, fieldDeg <= 0 \? fieldDeg \+ 90 : fieldDeg - 90\]\.filter\(d => Math\.abs\(d - askedAngle\) > 1e-6\)\]/.test(shell)
     && /for \(const deg of angles\) \{\s*const w = withSat\(g, deg\);/.test(shell) && /export function fieldAngle\(fieldRing: Poly \| null, aoi: LngLatBounds \| null, epsg: number\): number \| null/.test(read('src/pixel-grid/trial-seat.ts'))
     && /\{o\.alongField && ' along the field'\}/.test(panel));
+  // "i cant force an angle in the suggest design" (2026-11-25): turning along the field is a choice, on by default.
+  check('turning along the field can be refused: the angle typed, or nothing',
+    /const angles = fieldDeg == null \|\| suggestAsk\.alongField === false \? \[askedAngle\]/.test(shell)
+    && /checked=\{ask\.alongField !== false\} onChange=\{e => set\('alongField'\)\(e\.target\.checked\)\}/.test(panel)
+    && /Turn it along the field if it does not fit/.test(panel) && /\(v as SuggestAsk\)\.alongField === undefined \|\| isBool/.test(shell)
+    && /Untick <i>Turn it along the field if it does not fit<\/i> to keep the angle typed/.test(read('pixel-grid-docs.html')));
   check('and what Build calls fitting leaves a pixel to spare all round, as Most in this field does',
     /const fitsField = \(u: number, v: number\) => !!aoi && trialFitsField\(fieldRing, aoi, epsg, u, v, angle, r\);/.test(shell)
     // A traced outline with no seat holds no trial, whatever its box (Neon, 2026-11-25).

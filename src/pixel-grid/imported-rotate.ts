@@ -97,6 +97,17 @@ export const alignedWithin = (angle: number, tol: number): boolean => {
 /** Exactly on a pixel axis, to floating-point slack. */
 export const isAligned = (angle: number): boolean => alignedWithin(angle, 1e-6);
 
+/**
+ * The pixel axis nearest an angle, as an angle in [-90, 90]: the smallest turn
+ * that puts a trial along the pixel rows. -78.6 degrees gives -90, not 0
+ * (2026-11-25: "vs aligned" turned a trial drawn at -78.6 degrees by 78.6 to
+ * 0, out of the field it lay along, and the column read worse throughout).
+ */
+export const nearestGridAngle = (angle: number): number => {
+  const g = Math.round(angle / 90) * 90;
+  return g === 0 ? 0 : Math.max(-90, Math.min(90, g));
+};
+
 /** `plan` moved by (dx, dy) metres. */
 export function shiftImportedPlan(plan: ImportedPlan, dx: number, dy: number): ImportedPlan {
   if (!dx && !dy) return plan;

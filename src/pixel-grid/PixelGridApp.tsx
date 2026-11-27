@@ -314,8 +314,13 @@ export default function PixelGridApp() {
    */
   const importedNow = exp.pattern === 'imported';
   const angleShown = importedNow ? (pendingAngle ?? exp.importedAngle) : exp.rotation;
-  /** Two angles to the pixel rows that are the same one: square pixels look alike a quarter turn round. */
-  const sameAngle = (p: number, q: number) => alignedWithin(p - q, 0.05);
+  /**
+   * Two angles to the pixel rows that are the same placement. An imported trial's: square pixels look
+   * alike a quarter turn round. A generated trial's: half a turn round only, since its best placement
+   * can be the quarter turn of the angle it was drawn at, a trial whose blocks stack the other way (2026-11-25).
+   */
+  const sameAngle = (p: number, q: number) => (importedNow ? alignedWithin(p - q, 0.05)
+    : (() => { const d = ((((p - q) % 180) + 180) % 180); return Math.min(d, 180 - d) < 0.05; })());
   const fileFrom = importedNow && exp.importedTurn !== 0 ? { deg: exp.importedFileAngle, to: 0 } : null;
   const turnedFrom = adopted && adopted.imported === importedNow ? { deg: adopted.deg, to: adopted.to ?? 0 } : fileFrom;
   const compareFrom = turnedFrom && sameAngle(angleShown, turnedFrom.to) && !sameAngle(turnedFrom.deg, turnedFrom.to) ? turnedFrom.deg : null;
@@ -455,7 +460,8 @@ export default function PixelGridApp() {
       && ((v as SuggestAsk).angle === undefined || inRange(-90, 90)((v as SuggestAsk).angle))
       && ((v as SuggestAsk).stripAlley === undefined || inRange(0, 100)((v as SuggestAsk).stripAlley))
       && ((v as SuggestAsk).perStrip === undefined || inRange(1, 2000)((v as SuggestAsk).perStrip))
-      && ((v as SuggestAsk).repsMax === undefined || isBool((v as SuggestAsk).repsMax)));
+      && ((v as SuggestAsk).repsMax === undefined || isBool((v as SuggestAsk).repsMax))
+      && ((v as SuggestAsk).alongField === undefined || isBool((v as SuggestAsk).alongField)));
   const [suggestBusy, setSuggestBusy] = useState(false);
   const [suggestOutcome, setSuggestOutcome] = useState<SuggestOutcome | null>(null);
   /** How far a build has got: steps done of all, and what is being worked out. Null when none runs. */
@@ -523,7 +529,8 @@ export default function PixelGridApp() {
      * rectangle's sides), and the first angle at which it fits is built.
      */
     const fieldDeg = aoi ? fieldAngle(fieldRing, aoi, epsg) : null;
-    const angles = fieldDeg == null ? [askedAngle]
+    // Unticked "Turn it along the field if it does not fit": the angle asked, or nothing.
+    const angles = fieldDeg == null || suggestAsk.alongField === false ? [askedAngle]
       : [askedAngle, ...[fieldDeg, fieldDeg <= 0 ? fieldDeg + 90 : fieldDeg - 90].filter(d => Math.abs(d - askedAngle) > 1e-6)];
     // Alternating rows or columns have no trial to size: their strips are
     // (suggestStrips), and a checkerboard's cells (suggestChecker).

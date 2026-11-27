@@ -6317,6 +6317,13 @@ console.log('\nH45. what the second outside review found (2026-11-25): the card 
       `90: plots ${at90 && `${at90.design.plotLength} x ${at90.design.plotWidth}`}, 0 on the field turned: ${at0 && `${at0.design.plotLength} x ${at0.design.plotWidth}`}`);
   }
 
+  // 6. The other side of "vs aligned": the pixel axis nearest the trial's angle, not always 0.
+  {
+    const { nearestGridAngle } = await import(path.join(BUILD, 'src/pixel-grid/imported-rotate.mjs'));
+    const cases = [[-78.6, -90], [-46, -90], [-44, 0], [0, 0], [20, 0], [44, 0], [46, 90], [78.6, 90], [90, 90], [-90, -90]];
+    const off = cases.filter(([a, g]) => nearestGridAngle(a) !== g || Object.is(nearestGridAngle(a), -0));
+    ok('vs aligned compares with the pixel axis nearest the trial\'s angle', off.length === 0, off.length ? off.map(([a]) => `${a} -> ${nearestGridAngle(a)}`).join(', ') : '-78.6 -> -90, 46 -> 90, 44 -> 0');
+  }
   // 5. A traced outline with no room in it holds no trial, whatever its box; a field along the rows has 0 and 90 for directions.
   {
     const aoi = [w, so, e, n];

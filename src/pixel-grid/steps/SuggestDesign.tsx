@@ -51,6 +51,13 @@ export interface SuggestAsk {
   angle?: number;
   /** Repetitions found as the most whose trial fits the field drawn, the satellite named (2026-11-25). */
   repsMax?: boolean;
+  /**
+   * Whether a block trial that does not fit the field at the angle asked may be
+   * turned along the field's directions (2026-11-25: "i cant force an angle in
+   * the suggest design"). Unset: it may, as Build did from the day it learnt to.
+   * False: the angle asked or nothing.
+   */
+  alongField?: boolean;
   /** Bare ground between strips, for alternating rows or columns, in metres. None unless asked for, as the alleys above. */
   stripAlley?: number;
   /**
@@ -196,6 +203,12 @@ export function SuggestDesign(p: StepProps) {
         <label className="flex items-center gap-2 text-[14px] text-neutral-400">
           <input type="checkbox" checked={!!ask.repsMax} onChange={e => set('repsMax')(e.target.checked)} />
           <span>As many repetitions as fit the field</span>
+        </label>
+      )}
+      {p.exp.pattern === 'block' && (
+        <label className="flex items-center gap-2 text-[14px] text-neutral-400">
+          <input type="checkbox" checked={ask.alongField !== false} onChange={e => set('alongField')(e.target.checked)} />
+          <span>Turn it along the field if it does not fit</span>
         </label>
       )}
       {/* No area needed: the build makes one around the trial when there is none, or none large enough. */}
